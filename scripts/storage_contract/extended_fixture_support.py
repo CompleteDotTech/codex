@@ -81,6 +81,26 @@ def make_extended_fixture(path, store):
                     1699999999,
                 ),
             )
+        elif store == "thread_history_1.sqlite":
+            connection.execute(
+                "INSERT INTO thread_turns VALUES (?,?,?,?,?,?,?,?,?,?)",
+                ("t", "turn", 4, "completed", None, 1000, 1002, 2000, "user", "agent"),
+            )
+            connection.execute(
+                "INSERT INTO thread_items VALUES (?,?,?,?,?,?)",
+                (
+                    "t",
+                    "turn",
+                    "user",
+                    5,
+                    1000001,
+                    '{"type":"userMessage","fixture":"雪 / é / é"}',
+                ),
+            )
+            connection.execute(
+                "INSERT INTO thread_history_projection_state VALUES (?,?,?)",
+                ("t", 8192, 9),
+            )
         else:
             raise AssertionError("unsupported_extended_fixture")
         connection.commit()
@@ -92,4 +112,16 @@ def make_extended_fixture(path, store):
             )
         elif store in {"memories_1.sqlite", "memories_v2_1.sqlite"}:
             connection.execute("UPDATE consolidation_progress SET max_thread_count=31")
+        elif store == "thread_history_1.sqlite":
+            connection.execute(
+                "UPDATE thread_turns SET rollout_byte_offset=512, "
+                "rollout_end_ordinal=8, rollout_end_byte_offset=7000"
+            )
+            connection.execute(
+                "UPDATE thread_items SET started_at_ms=1000001, completed_at_ms=1000002"
+            )
+            connection.execute(
+                "INSERT INTO thread_realtime_items VALUES (?,?,?,?,?,?)",
+                ("t", "realtime", 7, 1000002, "realtime_session_started", "{}"),
+            )
         connection.commit()
