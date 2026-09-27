@@ -187,9 +187,7 @@ impl App {
                 return Ok(AppRunControl::Continue);
             }
         }
-        self.agents_overview
-            .blank_sessions
-            .insert(thread_id, started.clone());
+        self.retain_blank_session(app_server, started.clone()).await;
         // Use the dashboard's existing attachment path, which preserves running agents
         // and unsent input in the previous session. Do not send an initial turn.
         let control = Box::pin(self.attach_agents_overview_thread(

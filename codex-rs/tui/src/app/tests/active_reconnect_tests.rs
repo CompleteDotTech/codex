@@ -12,6 +12,71 @@ use tokio::net::TcpListener;
 use super::disconnect::serve_reconnect_requests;
 
 #[tokio::test]
+async fn pending_settings_override_saved_draft_after_blank_cache_is_lost() -> Result<()> {
+    let mut app = make_test_app().await;
+    let projects = json!({
+        app.config.cwd.display().to_string(): {"trust_level": "trusted"},
+    });
+    app.cli_kv_overrides.push((
+        "projects".into(),
+        TomlValue::try_from(projects).expect("trust fixture"),
+    ));
+    app.config.active_project.trust_level = Some(codex_protocol::config_types::TrustLevel::Trusted);
+    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    let started = server.start_thread(&app.config).await?;
+    let thread_id = started.session.thread_id;
+    app.retain_blank_session(&mut server, started).await;
+
+    app.chat_widget
+        .apply_external_edit("retained draft".to_string());
+    let mut input_state = app
+        .chat_widget
+        .capture_thread_input_state()
+        .expect("saved draft");
+    assert!(
+        server
+            .thread_settings_update(codex_app_server_protocol::ThreadSettingsUpdateParams {
+                thread_id: thread_id.to_string(),
+                model: Some("gpt-5.4".to_string()),
+                ..Default::default()
+            })
+            .await?
+    );
+    let notification = next_thread_settings_updated(&mut server, thread_id).await;
+    input_state.pending_thread_settings = Some(notification.clone());
+    app.agents_overview
+        .input_states
+        .insert(thread_id, input_state);
+
+    server
+        .thread_inject_items(
+            thread_id,
+            vec![serde_json::from_value(json!({
+                "type": "message", "role": "assistant",
+                "content": [{"type": "output_text", "text": "saved history"}]
+            }))?],
+        )
+        .await?;
+    // Reconnecting drops the live blank-session cache but keeps saved input.
+    app.agents_overview.blank_sessions.clear();
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.select_agents_overview_thread(&mut tui, &mut server, thread_id)
+        .await?;
+
+    assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
+    assert_eq!(
+        app.chat_widget.current_model(),
+        notification.thread_settings.model
+    );
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "retained draft"
+    );
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn reconnect_restores_history_permissions_and_keeps_old_input_paused() -> Result<()> {
     for (recovered_queue, edit_offline, resume_error_code, deferred_notice, notice_enabled) in [
         (true, false, -32603, false, false),

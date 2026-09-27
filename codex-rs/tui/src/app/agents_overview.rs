@@ -27,8 +27,10 @@ use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_protocol::protocol::SubAgentSource;
+use std::collections::VecDeque;
 
 pub(crate) const AGENTS_OVERVIEW_VIEW_ID: &str = "agents-overview";
+const MAX_RETAINED_BLANK_SESSIONS: usize = 8;
 
 #[derive(Default)]
 pub(super) struct AgentsOverviewState {
@@ -57,6 +59,7 @@ pub(super) struct AgentsOverviewState {
     pub(super) selected_permission_profiles: HashMap<ThreadId, String>,
     /// Keep new tasks subscribed and reusable until a first turn makes them resumable.
     pub(super) blank_sessions: HashMap<ThreadId, crate::app_server_session::AppServerStartedThread>,
+    pub(super) blank_session_order: VecDeque<ThreadId>,
     pub(super) input_states: HashMap<ThreadId, ThreadInputState>,
     pub(super) new_session_draft: Option<Box<StartupDraftPump>>,
     pub(super) dispatched_requests: HashMap<ThreadId, Vec<ServerRequest>>,
@@ -71,6 +74,52 @@ impl Drop for AgentsOverviewState {
 }
 
 impl App {
+    pub(super) async fn retain_blank_session(
+        &mut self,
+        app_server: &mut AppServerSession,
+        started: crate::app_server_session::AppServerStartedThread,
+    ) {
+        let thread_id = started.session.thread_id;
+        self.agents_overview
+            .blank_session_order
+            .retain(|id| self.agents_overview.blank_sessions.contains_key(id));
+        if self
+            .agents_overview
+            .blank_sessions
+            .insert(thread_id, started)
+            .is_none()
+        {
+            self.agents_overview
+                .blank_session_order
+                .push_back(thread_id);
+        }
+        let current = self.current_displayed_thread_id();
+        while self.agents_overview.blank_sessions.len() > MAX_RETAINED_BLANK_SESSIONS {
+            let Some(index) = self
+                .agents_overview
+                .blank_session_order
+                .iter()
+                .position(|id| *id != thread_id && Some(*id) != current)
+            else {
+                break;
+            };
+            let Some(evicted) = self.agents_overview.blank_session_order.remove(index) else {
+                break;
+            };
+            self.agents_overview.blank_sessions.remove(&evicted);
+            self.agents_overview.input_states.remove(&evicted);
+            self.agents_overview
+                .selected_permission_profiles
+                .remove(&evicted);
+            if let Err(error) = app_server.thread_unsubscribe(evicted).await {
+                tracing::warn!(%evicted, %error, "failed to unsubscribe superseded blank session");
+            }
+            self.abort_thread_event_listener(evicted);
+            self.thread_event_channels.remove(&evicted);
+            self.pending_server_profiles.remove(&evicted);
+        }
+    }
+
     pub(super) fn open_agents_overview(&mut self, app_server: &AppServerSession) {
         if matches!(self.app_server_target, AppServerTarget::Embedded) {
             let workload_identity_selected = codex_login::is_workload_identity_selected();
@@ -381,7 +430,6 @@ impl App {
         if startup_draft.is_none() {
             loading::draw(tui)?;
         }
-        let mut restored_blank_session = false;
         if self.primary_thread_id != Some(root_thread_id) {
             let previous_displayed_thread_id = self.current_displayed_thread_id();
             if let Some(id) = previous_displayed_thread_id
@@ -561,7 +609,6 @@ impl App {
             {
                 // An untouched task has no rollout for thread/resume yet. Its live
                 // subscription and saved settings are sufficient to restore the editor.
-                restored_blank_session = true;
                 let mut blank = blank.clone();
                 blank.session.thread_name.clone_from(&target_thread.name);
                 (blank, false)
@@ -785,9 +832,7 @@ impl App {
             && let Some(mut input_state) = self.agents_overview.input_states.remove(&root_thread_id)
         {
             // A saved draft includes model settings, so apply newer server settings after it.
-            let pending_settings = restored_blank_session
-                .then(|| input_state.pending_thread_settings.take())
-                .flatten();
+            let pending_settings = input_state.pending_thread_settings.take();
             let preserve_in_flight_turn = !read_only
                 && self
                     .active_turn_id_for_thread(root_thread_id)
