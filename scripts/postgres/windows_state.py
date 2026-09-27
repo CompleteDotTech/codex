@@ -5,6 +5,7 @@ import ctypes
 from pathlib import Path
 
 from state_io import ServiceError
+from windows_paths import relative_open
 from windows_acl import (
     P,
     W,
@@ -28,7 +29,6 @@ open_file = bind(
     W.DWORD,
     W.HANDLE,
 )
-mkdir = bind(kernel32, "CreateDirectoryW", W.BOOL, W.LPCWSTR, P)
 file_info = bind(
     kernel32, "GetFileInformationByHandleEx", W.BOOL, W.HANDLE, W.DWORD, P, W.DWORD
 )
@@ -72,10 +72,16 @@ class PinnedPaths:
         access = (
             0x20080 if directory else 0x80020000
         )  # READ_CONTROL plus attributes/data.
-        # Share read only: deny rename/deletion and writable reparse-point handles.
-        handle = open_file(str(path), access, 1, None, 3, 0x02200000, None)
-        if handle == INVALID_HANDLE:
-            raise ctypes.WinError(ctypes.get_last_error())
+        # Only the filesystem anchor uses a full path. Child identity is bound
+        # to its retained parent even if an ancestor's attributes later change.
+        if path.parent == path:
+            handle = open_file(str(path), access, 1, None, 3, 0x02200000, None)
+            if handle == INVALID_HANDLE:
+                raise ctypes.WinError(ctypes.get_last_error())
+        else:
+            handle = relative_open(
+                self.handles[path.parent][0], path.name, access, directory=directory
+            )
         try:
             attributes = (W.DWORD * 2)()
             checked(file_info(handle, 9, attributes, ctypes.sizeof(attributes)))
@@ -133,8 +139,16 @@ def create_directory(value):
     with pinned_paths() as scope:
         scope.parents(path)
         with private_attributes() as attributes:
-            checked(mkdir(str(path), ctypes.byref(attributes)))
-        scope.validate(path, directory=True)
+            handle = relative_open(
+                scope.handles[path.parent][0],
+                path.name,
+                0x20080,
+                create=True,
+                directory=True,
+                security=attributes.descriptor,
+            )
+        scope.handles[path] = (handle, True)
+        validate_handle(handle)
 
 
 def write_new(value, data):
@@ -143,17 +157,14 @@ def write_new(value, data):
     with pinned_paths() as scope:
         scope.validate(path.parent, directory=True)
         with private_attributes() as attributes:
-            handle = open_file(
-                str(path),
+            handle = relative_open(
+                scope.handles[path.parent][0],
+                path.name,
                 0x40030000,
-                0,
-                ctypes.byref(attributes),
-                1,
-                0x00200080,
-                None,
+                create=True,
+                directory=False,
+                security=attributes.descriptor,
             )  # GENERIC_WRITE | READ_CONTROL | DELETE, CREATE_NEW.
-        if handle == INVALID_HANDLE:
-            raise ctypes.WinError(ctypes.get_last_error())
         try:
             validate_handle(handle)
             offset = 0
@@ -169,7 +180,7 @@ def write_new(value, data):
             checked(flush_file(handle))
         except BaseException:
             # Deletion is bound to the created object, even if the name later changes.
-            remove = W.BOOL(True)
+            remove = W.BYTE(True)
             checked(set_info(handle, 4, ctypes.byref(remove), ctypes.sizeof(remove)))
             raise
         finally:
