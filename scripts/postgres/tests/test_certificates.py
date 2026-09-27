@@ -158,6 +158,47 @@ commonName = supplied
         with self.assertRaisesRegex(state.ServiceError, "invalid_active_certificate"):
             state.load(self.home)
 
+    def test_missing_saved_openssl_can_be_replaced_without_reinitializing(self):
+        before = state.load(self.home)
+        missing = str(self.home / "missing-openssl")
+        state.publish_json(self.home / "receipt.json", dict(before, openssl=missing))
+        after = state.initialize(
+            self.home,
+            before["project"],
+            before["image_tag"],
+            before["port"],
+            ["db.example.test"],
+            before["openssl"],
+        )
+        self.assertEqual(after, before)
+        self.assertEqual(state.load(self.home), before)
+
+    def test_oversized_resolved_openssl_never_publishes_a_receipt(self):
+        fresh = self.home.parent / "fresh"
+        before = state.load(self.home)
+        legacy = dict(before)
+        del legacy["openssl"]
+        state.publish_json(self.home / "receipt.json", legacy)
+        with patch.object(state, "resolve_program", return_value="x" * 4097):
+            with self.assertRaisesRegex(state.ServiceError, "invalid_openssl_program"):
+                state.initialize(
+                    fresh,
+                    before["project"],
+                    before["image_tag"],
+                    before["port"],
+                    ["db.example.test"],
+                )
+            with self.assertRaisesRegex(state.ServiceError, "invalid_openssl_program"):
+                state.initialize(
+                    self.home,
+                    before["project"],
+                    before["image_tag"],
+                    before["port"],
+                    ["db.example.test"],
+                )
+        self.assertFalse(fresh.exists())
+        self.assertEqual(state.load(self.home), legacy)
+
     def test_stored_openssl_is_used_for_later_checks(self):
         receipt = dict(state.load(self.home), openssl="custom executable")
         with patch.object(certificates, "run") as run:

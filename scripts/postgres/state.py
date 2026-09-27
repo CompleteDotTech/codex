@@ -67,7 +67,11 @@ def initialize(path, project, image, port, names, openssl="openssl"):
         ) != expected:
             raise ServiceError("existing_state_conflict")
         if "openssl" in saved:
-            return saved
+            try:
+                resolve_program(saved["openssl"])
+                return saved
+            except ServiceError:
+                pass
         with operation_lock(path):
             saved = load(path)
             if (
@@ -77,18 +81,29 @@ def initialize(path, project, image, port, names, openssl="openssl"):
                 saved["server_names"],
             ) != expected:
                 raise ServiceError("existing_state_conflict")
-            if "openssl" not in saved:
+            if "openssl" in saved:
                 try:
-                    program = resolve_program(openssl)
+                    resolve_program(saved["openssl"])
+                    return saved
                 except ServiceError:
-                    raise ServiceError("openssl_unavailable") from None
-                saved = dict(saved, openssl=program)
-                publish_json(path / "receipt.json", saved)
+                    pass
+            try:
+                program = resolve_program(openssl)
+            except ServiceError:
+                raise ServiceError("openssl_unavailable") from None
+            from certificates import openssl_program
+
+            openssl_program({"openssl": program})
+            saved = dict(saved, openssl=program)
+            publish_json(path / "receipt.json", saved)
             return saved
     try:
         openssl = resolve_program(openssl)
     except ServiceError:
         raise ServiceError("openssl_unavailable") from None
+    from certificates import openssl_program
+
+    openssl_program({"openssl": openssl})
     # Partial initialization is retained and rejected, never regenerated over lost credentials.
     private_directory(path)
     sync_directory(path.parent)
