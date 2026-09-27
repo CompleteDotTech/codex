@@ -11,14 +11,15 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import docker_ops as ops
-from state import ServiceError
+from state import ServiceError, private_directory
 
 
 class DockerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.home = Path(self.temp.name)
+        self.home = Path(self.temp.name) / "state"
+        private_directory(self.home)
         self.receipt = {
             "format": 1,
             "project": "codex-pg-unit",
