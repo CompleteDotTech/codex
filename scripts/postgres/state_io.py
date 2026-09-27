@@ -31,6 +31,10 @@ def run(argv, *, env=None, timeout=120, discard_output=False):
 
 
 def write_new(path, data):
+    if os.name == "nt":
+        from windows_state import write_new as windows_write_new
+
+        return windows_write_new(path, data)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags, 0o600)
     try:
@@ -140,7 +144,13 @@ def _operation_guard(path):
 
 @contextlib.contextmanager
 def operation_lock(path):
-    with _operation_guard(path):
+    with contextlib.ExitStack() as stack:
+        if os.name == "nt":
+            from windows_state import pinned_paths
+
+            scope = stack.enter_context(pinned_paths())
+            scope.validate(path, directory=True)
+        stack.enter_context(_operation_guard(path))
         lock = path / ".operation.lock"
         payload = json.dumps(
             {

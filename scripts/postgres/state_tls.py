@@ -1,13 +1,14 @@
 """Bounded certificate names and initial development certificate generation."""
 
+import contextlib
 import ipaddress
 import os
-from pathlib import Path
 import re
 import secrets
-import tempfile
+import shutil
 
 from state_io import ServiceError, run, sync_directory, write_new
+from state_permissions import private_directory
 
 MAX_SERVER_NAMES = 32
 MAX_SAN_BYTES = 4096
@@ -65,22 +66,51 @@ def certificate_files(directory, names, openssl):
         "server.ext",
         "server.crt",
     )
-    if any(os.path.lexists(directory / name) for name in outputs):
-        raise ServiceError("certificate_outputs_already_exist")
-    # Generate everything privately before publishing any permanent output.
-    with tempfile.TemporaryDirectory(
-        prefix=".certificate-stage-", dir=directory
-    ) as temporary:
-        staged = Path(temporary)
-        _generate_certificate_files(staged, names, openssl)
-        if any((staged / name).stat().st_size > 16384 for name in outputs):
-            raise ServiceError("certificate_file_too_large")
-        for name in outputs:
-            write_new(directory / name, (staged / name).read_bytes())
-        sync_directory(directory)
+    scope_factory = contextlib.nullcontext
+    if os.name == "nt":
+        from windows_state import pinned_paths
+
+        scope_factory = pinned_paths
+    with scope_factory() as parent:
+        if parent is not None:
+            parent.validate(directory, directory=True)
+        if any(os.path.lexists(directory / name) for name in outputs):
+            raise ServiceError("certificate_outputs_already_exist")
+        staged = directory / (".certificate-stage-" + secrets.token_hex(16))
+        private_directory(staged)
+        try:
+            with scope_factory() as scope:
+                if scope is not None:
+                    scope.validate(staged, directory=True)
+                _generate_certificate_files(staged, names, openssl)
+                contents = {
+                    name: scope.read(staged / name, 16384)
+                    if scope is not None
+                    else (staged / name).read_bytes()
+                    for name in outputs
+                }
+                if any(len(data) > 16384 for data in contents.values()):
+                    raise ServiceError("certificate_file_too_large")
+                published = []
+                try:
+                    for name, data in contents.items():
+                        write_new(directory / name, data)
+                        published.append(directory / name)
+                    sync_directory(directory)
+                except BaseException:
+                    for item in reversed(published):
+                        item.unlink()
+                    sync_directory(directory)
+                    raise
+        finally:
+            shutil.rmtree(staged)
 
 
 def _generate_certificate_files(directory, names, openssl):
+    # OpenSSL truncates these existing files, retaining their private Windows DACLs.
+    if os.name == "nt":
+        for name in ("ca.key", "ca.crt", "server.key", "server.csr", "server.crt"):
+            write_new(directory / name, b"")
     # The local CA is for isolated development. Never mount its private key.
     run(
         [
