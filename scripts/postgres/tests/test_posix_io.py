@@ -66,21 +66,23 @@ try:
     with operation_lock(Path(sys.argv[1])):
         raise SystemExit(1)
 except ServiceError as exc:
-    raise SystemExit(0 if str(exc).startswith('operation_locked') else 2)
+    raise SystemExit(0 if str(exc).startswith(('operation_locked', 'invalid_state_path')) else 2)
 """
         with self.assertRaisesRegex(state_io.ServiceError, "lock_ownership_changed"):
             with state_io.operation_lock(self.home):
                 self.home.rename(self.root / "moved")
                 self.home.mkdir(mode=0o700)
-                result = subprocess.run(
-                    [sys.executable, "-c", child, str(self.home)],
-                    env=dict(
-                        os.environ, PYTHONPATH=str(Path(state_io.__file__).parent)
-                    ),
-                    capture_output=True,
-                    timeout=10,
-                )
-                self.assertEqual((result.returncode, result.stderr), (0, b""))
+                for spelling in (str(self.home), "/" + str(self.home)):
+                    result = subprocess.run(
+                        [sys.executable, "-c", child, spelling],
+                        env=dict(
+                            os.environ, PYTHONPATH=str(Path(state_io.__file__).parent)
+                        ),
+                        capture_output=True,
+                        timeout=10,
+                    )
+                    self.assertEqual((result.returncode, result.stderr), (0, b""))
+
         with state_io.operation_lock(self.home):
             self.assertTrue((self.home / ".operation.lock").exists())
 

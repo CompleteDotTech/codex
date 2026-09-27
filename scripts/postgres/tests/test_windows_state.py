@@ -56,6 +56,15 @@ class WindowsStateTests(unittest.TestCase):
                 with patch.object(Path, "open", side_effect=AssertionError("reopened")):
                     self.assertEqual(scope.read(file, 32), b"original")
 
+    def test_native_names_cannot_truncate_or_select_alternate_streams(self):
+        file = self.root / "secret"
+        native.write_new(file, b"original")
+        with native.pinned_paths() as scope:
+            for name in (str(file) + "\0suffix", str(file) + ":stream"):
+                with self.subTest(name=repr(name)), self.assertRaises(ServiceError):
+                    scope.read(name, 32)
+            self.assertEqual(scope.read(file, 32), b"original")
+
     def test_pins_block_another_process_replacing_file_or_ancestor_until_closed(self):
         file = self.root / "secret"
         candidate = self.root / "candidate"
@@ -170,3 +179,22 @@ with native.pinned_paths() as scope:
         with self.assertRaises(ServiceError):
             native.write_new(parent / "secret", b"protected")
         self.assertFalse((parent / "secret").exists())
+
+    def test_source_tree_identity_is_excluded_at_each_actual_operation(self):
+        secret = self.root / "secret"
+        native.write_new(secret, b"original")
+        module = self.root / "scripts" / "postgres" / "windows_state.py"
+        with (
+            patch.object(native, "__file__", str(module)),
+            native.pinned_paths() as scope,
+        ):
+            for operation in (
+                lambda: native.create_directory(self.root / "child"),
+                lambda: native.write_new(self.root / "new-file", b"new"),
+                lambda: scope.read(secret, 32),
+            ):
+                with self.assertRaisesRegex(
+                    ServiceError, "state_must_be_outside_source_tree"
+                ):
+                    operation()
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["secret"])
