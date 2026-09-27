@@ -1,0 +1,28 @@
+{
+  "repository": "CompleteDotTech/codex",
+  "commit": "985cf47a4eb6084b2ff6b30ebdb1216acda85bb4",
+  "assets": [
+    {
+      "file": "queue_0001.sql",
+      "source_path": "codex-rs/state/queue_migrations/0001_queued_items.sql",
+      "source_blob": "186cafefc0c6175bb74769550fdcb2052ed63b64",
+      "representation": "entire_file",
+      "sha256": "a7c5dadb4f1e17c6dd35395f0dd1b2cbf04500d6e5cb08ba5a9868f2d3c04ba7"
+    },
+    {
+      "file": "queue_0002.sql",
+      "source_path": "codex-rs/state/queue_migrations/0002_queued_thread_revisions.sql",
+      "source_blob": "355352c9cc10325c69cb3035ed671ac615790007",
+      "representation": "entire_file",
+      "sha256": "b48a7950e54dc4b0545bab6240fe858aac3565f08c38f73488503f95aa88eaca"
+    },
+    {
+      "file": "board_schema.sql",
+      "source_path": "codex-rs/ext/agent-message-board/src/local.rs",
+      "source_blob": "6413ae176486f4dce5ca881aef1b0bccdc46afc3",
+      "representation": "SCHEMA_string_value",
+      "sha256": "ca3d1d2469507160a15df016fb857e827821d6963d3f69e85f930460a45923c5"
+    }
+  ],
+  "scope": "Queue migration directory (two files) and the independent board SCHEMA; not all Codex stores or consumers."
+}
