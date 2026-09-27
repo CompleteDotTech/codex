@@ -13,7 +13,11 @@ from state import ServiceError, publish_json, run, sync_directory, write_new
 def certificate_path(path, receipt):
     active = receipt.get("active_certificate")
     if active is None:
+        if receipt["format"] != 1:
+            raise ServiceError("invalid_active_certificate")
         return path / "secrets/server.crt"
+    if receipt["format"] != 2:
+        raise ServiceError("invalid_active_certificate")
     if (
         not isinstance(active, dict)
         or set(active) != {"file", "sha256"}
@@ -127,6 +131,7 @@ def renew(path, receipt):
     sync_directory(directory)
     updated = dict(
         receipt,
+        format=2,
         active_certificate={
             "file": file.name,
             "sha256": hashlib.sha256(encoded).hexdigest(),

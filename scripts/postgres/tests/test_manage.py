@@ -48,6 +48,11 @@ class ManageTests(unittest.TestCase):
             patch.object(manage, "inspect_owned"),
             patch.object(
                 manage,
+                "validate_restore_archive",
+                side_effect=lambda *args: events.append("archive"),
+            ),
+            patch.object(
+                manage,
                 "check_expiry",
                 side_effect=lambda *args: events.append("certificate"),
             ),
@@ -81,7 +86,32 @@ class ManageTests(unittest.TestCase):
                 ),
                 0,
             )
-        self.assertEqual(events, ["certificate", "volume", "up", "restore"])
+        self.assertEqual(events, ["archive", "certificate", "volume", "up", "restore"])
+
+    def test_invalid_restore_does_not_start_database(self):
+        with (
+            patch.object(manage, "engine"),
+            patch.object(manage, "inspect_owned"),
+            patch.object(manage, "ensure_volume") as volume,
+            patch.object(manage, "compose") as compose,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(
+                manage.main(
+                    [
+                        "--state",
+                        str(self.home),
+                        "restore",
+                        "--archive",
+                        "missing.dump",
+                        "--sha256",
+                        "0" * 64,
+                    ]
+                ),
+                2,
+            )
+        volume.assert_not_called()
+        compose.assert_not_called()
 
     def test_pin_reads_receipt_after_acquiring_operation_lock(self):
         initial = {"image_digest": None}

@@ -11,16 +11,17 @@ from state import ServiceError, publish_json, run
 from certificates import certificate_path
 
 INSTANCE_LABEL = "com.completedottech.codex.pg.instance"
+MAX_BACKUP_BYTES = 134217728
 
 
-def docker(arguments):
+def docker(arguments, *, timeout=300):
     # Environment interpolation must not override the authenticated local receipt.
     env = {
         k: v
         for k, v in os.environ.items()
         if not k.startswith(("COMPOSE_", "CODEX_PG_"))
     }
-    return run(["docker", *arguments], env=env, timeout=300)
+    return run(["docker", *arguments], env=env, timeout=timeout)
 
 
 def engine(receipt, *, allow_unbound=False):
@@ -127,7 +128,7 @@ def ensure_volume(receipt):
         raise ServiceError("foreign_data_volume")
 
 
-def compose(path, receipt, arguments):
+def compose(path, receipt, arguments, *, timeout=None):
     if not receipt["image_digest"]:
         raise ServiceError("image_not_pinned")
     # Regenerate disposable configuration from the protected receipt; no passwords.
@@ -147,39 +148,44 @@ def compose(path, receipt, arguments):
     write_new(pending, "".join(f"{k}='{v}'\n" for k, v in values.items()).encode())
     os.replace(pending, path / "compose.env")
     file = Path(__file__).with_name("compose.yaml")
-    return docker(
-        [
-            "compose",
-            "--env-file",
-            str(path / "compose.env"),
-            "-f",
-            str(file),
-            "--project-name",
-            receipt["project"],
-            *arguments,
-        ]
-    )
+    command = [
+        "compose",
+        "--env-file",
+        str(path / "compose.env"),
+        "-f",
+        str(file),
+        "--project-name",
+        receipt["project"],
+        *arguments,
+    ]
+    return docker(command) if timeout is None else docker(command, timeout=timeout)
 
 
-def restore(path, receipt, archive, expected, confirmed):
+def validate_restore_archive(archive, expected, confirmed):
     if not confirmed:
         raise ServiceError("explicit_empty_destination_confirmation_required")
     if not re.fullmatch(r"[a-f0-9]{64}", expected or ""):
         raise ServiceError("independent_backup_digest_required")
-    if (
-        archive.is_symlink()
-        or not archive.is_file()
-        or archive.stat().st_size > 134217728
-    ):
+    if archive.is_symlink() or not archive.is_file():
         raise ServiceError("invalid_or_oversized_backup")
     if any(c in str(archive) for c in "\r\n,$\0"):
         raise ServiceError("unsupported_backup_mount_path")
     digest = hashlib.sha256()
+    size = 0
     with archive.open("rb") as stream:
+        if os.fstat(stream.fileno()).st_size > MAX_BACKUP_BYTES:
+            raise ServiceError("invalid_or_oversized_backup")
         while chunk := stream.read(1024 * 1024):
+            size += len(chunk)
+            if size > MAX_BACKUP_BYTES:
+                raise ServiceError("invalid_or_oversized_backup")
             digest.update(chunk)
     if digest.hexdigest() != expected:
         raise ServiceError("backup_checksum_mismatch")
+
+
+def restore(path, receipt, archive, expected, confirmed):
+    validate_restore_archive(archive, expected, confirmed)
     try:
         output = compose(
             path,
@@ -197,6 +203,7 @@ def restore(path, receipt, archive, expected, confirmed):
                 f"EXPECTED_SHA256={expected}",
                 "restore",
             ],
+            timeout=3600,
         )
     except ServiceError:
         # A disconnected CLI cannot prove that the server rolled back a COMMIT.
