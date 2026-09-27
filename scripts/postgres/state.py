@@ -57,9 +57,19 @@ def initialize(path, project, image, port, names, openssl="openssl"):
         raise ServiceError("invalid_port")
     sans = server_names(names)
     if path.exists():
+        expected = (project, image, port, sans)
+        saved = load(path)
+        if (
+            saved["project"],
+            saved["image_tag"],
+            saved["port"],
+            saved["server_names"],
+        ) != expected:
+            raise ServiceError("existing_state_conflict")
+        if "openssl" in saved:
+            return saved
         with operation_lock(path):
             saved = load(path)
-            expected = (project, image, port, sans)
             if (
                 saved["project"],
                 saved["image_tag"],
