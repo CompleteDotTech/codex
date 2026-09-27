@@ -22,7 +22,49 @@
       "source_blob": "6413ae176486f4dce5ca881aef1b0bccdc46afc3",
       "representation": "SCHEMA_string_value",
       "sha256": "ca3d1d2469507160a15df016fb857e827821d6963d3f69e85f930460a45923c5"
+    },
+    {
+      "file": "goals_0001.sql",
+      "source_path": "codex-rs/state/goals_migrations/0001_thread_goals.sql",
+      "source_blob": "943226ee8a19ff4341e1b22f1892e3a13cb19dcc",
+      "representation": "entire_file",
+      "sha256": "b3aac485fec27eaefbdd3e68651bdf6d640908fb10226f3562cc5ffe92ca3d1f"
+    },
+    {
+      "file": "goals_0002.sql",
+      "source_path": "codex-rs/state/goals_migrations/0002_thread_goal_continuation_deferrals.sql",
+      "source_blob": "bb3fe7ce87acb571b9cfe28c8da98e4f3fe0a66f",
+      "representation": "entire_file",
+      "sha256": "c16a57f895f7b2731ba24a9c618a435a84cb815f25d60be974c7e0d3e5afa351"
+    },
+    {
+      "file": "logs_0001.sql",
+      "source_path": "codex-rs/state/logs_migrations/0001_logs.sql",
+      "source_blob": "b5315dc82134f5348e949dd3b374f7a354e65756",
+      "representation": "entire_file",
+      "sha256": "3ac717a6db0fc2d138f485ea4e5798f1367d5c2811db87a80ddd8b7bf8526ca0"
+    },
+    {
+      "file": "logs_0002.sql",
+      "source_path": "codex-rs/state/logs_migrations/0002_logs_feedback_log_body.sql",
+      "source_blob": "6cd38664ece155e69a337e37e0d2f9541ca2a1ce",
+      "representation": "entire_file",
+      "sha256": "1cdeb6c3cddcf2f4b81995fb4f227f8578c0624568d27407c2fa2bddb7f7ba77"
+    },
+    {
+      "file": "memory_0001.sql",
+      "source_path": "codex-rs/state/memory_migrations/0001_memories.sql",
+      "source_blob": "4e5b3a1e9fd55d8682047afd0a3325536be9f39f",
+      "representation": "entire_file",
+      "sha256": "5cf9a18faec0a71aae5c42d17fda97d2fc8ea018fde4729ab5e782ed44c6b706"
+    },
+    {
+      "file": "memory_0002.sql",
+      "source_path": "codex-rs/state/memory_migrations/0002_consolidation_progress.sql",
+      "source_blob": "ec84e3a127e931b5b6f22fdadd80cc1632d0122f",
+      "representation": "entire_file",
+      "sha256": "fa423fb8dd2bd571a605cd7160e7041be954feb5cbe876069db1d818ef26565b"
     }
   ],
-  "scope": "Queue migration directory (two files) and the independent board SCHEMA; not all Codex stores or consumers."
+  "scope": "Source SQL fixtures for board, goals, logs, memory, queue. Not runtime qualification."
 }

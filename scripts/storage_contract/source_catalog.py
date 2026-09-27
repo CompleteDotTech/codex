@@ -19,9 +19,16 @@ FIXTURES = Path(__file__).with_name("fixtures")
 # Git tree hashes were read independently from the pinned repository, not derived
 # from an incoming database or a mutable export manifest.
 DIRECTORIES = {
+    "goals": ("goals_migrations", "ac02d6b3a8b186daaaecaad1e703664fb6f62433", 2),
+    "logs": ("logs_migrations", "7f1e6883777132af5a19059daad4417f08ff78f9", 2),
+    "memory": ("memory_migrations", "a609f8f7674be4dc331da2e05884c920bca90b44", 2),
     "queue": ("queue_migrations", "af9213d98c38a62fcb6fc0b192e19abe28bbe2fd", 2),
 }
 STORES = {
+    "goals_1.sqlite": "goals",
+    "logs_2.sqlite": "logs",
+    "memories_1.sqlite": "memory",
+    "memories_v2_1.sqlite": "memory",
     "queue_1.sqlite": "queue",
     "agent_message_board_1.sqlite": "board",
 }
