@@ -64,6 +64,7 @@ class QualificationReportTests(unittest.TestCase):
                 destination_reads = 0
                 source_running = False
                 source_stops = 0
+                cleanup_attempts = []
 
                 def command(home, action, *args, **kwargs):
                     nonlocal renewed, final_restart, source_running, source_stops
@@ -78,12 +79,10 @@ class QualificationReportTests(unittest.TestCase):
                         renewed = True
                     if home.name == "destination" and action == "stop":
                         final_restart = True
-                    if (
-                        fault == "cleanup_interrupt"
-                        and final_restart
-                        and action == "down"
-                    ):
-                        raise KeyboardInterrupt()
+                    if final_restart and action == "down":
+                        cleanup_attempts.append(home.name)
+                        if fault == "cleanup_interrupt" and home.name == "source":
+                            raise KeyboardInterrupt()
                     return ""
 
                 def query(home, text, **kwargs):
@@ -142,3 +141,6 @@ class QualificationReportTests(unittest.TestCase):
                 self.assertGreaterEqual(source_stops, 2)
                 self.assertEqual(destination_reads, 4)
                 self.assertIn("finished_at", report)
+                if fault == "cleanup_interrupt":
+                    self.assertEqual(cleanup_attempts, ["source", "destination"])
+                    self.assertEqual(report["cleanup_blockers"], ["source"])
