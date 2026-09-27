@@ -54,8 +54,10 @@ An existing SQLite home has no persisted storage identities. Before its first
 capture or confirmed migration plan, adopt it under exclusive local writer
 control: durably record one dataset ID, one local storage-instance ID and an
 initial generation in a host-owned record outside replaceable package files.
-Bind that record to the exact source-home identity and source fingerprint, and
-commit it atomically before any staging or export can refer to those IDs.
+Bind that record to an immutable home/incarnation marker and commit it
+atomically before any staging or export can refer to those IDs. The current
+content fingerprint is separate, refreshable capture evidence, not the
+identity-recovery key; ordinary SQLite writes must not invalidate adoption.
 Retry, restart, reinstall and recovery must recover and reuse the same record;
 an incomplete or conflicting adoption must fail closed for reconciliation,
 never mint a second identity for the same source history. Later authority
@@ -72,6 +74,12 @@ The active selection is durable server-owned state: dataset, instance,
 namespace and generation, plus the host-local reference needed to connect.
 Passwords and credential material are not embedded in this record, manifests,
 receipts, logs, model context, snapshots or migration reports.
+
+Persist an independently recoverable, home-bound activation marker before the
+first remote cutover. If active-selection state is missing, corrupt or conflicts
+with that marker, fail closed and reconcile authority before listing, resuming
+or writing. Implicit SQLite bootstrap is allowed only for a home proven never
+to have activated another authority; missing selection alone is not proof.
 
 TUI, CLI, app-server, daemon, extensions and maintenance use one authority
 service. On a remote outage they expose bounded unavailable/reconnecting
@@ -156,6 +164,12 @@ A paused writer whose lease expired must fail on its next write even after
 reconnect. Verify clock-skew behavior and database-consistent time semantics.
 Do not transfer a live source lease as valid destination ownership.
 
+Authority-dependent reads, including history lists and session resume/model
+context assembly, must validate the current dataset, instance and generation
+before serving data. A host with a cached retired selection must refresh or
+fail closed; alternatively, keep the retired source unreadable to attached
+hosts until they refresh. Reject stale reads before they can drive tool calls.
+
 Keep source and destination fenced through verification and authority commit.
 Persist intent, decision and recovery evidence before allowing writes at the new
 generation. A crash or lost response can produce an uncertain outcome, not an
@@ -180,7 +194,7 @@ proof of compatibility. Resolve and test the actual executable, not only PATH.
 | Schema upgrade | Serialized migration plus compatibility/recovery checks before running the migration, not just before replacing a binary. |
 | Fork update or reinstall | Verified complete fork-owned runtime bundle; preserved backend identity, settings, journals and ownership receipt. |
 | Binary rollback | Exact old binary is a safe reader/writer of the current schema; otherwise block. |
-| Reverse export for upstream | Fresh current-data export; exact selected unpatched binary can list/resume history and complete a mocked turn in isolation. |
+| Reverse export for upstream | Fresh current-data export; exact selected unpatched binary can list/resume history and complete a mocked turn in isolation, with the resumed outbound model input compared against representative current histories, including fork-only and compaction items. Reject a target that silently drops them. |
 | Foreign host combination | Real app/exec/client process tests for each advertised operating-system combination. |
 
 No PostgreSQL major, package channel or host combination is certified by this
@@ -218,10 +232,12 @@ contents and ownership, rejects collisions, retains a recoverable copy, and
 verifies the user's destination choice before activation. It must never silently
 replace those stores or combine their history with remote data.
 
-An intentional-uninstall decision is durable. Every patch-owned updater must
-check lifecycle ownership and that decision at its publication/activation point,
-including an updater staged before uninstall. Remove only patch-owned hooks and
-verify a new-shell/reboot-equivalent/update probe does not reinstall the patch.
+An intentional-uninstall decision is durable. Uninstall commits its tombstone
+before package removal. Every patch-owned updater, including one staged before
+uninstall, must serialize publication and activation with that tombstone under
+one lock or compare-and-swap boundary; a stale updater loses the race and fails
+activation. Remove only patch-owned hooks and verify a new-shell/reboot-equivalent
+update probe does not reinstall the patch.
 A deliberate reinstall is a new confirmed lifecycle operation and may explicitly
 attach to retained remote data; it must not restart old import or updater work.
 
@@ -232,17 +248,38 @@ ownership. #4 must test exact supported versions, concurrent schema creation,
 namespace isolation, cancellations, bounded pool waits and commit ambiguity.
 #5–#9 must exercise shared SQLite/PostgreSQL public behavior and contention.
 
+#2–#4 must exercise initialization with preserved local history and an
+idempotent retry that reuses the same new dataset, plus attachment that neither
+imports/merges local history nor advances the remote generation. Test legacy
+adoption interruption immediately before and after record publication, restart
+and reinstall recovery, and incomplete/conflicting records; no retry may mint a
+second identity or orphan operation-owned staging. Interrupt and restore an
+active remote connection and prove each write surface stays unavailable or
+reconnecting without acquiring local authority.
+
 #10 must pause an old/stale writer through lease expiry and prove rejection;
-include unobservable SQLite writers. #11–#15 must cover equal-count corruption,
+include unobservable SQLite writers. Also prove that a second host holding a
+retired selection cannot list, resume or build model input from stale history,
+and that lost/corrupt active selection never reactivates preserved SQLite data.
+#11–#15 must cover equal-count corruption,
 missing references, late queue commits, repeated/uncertain append, every durable
 cutover boundary, new remote writes before reverse migration and a second host
 with no source files. No acknowledged canonical data may disappear or duplicate.
+After plan confirmation, change each bound source, destination occupancy,
+authorization, schema capability and operation scope before cutover; every
+irreversible transition must revalidate and stop on a changed binding.
 
 #16–#17 must exercise the same authorized service through JSON-RPC, CLI and
 reviewed TUI snapshots, showing active authority separately from candidates.
 #19–#21 must test actual packages, user-edited receipts/config, locked files,
 concurrent updater/uninstall, offline detach, exact upstream restore and deliberate
-reinstall. #18 must run the complete combined journey, not substitute tool fixtures.
+reinstall. Exercise updater pause before publication, uninstall tombstone commit,
+then updater resume; activation must fail. Test serialized and interrupted schema
+upgrades, mixed old/new writers, and exact old-binary rollback against the
+post-upgrade schema, rejecting incompatible binaries. For upstream restore,
+compare resumed outbound model input for fork-only and compaction history, not
+just list/resume success. #18 must run the complete combined journey, not
+substitute tool fixtures.
 
 These are required future cases, not executed results. Independent architecture,
 security, API and lifecycle review is outstanding. Issue #2 remains open until
