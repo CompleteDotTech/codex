@@ -20,8 +20,11 @@ def _windows_program(program, directories, cwd):
         candidates = []
         for entry in directories:
             directory = Path(entry.strip('"'))
-            if directory.is_absolute() and directory.resolve() != cwd.resolve():
-                candidates.append(directory / program)
+            try:
+                if directory.is_absolute() and directory.resolve() != cwd.resolve():
+                    candidates.append(directory / program)
+            except (OSError, RuntimeError):
+                continue
     for candidate in candidates:
         names = (
             [candidate]
@@ -29,8 +32,11 @@ def _windows_program(program, directories, cwd):
             else [candidate, candidate.with_suffix(".exe")]
         )
         for name in names:
-            if name.is_file():
-                return str(name.resolve())
+            try:
+                if name.is_file():
+                    return str(name.resolve())
+            except (OSError, RuntimeError):
+                continue
     raise ServiceError("command_unavailable_or_timed_out")
 
 
