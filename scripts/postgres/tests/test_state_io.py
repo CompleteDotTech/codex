@@ -105,9 +105,9 @@ class StateIoTests(unittest.TestCase):
     def test_discarded_native_output_does_not_require_utf8(self):
         result = subprocess.CompletedProcess(["native-command"], 0, b"path-\xe9", b"")
         with patch("state_io.subprocess.run", return_value=result):
-            self.assertEqual(state.run(["native-command"], discard_output=True), "")
+            self.assertEqual(state.run([sys.executable], discard_output=True), "")
             with self.assertRaises(UnicodeDecodeError):
-                state.run(["machine-readable-command"])
+                state.run([sys.executable])
 
     @unittest.skipIf(os.name == "nt", "POSIX symlink fixture")
     def test_symlink_state_path_is_refused(self):

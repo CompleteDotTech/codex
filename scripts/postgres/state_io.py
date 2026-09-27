@@ -18,6 +18,10 @@ class ServiceError(Exception):
 
 def run(argv, *, env=None, timeout=120, discard_output=False):
     try:
+        if os.name == "nt":
+            from programs import resolve_program
+
+            argv = [resolve_program(argv[0], environment=env), *argv[1:]]
         result = subprocess.run(
             argv, env=env, capture_output=True, timeout=timeout, check=False
         )
