@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import secrets
+import stat
 
 from state import ServiceError, publish_json, run
 from certificates import certificate_path
@@ -172,8 +173,15 @@ def validate_restore_archive(archive, expected, confirmed):
         raise ServiceError("unsupported_backup_mount_path")
     digest = hashlib.sha256()
     size = 0
-    with archive.open("rb") as stream:
-        if os.fstat(stream.fileno()).st_size > MAX_BACKUP_BYTES:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    with os.fdopen(os.open(archive, flags), "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if not stat.S_ISREG(opened.st_mode) or opened.st_size > MAX_BACKUP_BYTES:
             raise ServiceError("invalid_or_oversized_backup")
         while chunk := stream.read(1024 * 1024):
             size += len(chunk)
@@ -186,6 +194,8 @@ def validate_restore_archive(archive, expected, confirmed):
 
 def restore(path, receipt, archive, expected, confirmed):
     validate_restore_archive(archive, expected, confirmed)
+    if not receipt["image_digest"]:
+        raise ServiceError("image_not_pinned")
     try:
         output = compose(
             path,
