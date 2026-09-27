@@ -18,6 +18,10 @@ class ServiceError(Exception):
 
 def run(argv, *, env=None, timeout=120, discard_output=False):
     try:
+        if os.name == "nt":
+            from programs import resolve_program
+
+            argv = [resolve_program(argv[0], environment=env), *argv[1:]]
         result = subprocess.run(
             argv, env=env, capture_output=True, timeout=timeout, check=False
         )
@@ -110,14 +114,15 @@ def state_path(value):
 
 @contextlib.contextmanager
 def _operation_guard(path):
-    # Never delete this stable guard, including during manual marker recovery.
-    # It couples marker verification/removal with exclusion of other operations.
-    guard = path / ".operation.guard"
-    descriptor = os.open(
-        guard, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
-    )
+    if os.name == "nt":
+        # Windows keeps this open file undeletable until the lock is released.
+        descriptor = os.open(path / ".operation.guard", os.O_RDWR | os.O_CREAT, 0o600)
+    else:
+        # Lock the state directory itself: removing marker files cannot replace it.
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        mode = os.fstat(descriptor).st_mode
+        if not (stat.S_ISREG(mode) if os.name == "nt" else stat.S_ISDIR(mode)):
             raise ServiceError("invalid_operation_guard")
         try:
             if os.name == "nt":
