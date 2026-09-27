@@ -74,6 +74,18 @@ class StateTests(unittest.TestCase):
             state.initialize(path, "codex-pg-unit", "postgres:18.6-bookworm", 55432, [])
         self.assertFalse(path.exists())
 
+    def test_scoped_ipv6_is_rejected_before_creating_state(self):
+        path = Path(self.temp.name) / "new"
+        with self.assertRaises(state.ServiceError):
+            state.initialize(
+                path,
+                "codex-pg-unit",
+                "postgres:17.11-bookworm",
+                55432,
+                ["fe80::1%eth0"],
+            )
+        self.assertFalse(path.exists())
+
     def test_secret_changes_detected(self):
         (self.home / "secrets/runtime.password").write_bytes(b"0" * 64)
         with self.assertRaisesRegex(state.ServiceError, "secret_changed"):
@@ -170,6 +182,18 @@ class PosixPermissionsTests(unittest.TestCase):
         (self.home / "secrets/runtime.password").chmod(0o644)
         with self.assertRaisesRegex(state.ServiceError, "insecure_secret_file"):
             state.load(self.home)
+
+    def test_insecure_receipt_permissions_are_refused(self):
+        receipt = self.home / "receipt.json"
+        original = receipt.read_bytes()
+        for mode in (0o644, 0o660, 0o666):
+            receipt.chmod(mode)
+            with (
+                self.subTest(mode=oct(mode)),
+                self.assertRaisesRegex(state.ServiceError, "insecure_receipt_file"),
+            ):
+                state.load(self.home)
+            self.assertEqual(original, receipt.read_bytes())
 
     def test_fifo_receipt_is_refused_without_blocking(self):
         file = self.home / "receipt.json"

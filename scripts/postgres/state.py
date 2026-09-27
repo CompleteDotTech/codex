@@ -99,6 +99,8 @@ def load(path):
         mode = receipt_file.lstat().st_mode
         if not stat.S_ISREG(mode) or receipt_file.stat().st_size > MAX_RECEIPT_BYTES:
             raise ServiceError("invalid_receipt")
+        if os.name != "nt" and mode & 0o077:
+            raise ServiceError("insecure_receipt_file")
         if os.name == "nt":
             _validate_windows_permissions(
                 [
