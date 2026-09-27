@@ -249,6 +249,10 @@ class SqlxHistoryTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "^invalid_sqlx_connection$"):
             self.check("postgresql://private-secret")
 
+        connection = self.database()
+        connection.text_factory = bytes
+        self.rejects(connection, "invalid_sqlx_connection")
+
     def test_record_budget_is_enforced(self):
         connection = self.database(versions=())
         connection.executemany(

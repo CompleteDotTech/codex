@@ -63,6 +63,7 @@ def audit_history(
     successful history. The independent message board does not use this format.
     """
     require(isinstance(connection, sqlite3.Connection), "invalid_sqlx_connection")
+    require(connection.text_factory is str, "invalid_sqlx_connection")
     require(type(store) is str and store in SQLX_STORES, "unsupported_sqlx_store")
     require(
         type(expected) is dict and 0 < len(expected) <= MAX_MIGRATIONS,

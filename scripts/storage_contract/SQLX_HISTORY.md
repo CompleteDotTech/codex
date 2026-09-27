@@ -38,11 +38,14 @@ layouts fail closed. Unlike normal Codex runtime, unknown future history is not
 ignored. No incoming SQL, description or path is included in diagnostics.
 
 `main` qualification prevents a temporary table/view from shadowing bookkeeping.
-The query returns at most 1,025 bounded rows; only exact 48-byte BLOB checksums
-and integer version/status/timing values enter Python. Descriptions and timestamp
-values are not materialized. The caller retains connection/transaction ownership
-and must enforce the existing snapshot authentication, file/query resource
-budgets and writer exclusion; this helper does not make a live store coherent.
+The caller must use the default `sqlite3.Connection.text_factory = str`; other
+text factories are rejected before reading because schema names and SQLite type
+labels are compared as text. The query returns at most 1,025 bounded rows; only
+exact 48-byte BLOB checksums and integer version/status/timing values enter
+Python. Descriptions and timestamp values are not materialized. The caller
+retains connection/transaction ownership and must enforce the existing snapshot
+authentication, file/query resource budgets and writer exclusion; this helper
+does not make a live store coherent.
 
 When primary version 38 has the exact pinned version-39 recency checksum and 39
 is absent, the result is `legacy_recency_repair_required`, not an UPDATE. Repair
