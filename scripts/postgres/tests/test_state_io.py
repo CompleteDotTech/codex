@@ -11,13 +11,15 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import state
 import state_io
+from state_permissions import private_directory
 
 
 class StateIoTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.home = Path(self.temp.name).resolve()
+        self.home = Path(self.temp.name).resolve() / "state"
+        private_directory(self.home)
 
     def test_locked_operation_does_not_delete_other_owners_lock(self):
         marker = self.home / ".operation.lock"
@@ -71,6 +73,7 @@ class StateIoTests(unittest.TestCase):
         self.assertEqual(file.read_bytes(), before)
         self.assertEqual(list(self.home.glob("*.pending-*")), [])
 
+    @unittest.skipIf(os.name == "nt", "native owned-handle flush coverage is separate")
     def test_failed_pending_write_preserves_receipt_and_removes_partial_file(self):
         file = self.home / "receipt.json"
         state.publish_json(file, {"old": True})

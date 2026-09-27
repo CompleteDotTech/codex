@@ -11,3 +11,5 @@ from state_permissions import private_directory as private_directory
 from state_permissions import (
     _validate_windows_permissions as _validate_windows_permissions,
 )
+from state_tls import certificate_files as certificate_files
+from state_tls import server_names as server_names
