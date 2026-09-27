@@ -150,7 +150,8 @@ def renew(path, receipt):
                 "-verify_ip" if kind == "IP" else "-verify_hostname",
                 value,
                 str(file),
-            ]
+            ],
+            discard_output=True,
         )
     key = run([program, "pkey", "-in", str(directory / "server.key"), "-pubout"])
     public = run([program, "x509", "-in", str(file), "-pubkey", "-noout"])
