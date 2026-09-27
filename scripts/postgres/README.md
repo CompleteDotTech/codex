@@ -98,7 +98,7 @@ ID; changing Docker contexts/engines requires deliberate separate setup.
 
 | Field | Value |
 |---|---|
-| Published endpoint | `127.0.0.1:55432` on the **Docker engine host** |
+| Published endpoint | `127.0.0.1:<receipt port>` on the **Docker engine host** (default port `55432`) |
 | Container service endpoint | `postgres:5432` inside this deployment's network |
 | Database / application schema | `codex` / `codex_storage` |
 | Runtime identity | `codex_runtime` |
