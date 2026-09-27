@@ -26,6 +26,8 @@ slice must not be used to tick that acceptance criterion.
 The final inventory must map each domain to its current and legacy source,
 authority, producer, every reader, owning issue, target representation,
 forward/reverse treatment, key/order encoding, and verification procedure.
+Inventory generated-ID state, including deleted-ID high-water marks and
+SQLite/PostgreSQL sequences; copied rows alone do not prove safe next inserts.
 It must also classify canonical active/archive/compressed/reference-backed
 fork histories, session indexes, projections, memory outputs, referenced
 artifacts, host identities, credentials, receipts, journals, and backups.
@@ -38,7 +40,7 @@ The following are proposed domain concepts, not existing public API fields:
 | Concept | Required meaning |
 | --- | --- |
 | Dataset identity | Stable logical dataset across a verified move; not its endpoint or directory. |
-| Storage-instance identity | Identity of one physical source or destination; changes when relocated. |
+| Storage-instance identity | Identity of one physical source or destination; changes when relocated or cloned. |
 | Generation | Monotonic authority epoch; an expected-generation write must reject a stale epoch. |
 | Namespace identity | Bound to the instance and effective authorization scope; schema name alone is insufficient. |
 | Operation identity | Durable identity for one confirmed operation and its idempotent retries. |
@@ -49,6 +51,9 @@ The following are proposed domain concepts, not existing public API fields:
 A matching dataset ID does not grant access. Authentication, trusted host-owned
 configuration, namespace authorization and storage-administration permission
 remain separate checks. Restoring a journal must not restore expired authority.
+Remote profiles require certificate-verified encrypted transport and server
+identity by default; reject silent TLS downgrade. Any trusted-local exception
+must be narrowly scoped, explicit, independently reviewed and tested.
 
 An existing SQLite home has no persisted storage identities. Before its first
 capture or confirmed migration plan, adopt it under exclusive local writer
@@ -139,6 +144,13 @@ from generated memory outputs. Required portable artifact bytes must be availabl
 without the source host. Missing/corrupt content blocks cutover pending explicit
 resolution; it cannot be silently truncated or replaced with a dangling path.
 
+Exports, staging, journals and retained backups contain private history. Use
+least-privilege ownership and access, authenticated encryption where material
+can leave the trusted host or disk boundary, bounded retention, and verified
+cleanup or secure disposal after success, failure or cancellation. Preserve
+recovery evidence for its declared retention window without leaving abandoned
+plaintext staging indefinitely.
+
 The current offline format caps rows at 1 MiB, keys at 1,024 bytes, cells at 256,
 domains at 256, total chunks at 4,096 and chunks at 64 MiB. A larger source record
 needs a separately reviewed chunked representation preserving identity and
@@ -146,6 +158,12 @@ ordering, not a raised hidden cap or silent loss. No existing format limit prove
 that all runtime histories fit. Source paths are provenance/remapping inputs,
 never portable event keys. Do not normalize Unicode, timestamps or numeric types
 without a reviewed, reversible domain rule.
+
+The existing experimental `thread/resume.path` surface needs an explicit
+compatibility decision before migration: retain a host-local mapping from old
+canonical path to migrated thread identity, or introduce a versioned/deprecated
+transition that rejects that path with a usable replacement. Never open the
+preserved stale file as current authority. Test the selected behavior.
 
 ## 7. Enforceable write ownership and cutover
 
@@ -169,6 +187,10 @@ context assembly, must validate the current dataset, instance and generation
 before serving data. A host with a cached retired selection must refresh or
 fail closed; alternatively, keep the retired source unreadable to attached
 hosts until they refresh. Reject stale reads before they can drive tool calls.
+Within one generation, reads that assemble authoritative history must include
+all acknowledged preceding writes. Read from the primary or use a verified
+causal token/equivalent monotonic-read fence; replica or cache lag must never
+silently omit completed turns from resumed model input.
 
 Keep source and destination fenced through verification and authority commit.
 Persist intent, decision and recovery evidence before allowing writes at the new
@@ -176,6 +198,11 @@ generation. A crash or lost response can produce an uncertain outcome, not an
 assumed abort. Recovery must reconcile actual durable authority before writing.
 Cancellation during commit reports the reconciled outcome; it cannot promise
 that the old source is still current. Retain protected source backups.
+Restoring or cloning a backup must reconcile against independently durable
+latest-authority evidence before serving reads or writes. Give a new physical
+copy a new instance identity, and advance the epoch through a verified recovery
+transition or reject a rolled-back generation; a backup's old marker cannot
+declare itself current merely because a host is offline.
 
 ## 8. Binary, schema and host compatibility matrix
 
@@ -213,7 +240,7 @@ not broad deletion. Preserve shared credentials and external services by default
 
 | Action | Required retained state and authority effect |
 | --- | --- |
-| Disable remote storage | Verified reverse migration of current remote data into a new isolated local instance by default; never activate stale backups or overwrite/merge preserved local stores. |
+| Disable remote storage | Verified reverse migration of current remote data into a new isolated local instance by default; never activate stale backups or overwrite/merge preserved local stores. Preserve dataset identity only through a global cutover that durably retires the remote source for every client; a per-client local copy gets a new dataset identity and is labeled a fork. |
 | Export a copy | Preserve remote authority and other clients; label the export as a copy, not a global cutover. |
 | Local-client detach | Stop this client's participation; preserve the shared remote namespace and other clients. |
 | Restore upstream | Verify current-data export with the exact unpatched target before changing executable resolution. |
@@ -256,15 +283,28 @@ and reinstall recovery, and incomplete/conflicting records; no retry may mint a
 second identity or orphan operation-owned staging. Interrupt and restore an
 active remote connection and prove each write surface stays unavailable or
 reconnecting without acquiring local authority.
+Reject attachment before activation for mismatched dataset, namespace,
+generation, authorization scope and reader/writer capability; validate the
+remote transport identity and reject downgrade or an invalid certificate.
 
 #10 must pause an old/stale writer through lease expiry and prove rejection;
-include unobservable SQLite writers. Also prove that a second host holding a
+include unobservable SQLite writers and opposing host clock skew against
+database-consistent expiry. Also prove that a second host holding a
 retired selection cannot list, resume or build model input from stale history,
 and that lost/corrupt active selection never reactivates preserved SQLite data.
 #11–#15 must cover equal-count corruption,
 missing references, late queue commits, repeated/uncertain append, every durable
 cutover boundary, new remote writes before reverse migration and a second host
 with no source files. No acknowledged canonical data may disappear or duplicate.
+Compare representative pre-cutover SQLite outbound model input to post-cutover
+PostgreSQL input, including fork-only and compaction items. Exercise exact-limit
+and oversized/chunked rows, keys, cells and chunks; preserve Unicode, timestamp,
+numeric and floating-point values exactly under reviewed domain rules. Include
+deleted high IDs and sparse IDs, then insert after migration in every generated-ID
+domain to prove high-water marks and ordering survive.
+Exercise a reverse move with another remote writer: either every host observes
+the retired source before a same-dataset local activation, or a per-client copy
+uses a new dataset identity. Test preserved local destination collisions.
 After plan confirmation, change each bound source, destination occupancy,
 authorization, schema capability and operation scope before cutover; every
 irreversible transition must revalidate and stop on a changed binding.
@@ -278,8 +318,10 @@ then updater resume; activation must fail. Test serialized and interrupted schem
 upgrades, mixed old/new writers, and exact old-binary rollback against the
 post-upgrade schema, rejecting incompatible binaries. For upstream restore,
 compare resumed outbound model input for fork-only and compaction history, not
-just list/resume success. #18 must run the complete combined journey, not
-substitute tool fixtures.
+just list/resume success. Test backup restore/clone against a newer epoch, a
+lagging same-generation replica and failover, `thread/resume.path` compatibility,
+staging cleanup/retention and secret-bearing export access. #18 must run the
+complete combined journey, not substitute tool fixtures.
 
 These are required future cases, not executed results. Independent architecture,
 security, API and lifecycle review is outstanding. Issue #2 remains open until
