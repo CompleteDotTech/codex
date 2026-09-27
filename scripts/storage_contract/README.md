@@ -74,11 +74,13 @@ They are **not** real Codex SQLite schemas, compressed rollouts, fork projection
 installation receipts, or a completed table/producer/consumer audit. Fixture labels
 must not be interpreted as completed source-domain support.
 
-The additional `fixtures/` SQL assets now exercise the two queue migrations and
-the independent board schema at the pinned source commit. They cover **two of
-eight** SQLite stores at the schema/SQL level. Stored public-protocol payloads
-remain synthetic; Codex consumers, Rust/SQLx, PostgreSQL and the other six stores
-are not qualified by these tests.
+The additional `fixtures/` SQL assets exercise the goals, logs, both memory
+generations, queue, thread-history projection, and independent board schemas at
+the pinned source commit. They cover **seven of eight** SQLite stores at the
+schema/SQL level; the primary state store is not included. Stored public-protocol
+payloads remain synthetic. SQLx bookkeeping, Codex consumers, PostgreSQL, and
+canonical history and artifacts are not qualified by these tests. See
+`SOURCE_CATALOG.md` for the exact coverage and exclusions.
 
 `migrate`, `regenerate`, `retain`, and `absent` are distinct treatments. Only
 `migrate` contributes verified record counts. Non-migrated entries cannot carry

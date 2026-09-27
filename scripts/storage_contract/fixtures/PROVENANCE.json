@@ -64,7 +64,56 @@
       "source_blob": "ec84e3a127e931b5b6f22fdadd80cc1632d0122f",
       "representation": "entire_file",
       "sha256": "fa423fb8dd2bd571a605cd7160e7041be954feb5cbe876069db1d818ef26565b"
+    },
+    {
+      "file": "history_0001.sql",
+      "source_path": "codex-rs/state/thread_history_migrations/0001_thread_history.sql",
+      "source_blob": "8de55dde198160542ca3133649d2dbea647b5e4c",
+      "representation": "entire_file",
+      "sha256": "9e92130a3cefcaa4e8350241f4b92e9433314560ade6dc78a8cecf9e5c17f2a6"
+    },
+    {
+      "file": "history_0002.sql",
+      "source_path": "codex-rs/state/thread_history_migrations/0002_thread_items_item_type.sql",
+      "source_blob": "b29b90bdc3323efba2a1408e1377fd81f4812880",
+      "representation": "entire_file",
+      "sha256": "b37fded911e7d25cbc8ac4a94769da03f2e5fd2d37a89d2532331ade87a87e72"
+    },
+    {
+      "file": "history_0003.sql",
+      "source_path": "codex-rs/state/thread_history_migrations/0003_turn_rollout_positions.sql",
+      "source_blob": "3cab073486f1c2dfbe88556c1992b122dbe4644c",
+      "representation": "entire_file",
+      "sha256": "1792f54f33eaec73ff38cbe747de79a4ded4b1260f214e989513ccf393b2887f"
+    },
+    {
+      "file": "history_0004.sql",
+      "source_path": "codex-rs/state/thread_history_migrations/0004_thread_items_updated_at_ordinal.sql",
+      "source_blob": "30629325f8aac21c0998868a3863e3a8729d2df3",
+      "representation": "entire_file",
+      "sha256": "1355c4963de77bb2b8d446b8222030ce7f646266a7183111d5355741d1104ef2"
+    },
+    {
+      "file": "history_0005.sql",
+      "source_path": "codex-rs/state/thread_history_migrations/0005_thread_realtime_items.sql",
+      "source_blob": "9c850436517d8f5cb1d179e8bd53d1e941ed42a6",
+      "representation": "entire_file",
+      "sha256": "200c252782919aa5cb867bcc9c83ae3baefe706bd84473d867e7874b2a8e5387"
+    },
+    {
+      "file": "history_0006.sql",
+      "source_path": "codex-rs/state/thread_history_migrations/0006_thread_turn_ends.sql",
+      "source_blob": "b6c6ddd738d5818c4b3bc890f9c1b8aa20468dca",
+      "representation": "entire_file",
+      "sha256": "12c8cbcd0a258a42cd05aa7d925568aee6c691312e0507f67ff1edea77dc1982"
+    },
+    {
+      "file": "history_0007.sql",
+      "source_path": "codex-rs/state/thread_history_migrations/0007_thread_item_lifecycle_timestamps.sql",
+      "source_blob": "6fe293575b3102a2950c084e6ff561e81dafd67b",
+      "representation": "entire_file",
+      "sha256": "2e346fdea5fbfcdba6ebeb0f244f64eafcda891bc023331a8e18d71569b38518"
     }
   ],
-  "scope": "Source SQL fixtures for board, goals, logs, memory, queue. Not runtime qualification."
+  "scope": "Source SQL for seven of eight database files (queue, board, goals, logs, both memory generations, thread-history projections). No primary-state, SQLx bookkeeping, cross-store capture or public-consumer coverage is claimed."
 }
