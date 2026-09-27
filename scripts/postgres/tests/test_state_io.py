@@ -64,10 +64,11 @@ class StateIoTests(unittest.TestCase):
         file = self.home / "receipt.json"
         state.publish_json(file, {"old": True})
         before = file.read_bytes()
-        with patch("state_io.os.replace", side_effect=OSError("disk failure")):
+        with patch("state_io.replace_file", side_effect=OSError("disk failure")):
             with self.assertRaises(OSError):
                 state.publish_json(file, {"new": True})
         self.assertEqual(file.read_bytes(), before)
+        self.assertEqual(list(self.home.glob("*.pending-*")), [])
 
     def test_oversized_receipt_is_rejected_before_writing(self):
         file = self.home / "receipt.json"
@@ -104,3 +105,58 @@ class StateIoTests(unittest.TestCase):
         target.symlink_to(self.home, target_is_directory=True)
         with self.assertRaisesRegex(state.ServiceError, "symlink_state_path"):
             state.state_path(str(target))
+
+    def test_deleted_marker_cannot_admit_another_process_before_release(self):
+        code = """
+import sys
+from pathlib import Path
+from state import ServiceError, operation_lock
+try:
+    with operation_lock(Path(sys.argv[1])):
+        raise SystemExit(1)
+except ServiceError as exc:
+    raise SystemExit(0 if str(exc).startswith('operation_locked') else 2)
+"""
+        with self.assertRaisesRegex(state.ServiceError, "lock_ownership_changed"):
+            with state.operation_lock(self.home):
+                (self.home / ".operation.lock").unlink()
+                env = dict(os.environ, PYTHONPATH=str(Path(state.__file__).parent))
+                result = subprocess.run(
+                    [sys.executable, "-c", code, str(self.home)],
+                    env=env,
+                    capture_output=True,
+                    timeout=10,
+                )
+                self.assertEqual((result.returncode, result.stderr), (0, b""))
+        self.assertTrue((self.home / ".operation.guard").is_file())
+        with state.operation_lock(self.home):
+            self.assertTrue((self.home / ".operation.lock").is_file())
+
+    def test_source_directory_identity_is_checked(self):
+        target = self.home / "new-state"
+        actual_samefile = Path.samefile
+        source_root = Path(state.__file__).resolve().parents[2]
+
+        def filesystem_identity(path, other):
+            if path == self.home and other == source_root:
+                return True
+            return actual_samefile(path, other)
+
+        with patch.object(Path, "samefile", filesystem_identity):
+            with self.assertRaisesRegex(state.ServiceError, "outside_source"):
+                state.state_path(str(target))
+
+    @unittest.skipUnless(os.name == "nt", "native Windows junction")
+    def test_junction_ancestor_is_rejected_without_traversal(self):
+        target = self.home / "target"
+        target.mkdir()
+        junction = self.home / "junction"
+        result = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+            capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.addCleanup(junction.rmdir)
+        with self.assertRaisesRegex(state.ServiceError, "symlink_state_path"):
+            state.state_path(str(junction / "new-state"))
+        self.assertEqual(list(target.iterdir()), [])
