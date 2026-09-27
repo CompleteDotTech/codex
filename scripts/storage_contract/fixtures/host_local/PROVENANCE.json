@@ -1,0 +1,39 @@
+{
+  "fixture_version": 1,
+  "scope": "five-source-SQL-assets; deliberately incomplete mixed subset, not a full primary database or migration prefix",
+  "source_commit": "395c622d693cf8ec1c4769cf71bc4a949da3e017",
+  "migration_tree": "f946e151baedebc16c43b6e1ae62887dde3885a2",
+  "full_tree_authenticated_by_this_fixture": false,
+  "assets": {
+    "0001_threads.sql": {
+      "source_path": "codex-rs/state/migrations/0001_threads.sql",
+      "git_blob": "7063ce11a45be508749bfe70de23bc64ac2a03d0",
+      "sha256": "7a89ab37ba540b92781868aec12e7dc0a49eeb9a4b81125236e500534b012758",
+      "bytes": 863
+    },
+    "0024_remote_control_enrollments.sql": {
+      "source_path": "codex-rs/state/migrations/0024_remote_control_enrollments.sql",
+      "git_blob": "970db9ef201072387e87e063ff7e7731342f83e8",
+      "sha256": "26fa628fb73b652e9604bf0fc16f699e15bc2d052e4f27991125a56c32d1a0dc",
+      "bytes": 345
+    },
+    "0037_remote_control_enrollments_enabled.sql": {
+      "source_path": "codex-rs/state/migrations/0037_remote_control_enrollments_enabled.sql",
+      "git_blob": "abb422384ea578892ff9875c356f43f787b752d1",
+      "sha256": "cbc61642c572386a2763c3c3cc7b8be64bf57f016200289b405ab90d0c21efc0",
+      "bytes": 82
+    },
+    "0038_external_agent_config_imports.sql": {
+      "source_path": "codex-rs/state/migrations/0038_external_agent_config_imports.sql",
+      "git_blob": "74ae0435f83536a17abf24b663d3be9264aebd2c",
+      "sha256": "737105af23231e0d02cc39da6a04477ff459828cdbc40722100fb45ad272fc1f",
+      "bytes": 174
+    },
+    "0044_external_agent_config_imports_provider_id.sql": {
+      "source_path": "codex-rs/state/migrations/0044_external_agent_config_imports_provider_id.sql",
+      "git_blob": "2fc16008a9dcd4d806173d91aaf1fdde24bb9c73",
+      "sha256": "47637b79aa95349402898f6ac01b1a60e00cbeb4acf3a941bee2a7d177592e06",
+      "bytes": 71
+    }
+  }
+}
