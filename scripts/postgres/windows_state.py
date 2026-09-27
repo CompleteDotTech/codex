@@ -32,6 +32,7 @@ open_file = bind(
 file_info = bind(
     kernel32, "GetFileInformationByHandleEx", W.BOOL, W.HANDLE, W.DWORD, P, W.DWORD
 )
+object_info = bind(kernel32, "GetFileInformationByHandle", W.BOOL, W.HANDLE, P)
 seek = bind(
     kernel32, "SetFilePointerEx", W.BOOL, W.HANDLE, ctypes.c_longlong, P, W.DWORD
 )
@@ -42,6 +43,31 @@ set_info = bind(
     kernel32, "SetFileInformationByHandle", W.BOOL, W.HANDLE, W.DWORD, P, W.DWORD
 )
 INVALID_HANDLE = P(-1).value
+
+
+class FileInformation(ctypes.Structure):
+    _fields_ = [
+        ("attributes", W.DWORD),
+        ("creation", W.FILETIME),
+        ("access", W.FILETIME),
+        ("write", W.FILETIME),
+        ("volume", W.DWORD),
+        ("size_high", W.DWORD),
+        ("size_low", W.DWORD),
+        ("links", W.DWORD),
+        ("index_high", W.DWORD),
+        ("index_low", W.DWORD),
+    ]
+
+
+def identity(handle):
+    information = FileInformation()
+    checked(object_info(handle, ctypes.byref(information)))
+    if information.attributes & 0x410 != 0x10 or not (
+        information.index_high or information.index_low
+    ):
+        raise ServiceError("windows_object_identity_unavailable")
+    return information.volume, information.index_high, information.index_low
 
 
 def absolute_path(value):
@@ -62,6 +88,16 @@ class PinnedPaths:
 
     def __init__(self):
         self.handles = {}
+        # Compare native IDs on both sides, independent of Python's stat version,
+        # drive casing, short names, or a network path spelling of the checkout.
+        source = Path(__file__).resolve().parents[2]
+        handle = open_file(str(source), 0x20080, 7, None, 3, 0x02200000, None)
+        if handle == INVALID_HANDLE:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            self.source_identity = identity(handle)
+        finally:
+            close_handle(handle)
 
     def _pin(self, path, directory):
         if path in self.handles:
@@ -90,6 +126,8 @@ class PinnedPaths:
                 directory is not None and is_directory != directory
             ):
                 raise ServiceError("unexpected_or_reparse_windows_state_object")
+            if is_directory and identity(handle) == self.source_identity:
+                raise ServiceError("state_must_be_outside_source_tree")
             self.handles[path] = (handle, is_directory)
             return handle
         except BaseException:
