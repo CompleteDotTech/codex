@@ -193,6 +193,8 @@ administrator must inspect exact ownership before stopping the affected containe
 The operation lock serializes helper commands for one state directory. After a
 crash, inspect `.operation.lock` and confirm its PID/host is no longer active before
 manually removing that **one** stale lock. It is not a cross-host Codex writer fence.
+The separate `.operation.guard` file holds the operating-system lock and is
+persistent; never remove it during marker recovery.
 
 Upgrades require a separately reviewed compatible image and a new qualified state
 or explicit operator migration procedure. Re-running `pin` preserves the existing
