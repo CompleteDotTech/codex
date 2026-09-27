@@ -6,9 +6,9 @@ import json
 import os
 import re
 import secrets
-import stat
 
 from state_io import MAX_RECEIPT_BYTES
+from posix_state import read_private, validate_directory
 from state_tls import validate_server_names
 
 from state_io import ServiceError as ServiceError
@@ -53,6 +53,7 @@ def initialize(path, project, image, port, names, openssl="openssl"):
         return saved
     # Partial initialization is retained and rejected, never regenerated over lost credentials.
     private_directory(path)
+    sync_directory(path.parent)
     with contextlib.ExitStack() as stack:
         scope = None
         if os.name == "nt":
@@ -111,20 +112,17 @@ def load(path):
                 if scope is not None:
                     scope.validate(folder, directory=True)
                 else:
-                    mode = folder.lstat().st_mode
-                    if not stat.S_ISDIR(mode) or mode & 0o077:
-                        raise ServiceError("insecure_state_directory")
+                    validate_directory(folder)
             receipt_file = path / "receipt.json"
             if scope is not None:
                 encoded = scope.read(receipt_file, MAX_RECEIPT_BYTES)
             else:
-                mode = receipt_file.lstat().st_mode
-                if not stat.S_ISREG(mode):
-                    raise ServiceError("invalid_receipt")
-                if mode & 0o077:
-                    raise ServiceError("insecure_receipt_file")
-                with receipt_file.open("rb") as stream:
-                    encoded = stream.read(MAX_RECEIPT_BYTES + 1)
+                encoded = read_private(
+                    receipt_file,
+                    MAX_RECEIPT_BYTES,
+                    invalid_type="invalid_receipt",
+                    insecure_permissions="insecure_receipt_file",
+                )
             if len(encoded) > MAX_RECEIPT_BYTES:
                 raise ServiceError("invalid_receipt")
             receipt = json.loads(encoded)
@@ -155,11 +153,12 @@ def load(path):
                 if scope is not None:
                     content = scope.read(file, 16384)
                 else:
-                    mode = file.lstat().st_mode
-                    if not stat.S_ISREG(mode) or mode & 0o077:
-                        raise ServiceError("insecure_secret_file")
-                    with file.open("rb") as stream:
-                        content = stream.read(16385)
+                    content = read_private(
+                        file,
+                        16384,
+                        invalid_type="insecure_secret_file",
+                        insecure_permissions="insecure_secret_file",
+                    )
                 if (
                     len(content) > 16384
                     or hashlib.sha256(content).hexdigest() != expected
