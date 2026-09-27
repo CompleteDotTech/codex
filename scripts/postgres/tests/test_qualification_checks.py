@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import qualification_checks as checks
-from state import ServiceError, certificate_files, server_names
+from state import ServiceError, certificate_files, private_directory, server_names
 
 
 class QualificationChecksTests(unittest.TestCase):
@@ -151,8 +151,9 @@ class EndpointTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory()
-        cls.home = Path(cls.temp.name)
-        (cls.home / "secrets").mkdir()
+        cls.home = Path(cls.temp.name) / "state"
+        private_directory(cls.home)
+        private_directory(cls.home / "secrets")
         certificate_files(cls.home / "secrets", server_names([]), "openssl")
         subprocess.run(
             [

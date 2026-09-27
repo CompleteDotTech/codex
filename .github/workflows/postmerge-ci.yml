@@ -39,6 +39,10 @@ jobs:
 
   v8-canary:
     name: v8-canary
+    # Reusable jobs cannot request permissions beyond their caller's grant.
+    permissions:
+      contents: read
+      actions: read
     needs: changed
     if: needs.changed.outputs.native == 'true'
     uses: ./.github/workflows/v8-canary.yml

@@ -71,17 +71,31 @@ class WindowsStateTests(unittest.TestCase):
 
     def test_load_checks_native_permissions_without_repair(self):
         target = self.home / "receipt.json"
-        state.run(["icacls", str(target), "/grant", "*S-1-1-0:M"])
+        state.run(["icacls", str(target), "/grant", "*S-1-1-0:M"], discard_output=True)
         with self.assertRaisesRegex(state.ServiceError, "windows_state_permissions"):
             state.load(self.home)
-        state.run(["icacls", str(target), "/remove:g", "*S-1-1-0"])
+        state.run(["icacls", str(target), "/remove:g", "*S-1-1-0"], discard_output=True)
         self.assertEqual(state.load(self.home), self.receipt)
 
     def test_load_fails_closed_when_native_inspection_is_unavailable(self):
         with patch(
-            "state_permissions.run", side_effect=state.ServiceError("command_failed")
+            "windows_state.validate_handle",
+            side_effect=OSError("inspection unavailable"),
         ):
             with self.assertRaisesRegex(
-                state.ServiceError, "unverifiable_windows_state_permissions"
+                state.ServiceError, "incomplete_or_invalid_state"
             ):
                 state.load(self.home)
+
+    def test_load_pins_root_and_receipt_until_consumption_finishes(self):
+        parse = state.json.loads
+
+        def inspect(encoded):
+            with self.assertRaises(PermissionError):
+                self.home.rename(self.home.with_name("moved"))
+            with self.assertRaises(PermissionError):
+                (self.home / "receipt.json").write_bytes(b"replacement")
+            return parse(encoded)
+
+        with patch("state.json.loads", side_effect=inspect):
+            self.assertEqual(state.load(self.home), self.receipt)
