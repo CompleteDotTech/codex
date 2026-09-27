@@ -38,7 +38,12 @@ class SqlxHistoryTests(unittest.TestCase):
     def setUpClass(cls):
         cls.scripts = {}
         for version, (name, blob) in SOURCE_BLOBS.items():
-            data = (ROOT / "codex-rs/state/migrations" / name).read_bytes()
+            # Git's Windows checkout may write CRLF; the pinned blob uses LF.
+            data = (
+                (ROOT / "codex-rs/state/migrations" / name)
+                .read_bytes()
+                .replace(b"\r\n", b"\n")
+            )
             actual = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data)
             if actual.hexdigest() != blob:
                 raise AssertionError(
