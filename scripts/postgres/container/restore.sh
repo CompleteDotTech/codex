@@ -17,9 +17,15 @@ if ! pg_restore --exit-on-error --no-owner --no-privileges --no-tablespaces \
     echo 'Backup cannot be decoded' >&2; exit 65
 fi
 export PGOPTIONS='-c statement_timeout=0 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=60000'
-if ! psql -X -q --no-password -v ON_ERROR_STOP=1 --single-transaction \
+if ! psql -X -q --no-password -v ON_ERROR_STOP=1 -v VERBOSITY=sqlstate --single-transaction \
     -f /opt/codex-pg/restore-guard.sql -f /tmp/restore.sql \
     -f /opt/codex-pg/restore-access.sql >/tmp/restore-out 2>/tmp/restore-error; then
+    # Only the RESTRICT failure in our guard proves that no archive SQL ran.
+    # The Python wrapper translates this controlled response into a CLI error.
+    if grep -Eq '^psql:/opt/codex-pg/restore-guard.sql:[0-9]+: ERROR:  2BP01$' /tmp/restore-error; then
+        printf '{"error":"restore_destination_not_empty"}\n'
+        exit 0
+    fi
     echo 'Restore did not report success; commit outcome may be uncertain. Inspect destination before retry' >&2
     exit 1
 fi

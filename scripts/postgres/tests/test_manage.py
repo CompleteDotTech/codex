@@ -60,4 +60,4 @@ class ManageTests(unittest.TestCase):
             contextlib.redirect_stdout(output),
         ):
             self.assertEqual(manage.main(["--state", str(self.home), "pin"]), 0)
-        pin.assert_called_once_with(self.home, pinned)
+        pin.assert_called_once_with(self.home.resolve(), pinned)

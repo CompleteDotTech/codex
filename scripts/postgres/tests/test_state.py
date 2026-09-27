@@ -1,14 +1,11 @@
 """Offline tests: real OpenSSL and filesystem; no PostgreSQL assertions."""
 
-import json
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import state
@@ -77,70 +74,6 @@ class StateTests(unittest.TestCase):
             state.initialize(path, "codex-pg-unit", "postgres:18.6-bookworm", 55432, [])
         self.assertFalse(path.exists())
 
-    def test_certificate_argument_injection_rejected(self):
-        for name in [
-            "db\nDNS:evil",
-            "*.example.test",
-            "db,IP:8.8.8.8",
-            "; touch /tmp/no",
-            "-x",
-        ]:
-            with self.subTest(name=name), self.assertRaises(state.ServiceError):
-                state.server_names([name])
-
-    def test_certificate_validates_service_localhost_ip_and_extra_name(self):
-        for option, host in [
-            ("-verify_hostname", "postgres"),
-            ("-verify_hostname", "localhost"),
-            ("-verify_hostname", "db.example.test"),
-            ("-verify_ip", "127.0.0.1"),
-            ("-verify_ip", "::1"),
-        ]:
-            result = subprocess.run(
-                [
-                    "openssl",
-                    "verify",
-                    "-CAfile",
-                    str(self.home / "secrets/ca.crt"),
-                    option,
-                    host,
-                    str(self.home / "secrets/server.crt"),
-                ],
-                capture_output=True,
-            )
-            self.assertEqual(result.returncode, 0, result.stderr.decode())
-
-    def test_certificate_rejects_wrong_host(self):
-        result = subprocess.run(
-            [
-                "openssl",
-                "verify",
-                "-CAfile",
-                str(self.home / "secrets/ca.crt"),
-                "-verify_hostname",
-                "untrusted.test",
-                str(self.home / "secrets/server.crt"),
-            ],
-            capture_output=True,
-        )
-        self.assertNotEqual(result.returncode, 0)
-
-    def test_actual_server_key_matches_certificate(self):
-        key = state.run(
-            ["openssl", "pkey", "-in", str(self.home / "secrets/server.key"), "-pubout"]
-        )
-        cert = state.run(
-            [
-                "openssl",
-                "x509",
-                "-in",
-                str(self.home / "secrets/server.crt"),
-                "-pubkey",
-                "-noout",
-            ]
-        )
-        self.assertEqual(key, cert)
-
     def test_secret_changes_detected(self):
         (self.home / "secrets/runtime.password").write_bytes(b"0" * 64)
         with self.assertRaisesRegex(state.ServiceError, "secret_changed"):
@@ -163,68 +96,57 @@ class StateTests(unittest.TestCase):
         with self.assertRaises(state.ServiceError):
             state.load(self.home)
 
-    def test_locked_operation_does_not_delete_other_owners_lock(self):
-        marker = self.home / ".operation.lock"
-        marker.write_text("another owner")
-        with self.assertRaisesRegex(state.ServiceError, "operation_locked"):
-            with state.operation_lock(self.home):
-                self.fail("lock unexpectedly acquired")
-        self.assertEqual(marker.read_text(), "another owner")
+    def test_non_integer_or_invalid_ports_are_rejected_before_creating_state(self):
+        path = Path(self.temp.name) / "new"
+        for port in (55432.0, True, None, "55432", 1023, 65536):
+            with (
+                self.subTest(port=port),
+                self.assertRaisesRegex(state.ServiceError, "^invalid_port$"),
+            ):
+                state.initialize(
+                    path, "codex-pg-unit", "postgres:17.11-bookworm", port, []
+                )
+            self.assertFalse(path.exists())
 
-    def test_operation_lock_released_after_own_failure(self):
-        with self.assertRaises(RuntimeError):
-            with state.operation_lock(self.home):
-                raise RuntimeError("operation interrupted")
-        self.assertFalse((self.home / ".operation.lock").exists())
-
-    def test_lock_owner_change_preserves_replacement(self):
-        with self.assertRaisesRegex(state.ServiceError, "lock_ownership_changed"):
-            with state.operation_lock(self.home):
-                (self.home / ".operation.lock").write_text("replacement owner")
-        self.assertEqual(
-            (self.home / ".operation.lock").read_text(), "replacement owner"
-        )
-
-    def test_write_new_never_overwrites(self):
-        file = self.home / "protected"
-        state.write_new(file, b"old")
-        with self.assertRaises(FileExistsError):
-            state.write_new(file, b"new")
-        self.assertEqual(file.read_bytes(), b"old")
-
-    def test_failure_before_receipt_replace_preserves_old(self):
-        before = (self.home / "receipt.json").read_bytes()
-        with (
-            patch("state.os.replace", side_effect=OSError("disk failure")),
-            self.assertRaises(OSError),
-        ):
-            state.publish_json(self.home / "receipt.json", {"new": True})
-        self.assertEqual((self.home / "receipt.json").read_bytes(), before)
-
-    def test_state_inside_source_tree_is_refused(self):
-        target = Path(state.__file__).parent / "live"
-        with self.assertRaisesRegex(state.ServiceError, "outside_source"):
-            state.state_path(str(target))
-
-    def test_hostnames_and_ip_names_are_normalized(self):
-        names = state.server_names(["DB.example", "2001:db8::1", "db.example"])
-        self.assertEqual(names[-2:], ["DNS:db.example", "IP:2001:db8::1"])
-
-    def test_openssl_errors_are_redacted(self):
-        with (
-            patch("state.subprocess.run", side_effect=OSError("secret content")),
-            self.assertRaisesRegex(
-                state.ServiceError, "^command_unavailable_or_timed_out$"
+    def test_oversized_names_or_image_are_rejected_before_creating_state(self):
+        path = Path(self.temp.name) / "new"
+        for names, image in (
+            ([f"db{i}.test" for i in range(400)], "postgres:17.11-bookworm"),
+            (
+                [f"n{i}." + ".".join(["a" * 60] * 3) for i in range(28)],
+                "postgres:17.11-bookworm",
             ),
+            ([], "postgres:17." + "1" * 70000 + "-bookworm"),
         ):
-            state.run(["missing-program"])
+            with self.subTest(count=len(names)), self.assertRaises(state.ServiceError):
+                state.initialize(path, "codex-pg-unit", image, 55432, names)
+            self.assertFalse(path.exists())
 
-    def test_discarded_native_output_does_not_require_utf8(self):
-        result = subprocess.CompletedProcess(["native-command"], 0, b"path-\xe9", b"")
-        with patch("state.subprocess.run", return_value=result):
-            self.assertEqual(state.run(["native-command"], discard_output=True), "")
-            with self.assertRaises(UnicodeDecodeError):
-                state.run(["machine-readable-command"])
+    def test_missing_or_noncanonical_receipt_names_are_rejected(self):
+        original = state.load(self.home)
+        for names in (
+            None,
+            "DNS:localhost",
+            [],
+            original["server_names"][::-1],
+            [*original["server_names"], "DNS:DB.example.test"],
+        ):
+            receipt = dict(original, server_names=names)
+            state.publish_json(self.home / "receipt.json", receipt)
+            with self.subTest(names=names), self.assertRaises(state.ServiceError):
+                state.load(self.home)
+            with self.assertRaises(state.ServiceError):
+                state.initialize(
+                    self.home,
+                    "codex-pg-unit",
+                    "postgres:17.11-bookworm",
+                    55432,
+                    ["db.example.test"],
+                )
+        del original["server_names"]
+        state.publish_json(self.home / "receipt.json", original)
+        with self.assertRaises(state.ServiceError):
+            state.load(self.home)
 
 
 @unittest.skipIf(

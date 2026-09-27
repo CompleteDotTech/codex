@@ -8,7 +8,8 @@ import secrets
 import sys
 
 from docker_ops import compose, engine, ensure_volume, inspect_owned, pin, restore
-from state import ServiceError, initialize, load, operation_lock, run, state_path
+from certificates import check_expiry, renew
+from state import ServiceError, initialize, load, operation_lock, state_path
 
 
 class Parser(argparse.ArgumentParser):
@@ -33,6 +34,9 @@ def main(argv=None):
     init.add_argument("--openssl", default="openssl")
     for action in ("pin", "config", "up", "status", "stop", "down", "backup", "smoke"):
         sub.add_parser(action)
+    sub.add_parser(
+        "renew-certificate", help="Renew the leaf certificate; run up to activate it"
+    )
     recovery = sub.add_parser(
         "restore", help="Trusted schema backup into an empty destination only"
     )
@@ -58,7 +62,10 @@ def main(argv=None):
         else:
             with operation_lock(path):
                 receipt = load(path)
-                if args.action == "pin":
+                if args.action == "renew-certificate":
+                    renew(path, receipt)
+                    result = {"certificate_renewed": True, "run_up_to_activate": True}
+                elif args.action == "pin":
                     receipt = pin(path, receipt)
                     result = {
                         "image_pinned": True,
@@ -68,17 +75,7 @@ def main(argv=None):
                     engine(receipt)
                     inspect_owned(receipt)
                     if args.action == "up":
-                        run(
-                            [
-                                "openssl",
-                                "x509",
-                                "-checkend",
-                                "604800",
-                                "-noout",
-                                "-in",
-                                str(path / "secrets/server.crt"),
-                            ]
-                        )
+                        check_expiry(path, receipt)
                         ensure_volume(receipt)
                     if args.action == "restore":
                         result = restore(

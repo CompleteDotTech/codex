@@ -74,6 +74,8 @@ services:
     labels:
       com.completedottech.codex.pg.instance: ${CODEX_PG_INSTANCE}
       com.completedottech.codex.pg.capability: infrastructure-only
+      # Include the selected leaf in the service config so up recreates it on renewal.
+      com.completedottech.codex.pg.certificate: ${CODEX_PG_SERVER_CERT}
 
   backup:
     <<: *client
@@ -119,5 +121,5 @@ secrets:
   migrator: {file: "${CODEX_PG_STATE}/secrets/migrator.password"}
   backup: {file: "${CODEX_PG_STATE}/secrets/backup.password"}
   server_key: {file: "${CODEX_PG_STATE}/secrets/server.key"}
-  server_cert: {file: "${CODEX_PG_STATE}/secrets/server.crt"}
+  server_cert: {file: "${CODEX_PG_SERVER_CERT:?Missing active certificate}"}
   ca_cert: {file: "${CODEX_PG_STATE}/secrets/ca.crt"}
