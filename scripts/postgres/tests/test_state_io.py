@@ -17,7 +17,7 @@ class StateIoTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.home = Path(self.temp.name)
+        self.home = Path(self.temp.name).resolve()
 
     def test_locked_operation_does_not_delete_other_owners_lock(self):
         marker = self.home / ".operation.lock"
@@ -64,7 +64,8 @@ class StateIoTests(unittest.TestCase):
         file = self.home / "receipt.json"
         state.publish_json(file, {"old": True})
         before = file.read_bytes()
-        with patch("state_io.replace_file", side_effect=OSError("disk failure")):
+        target = "state_io.replace_file" if os.name == "nt" else "posix_io.os.replace"
+        with patch(target, side_effect=OSError("disk failure")):
             with self.assertRaises(OSError):
                 state.publish_json(file, {"new": True})
         self.assertEqual(file.read_bytes(), before)
@@ -157,7 +158,22 @@ except ServiceError as exc:
                 return True
             return actual_samefile(path, other)
 
-        with patch.object(Path, "samefile", filesystem_identity):
+        context = patch.object(Path, "samefile", filesystem_identity)
+        if os.name != "nt":
+            original_stat = os.fstat
+            source = source_root.stat()
+            home = self.home.stat()
+
+            def pinned_identity(descriptor):
+                metadata = original_stat(descriptor)
+                if (metadata.st_dev, metadata.st_ino) == (home.st_dev, home.st_ino):
+                    values = list(metadata)
+                    values[1:3] = source.st_ino, source.st_dev
+                    return os.stat_result(values)
+                return metadata
+
+            context = patch("posix_io.os.fstat", side_effect=pinned_identity)
+        with context:
             with self.assertRaisesRegex(state.ServiceError, "outside_source"):
                 state.state_path(str(target))
 
