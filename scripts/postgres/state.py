@@ -57,16 +57,24 @@ def initialize(path, project, image, port, names, openssl="openssl"):
         raise ServiceError("invalid_port")
     sans = server_names(names)
     if path.exists():
-        saved = load(path)
-        expected = (project, image, port, sans)
-        if (
-            saved["project"],
-            saved["image_tag"],
-            saved["port"],
-            saved["server_names"],
-        ) != expected:
-            raise ServiceError("existing_state_conflict")
-        return saved
+        with operation_lock(path):
+            saved = load(path)
+            expected = (project, image, port, sans)
+            if (
+                saved["project"],
+                saved["image_tag"],
+                saved["port"],
+                saved["server_names"],
+            ) != expected:
+                raise ServiceError("existing_state_conflict")
+            if "openssl" not in saved:
+                try:
+                    program = resolve_program(openssl)
+                except ServiceError:
+                    raise ServiceError("openssl_unavailable") from None
+                saved = dict(saved, openssl=program)
+                publish_json(path / "receipt.json", saved)
+            return saved
     try:
         openssl = resolve_program(openssl)
     except ServiceError:
@@ -144,7 +152,7 @@ def load(path):
             receipt = json.loads(encoded)
             if (
                 type(receipt["format"]) is not int
-                or receipt["format"] != 1
+                or receipt["format"] not in (1, 2)
                 or not re.fullmatch(r"[a-f0-9]{32}", receipt["instance"])
                 or not re.fullmatch(
                     r"codex-pg-[a-z0-9][a-z0-9-]{0,39}", receipt["project"]

@@ -7,7 +7,15 @@ from pathlib import Path
 import secrets
 import sys
 
-from docker_ops import compose, engine, ensure_volume, inspect_owned, pin, restore
+from docker_ops import (
+    compose,
+    engine,
+    ensure_volume,
+    inspect_owned,
+    pin,
+    restore,
+    validate_restore_archive,
+)
 from certificates import check_expiry, renew
 from state import ServiceError, initialize, load, operation_lock, state_path
 
@@ -74,6 +82,10 @@ def main(argv=None):
                 else:
                     engine(receipt)
                     inspect_owned(receipt)
+                    if args.action == "restore":
+                        validate_restore_archive(
+                            args.archive, args.sha256, args.confirm_empty_destination
+                        )
                     if args.action in ("up", "restore"):
                         check_expiry(path, receipt)
                         ensure_volume(receipt)
