@@ -80,7 +80,6 @@ mod resume_shutdown_tests;
 mod safety_buffering;
 #[path = "tests/session_lifecycle_requests.rs"]
 mod session_lifecycle_requests;
-mod session_summary;
 mod startup;
 #[path = "tests/startup_frame_tests.rs"]
 mod startup_frame_tests;
@@ -630,7 +629,6 @@ async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach()
             turns: Vec::new(),
             blocks_direct_input: false,
             task_tools_available: false,
-            reasoning_summary: None,
         },
         session_lifecycle::ThreadAttachPresentation::SessionLineage,
         /*initial_user_message*/ None,
@@ -5307,7 +5305,6 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
             turns: Vec::new(),
             blocks_direct_input: false,
             task_tools_available: false,
-            reasoning_summary: None,
         },
         &mut child_snapshot,
     )
@@ -6018,7 +6015,6 @@ async fn make_test_app() -> Box<App> {
         background_voice: None,
         background_voice_error: None,
         temporary_structured_requests: HashMap::new(),
-        hidden_prompt_threads: VecDeque::new(),
         pending_thread_titles: HashMap::new(),
         thread_event_listener_tasks: HashMap::new(),
         agent_navigation: AgentNavigationState::default(),
@@ -6134,7 +6130,6 @@ pub(super) async fn make_test_app_with_channels() -> (
             background_voice: None,
             background_voice_error: None,
             temporary_structured_requests: HashMap::new(),
-            hidden_prompt_threads: VecDeque::new(),
             pending_thread_titles: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
@@ -6463,7 +6458,6 @@ async fn app_server_thread_replacement_clears_previous_transcript_before_replay(
             )],
             blocks_direct_input: false,
             task_tools_available: false,
-            reasoning_summary: None,
         },
         session_lifecycle::ThreadAttachPresentation::SessionLineage,
         /*initial_user_message*/ None,
@@ -8830,7 +8824,6 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
             turns: resumed_turns.clone(),
             blocks_direct_input: true,
             task_tools_available: false,
-            reasoning_summary: None,
         },
         &mut snapshot,
     )

@@ -25,6 +25,7 @@ use codex_config::ResidencyRequirement;
 use codex_config::SandboxModeRequirement;
 use codex_config::Sourced;
 use codex_config::ThreadConfigLoader;
+use codex_config::config_toml::CircuitBreakAction;
 use codex_config::config_toml::ConfigToml;
 use codex_config::config_toml::DEFAULT_PROJECT_DOC_MAX_BYTES;
 use codex_config::config_toml::ProjectConfig;
@@ -703,6 +704,9 @@ pub struct Config {
     /// placeholder when a review session is built.
     pub guardian_policy_template: Option<String>,
 
+    /// Include a structured error when Guardian's circuit breaker interrupts a turn.
+    pub guardian_circuit_break_action: CircuitBreakAction,
+
     /// Whether to inject the `<permissions instructions>` developer block.
     pub include_permissions_instructions: bool,
 
@@ -772,9 +776,6 @@ pub struct Config {
 
     /// Generate automatic TUI recaps. Manual `/recap` remains available when disabled.
     pub tui_auto_recap: bool,
-
-    /// Generate suggested next messages in the TUI composer.
-    pub tui_prompt_suggestions: bool,
 
     /// Persisted startup availability NUX state for model tooltips.
     pub model_availability_nux: ModelAvailabilityNuxConfig,
@@ -4387,6 +4388,11 @@ impl Config {
             guardian_policy_config,
             guardian_extra_policy,
             guardian_policy_template,
+            guardian_circuit_break_action: cfg
+                .auto_review
+                .as_ref()
+                .and_then(|auto_review| auto_review.circuit_break_action)
+                .unwrap_or_default(),
             model_reasoning_effort: cfg.model_reasoning_effort,
             plan_mode_reasoning_effort: cfg.plan_mode_reasoning_effort,
             model_reasoning_summary: cfg.model_reasoning_summary,
@@ -4475,7 +4481,6 @@ impl Config {
                 .map(|t| t.show_server_version_notice)
                 .unwrap_or(true),
             tui_auto_recap: cfg.tui.as_ref().map(|t| t.auto_recap).unwrap_or(/*default*/ true),
-            tui_prompt_suggestions: cfg.tui.as_ref().is_some_and(|t| t.prompt_suggestions),
             model_availability_nux: cfg
                 .tui
                 .as_ref()

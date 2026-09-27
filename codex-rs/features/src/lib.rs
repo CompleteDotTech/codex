@@ -3,6 +3,7 @@
 //! This crate defines the feature registry plus the logic used to resolve an
 //! effective feature set from config-like inputs.
 
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::Event;
 use codex_protocol::protocol::EventMsg;
 use codex_protocol::protocol::WarningEvent;
@@ -327,6 +328,7 @@ pub enum Feature {
     /// Removed compatibility flag for always-on thread-owned Guardian context.
     GuardianThreadContext,
     /// Reuse encrypted parent compaction when restarting Guardian review sessions.
+    /// When disabled, retain an independent review transcript across parent compaction.
     GuardianReuseParentCompaction,
     /// Include completed node_repl or cua_repl Code Mode responses in Guardian reviews.
     GuardianEnhancedNodeReplTranscripts,
@@ -511,6 +513,11 @@ impl Features {
 
     pub fn enabled(&self, f: Feature) -> bool {
         self.enabled.contains(&f)
+    }
+
+    /// Returns whether persistent execution is enabled for the selected effort.
+    pub fn persistent_execution_enabled(&self, reasoning_effort: Option<&ReasoningEffort>) -> bool {
+        reasoning_effort == Some(&ReasoningEffort::Persistent)
     }
 
     pub fn apps_enabled_for_auth(&self, has_chatgpt_auth: bool) -> bool {
