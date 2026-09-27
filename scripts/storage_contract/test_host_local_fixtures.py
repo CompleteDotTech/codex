@@ -15,6 +15,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
+from . import sqlite_snapshot
 from .records import ContractError, encode_row
 from .sqlite_snapshot import audit_snapshot
 
@@ -222,8 +223,8 @@ class HostLocalFixtureTests(unittest.TestCase):
                 self.assertEqual(trusted_fixture_policy(), self.policy)
 
     def test_host_values_never_enter_typed_row_encoding(self):
-        with mock.patch(
-            "storage_contract.sqlite_snapshot.encode_row", wraps=encode_row
+        with mock.patch.object(
+            sqlite_snapshot, "encode_row", wraps=encode_row
         ) as encoder:
             self.audit()
         encoded_arguments = repr(encoder.call_args_list)
