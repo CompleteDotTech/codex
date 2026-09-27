@@ -48,6 +48,7 @@ def absolute_path(value):
     path = Path(value)
     if (
         not path.is_absolute()
+        or "\0" in str(path)
         or str(path).startswith(("\\\\?\\", "\\\\.\\"))
         or ".." in path.parts
         or any(":" in part for part in path.parts[1:])
