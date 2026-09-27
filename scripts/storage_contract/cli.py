@@ -2,12 +2,11 @@
 
 import argparse
 import json
-import os
-import stat
 from contextlib import ExitStack
 
+from .inputs import open_regular_input
 from .manifest import MAX_MANIFEST_BYTES, MAX_TOTAL_BYTES, verify
-from .records import ContractError, require
+from .records import ContractError
 
 
 class _Parser(argparse.ArgumentParser):
@@ -41,21 +40,7 @@ def main(argv=None) -> int:
                 (args.inventory, MAX_MANIFEST_BYTES),
                 (args.payload, MAX_TOTAL_BYTES),
             ):
-                flags = (
-                    os.O_RDONLY
-                    | getattr(os, "O_BINARY", 0)
-                    | getattr(os, "O_NONBLOCK", 0)
-                )
-                fd = os.open(path, flags)
-                try:
-                    metadata = os.fstat(fd)
-                    require(stat.S_ISREG(metadata.st_mode), "input_not_regular_file")
-                    require(metadata.st_size <= maximum, "input_too_large")
-                    stream = os.fdopen(fd, "rb")
-                except BaseException:
-                    os.close(fd)
-                    raise
-                streams.append(stack.enter_context(stream))
+                streams.append(stack.enter_context(open_regular_input(path, maximum)))
             manifest, inventory, payload = streams
             report = verify(
                 manifest.read(MAX_MANIFEST_BYTES + 1),

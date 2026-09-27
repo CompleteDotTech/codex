@@ -14,7 +14,9 @@ always includes `"activation_permitted": false`.
 - `records.py`: typed canonical JSONL records and ordered logical fingerprints.
 - `manifest.py`: strict manifest validation and bounded streaming verification.
 - `cli.py` and `../verify_storage_bundle.py`: read-only, payload-free CLI diagnostics.
-- `test_*.py`: synthetic record, bundle, malformed-input, and subprocess tests.
+- `sqlite_snapshot.py` and `../audit_sqlite_snapshot.py`: independently authenticated
+  SQLite backup auditing; see `SQLITE_AUDIT.md` for its separate scope and limits.
+- `test_*.py`: synthetic bundle tests and disposable SQLite/process-boundary tests.
 
 No third-party Python packages are required. Source syntax targets the enclosing
 `scripts/pyproject.toml` minimum of Python 3.10. Executed runtime/platform results
@@ -66,11 +68,17 @@ triples. Its contents must come from the eventual reviewed source inventory/capt
 An exporter cannot silently delete a domain, add an unclassified domain, or change
 `migrate` to `retain` without rejection against that independent inventory.
 
-The synthetic fixtures name all eight database store categories, several rollout
+The synthetic record/bundle fixtures name all eight database store categories, several rollout
 forms, artifacts, a rebuildable session index, and retained host/lifecycle categories.
 They are **not** real Codex SQLite schemas, compressed rollouts, fork projections,
 installation receipts, or a completed table/producer/consumer audit. Fixture labels
 must not be interpreted as completed source-domain support.
+
+The additional `fixtures/` SQL assets now exercise the two queue migrations and
+the independent board schema at the pinned source commit. They cover **two of
+eight** SQLite stores at the schema/SQL level. Stored public-protocol payloads
+remain synthetic; Codex consumers, Rust/SQLx, PostgreSQL and the other six stores
+are not qualified by these tests.
 
 `migrate`, `regenerate`, `retain`, and `absent` are distinct treatments. Only
 `migrate` contributes verified record counts. Non-migrated entries cannot carry
