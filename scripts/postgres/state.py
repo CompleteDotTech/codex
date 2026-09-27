@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 
+from programs import resolve_program
 from state_io import MAX_RECEIPT_BYTES
 from posix_state import validate_directory
 from posix_io import read_private
@@ -56,8 +57,8 @@ def initialize(path, project, image, port, names, openssl="openssl"):
         raise ServiceError("invalid_port")
     sans = server_names(names)
     if path.exists():
-        saved = load(path)
         expected = (project, image, port, sans)
+        saved = load(path)
         if (
             saved["project"],
             saved["image_tag"],
@@ -65,7 +66,29 @@ def initialize(path, project, image, port, names, openssl="openssl"):
             saved["server_names"],
         ) != expected:
             raise ServiceError("existing_state_conflict")
-        return saved
+        if "openssl" in saved:
+            return saved
+        with operation_lock(path):
+            saved = load(path)
+            if (
+                saved["project"],
+                saved["image_tag"],
+                saved["port"],
+                saved["server_names"],
+            ) != expected:
+                raise ServiceError("existing_state_conflict")
+            if "openssl" not in saved:
+                try:
+                    program = resolve_program(openssl)
+                except ServiceError:
+                    raise ServiceError("openssl_unavailable") from None
+                saved = dict(saved, openssl=program)
+                publish_json(path / "receipt.json", saved)
+            return saved
+    try:
+        openssl = resolve_program(openssl)
+    except ServiceError:
+        raise ServiceError("openssl_unavailable") from None
     # Partial initialization is retained and rejected, never regenerated over lost credentials.
     private_directory(path)
     sync_directory(path.parent)
@@ -92,6 +115,7 @@ def initialize(path, project, image, port, names, openssl="openssl"):
             "port": port,
             "volume": project + "-pgdata",
             "server_names": sans,
+            "openssl": openssl,
             "file_hashes": {
                 name: hashlib.sha256(
                     scope.read(path / "secrets" / name, 16384)
@@ -138,7 +162,7 @@ def load(path):
             receipt = json.loads(encoded)
             if (
                 type(receipt["format"]) is not int
-                or receipt["format"] != 1
+                or receipt["format"] not in (1, 2)
                 or not re.fullmatch(r"[a-f0-9]{32}", receipt["instance"])
                 or not re.fullmatch(
                     r"codex-pg-[a-z0-9][a-z0-9-]{0,39}", receipt["project"]
@@ -179,6 +203,10 @@ def load(path):
                 r"postgres@sha256:[a-f0-9]{64}", digest
             ):
                 raise ServiceError("invalid_image_digest")
+            from certificates import certificate_path, openssl_program
+
+            certificate_path(path, receipt)
+            openssl_program(receipt)
     except (OSError, ValueError, KeyError, TypeError):
         raise ServiceError("incomplete_or_invalid_state") from None
     return receipt
