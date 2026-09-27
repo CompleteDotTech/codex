@@ -117,10 +117,18 @@ def main() -> None:
         base, paths = changed_paths(base, head, os.environ.get("EVENT_NAME", ""))
         v8_workflow_change = None
         if V8_WORKFLOW in paths:
-            v8_workflow_change = tuple(
-                subprocess.check_output(["git", "show", f"{revision}:{V8_WORKFLOW}"])
-                for revision in (base, head)
-            )
+            try:
+                v8_workflow_change = tuple(
+                    subprocess.check_output(
+                        ["git", "show", f"{revision}:{V8_WORKFLOW}"],
+                        stderr=subprocess.PIPE,
+                    )
+                    for revision in (base, head)
+                )
+            except subprocess.CalledProcessError:
+                # Added/deleted/renamed workflows cannot use the guard exception.
+                # If either blob is unavailable, retain the full native checks.
+                v8_workflow_change = None
         native = requires_native_checks(paths, v8_workflow_change=v8_workflow_change)
     if args.storage_only:
         raise SystemExit(1 if native else 0)

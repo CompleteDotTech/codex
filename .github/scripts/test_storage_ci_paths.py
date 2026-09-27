@@ -1,7 +1,9 @@
 """Check route selection and fail-closed aggregation for storage-tool changes."""
 
 from pathlib import Path
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -14,6 +16,59 @@ from storage_ci_paths import V8_WORKFLOW
 
 
 class StorageCiPathsTests(unittest.TestCase):
+    def test_missing_v8_blobs_select_native_for_add_delete_and_rename(self):
+        script = Path(__file__).with_name("storage_ci_paths.py").resolve()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def git(*args):
+                return subprocess.check_output(
+                    ["git", "-c", "commit.gpgsign=false", *args],
+                    cwd=root,
+                    text=True,
+                    stderr=subprocess.PIPE,
+                ).strip()
+
+            git("init", "--initial-branch=main")
+            git("config", "user.name", "CI fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            git("commit", "--allow-empty", "-m", "initial")
+            initial = git("rev-parse", "HEAD")
+            workflow = root / V8_WORKFLOW
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text("name: v8\n", encoding="utf-8")
+            git("add", V8_WORKFLOW)
+            git("commit", "-m", "add V8 workflow")
+            added = git("rev-parse", "HEAD")
+            git("mv", V8_WORKFLOW, ".github/workflows/renamed.yml")
+            git("commit", "-m", "rename V8 workflow")
+            renamed = git("rev-parse", "HEAD")
+            git("switch", "--detach", added)
+            git("rm", V8_WORKFLOW)
+            git("commit", "-m", "delete V8 workflow")
+            deleted = git("rev-parse", "HEAD")
+
+            for base, head in ((initial, added), (added, renamed), (added, deleted)):
+                for event in ("pull_request", "push"):
+                    with self.subTest(base=base, head=head, event=event):
+                        output = root / "github-output"
+                        output.write_text("", encoding="utf-8")
+                        env = os.environ | {
+                            "BASE_SHA": base,
+                            "HEAD_SHA": head,
+                            "EVENT_NAME": event,
+                            "GITHUB_OUTPUT": str(output),
+                        }
+                        result = subprocess.run(
+                            [sys.executable, str(script)],
+                            cwd=root,
+                            env=env,
+                            capture_output=True,
+                            text=True,
+                        )
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(output.read_text(), "native=true\n")
+
     def test_pr_ignores_base_only_rust_changes_but_push_uses_exact_endpoints(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
