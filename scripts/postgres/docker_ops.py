@@ -179,7 +179,7 @@ def restore(path, receipt, archive, expected, confirmed):
     if digest.hexdigest() != expected:
         raise ServiceError("backup_checksum_mismatch")
     try:
-        return compose(
+        output = compose(
             path,
             receipt,
             [
@@ -199,3 +199,6 @@ def restore(path, receipt, archive, expected, confirmed):
     except ServiceError:
         # A disconnected CLI cannot prove that the server rolled back a COMMIT.
         raise ServiceError("restore_outcome_unconfirmed_inspect_destination") from None
+    if output.strip() == '{"error":"restore_destination_not_empty"}':
+        raise ServiceError("restore_destination_not_empty")
+    return output

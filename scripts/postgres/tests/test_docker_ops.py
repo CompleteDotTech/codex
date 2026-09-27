@@ -253,3 +253,15 @@ class DockerTests(unittest.TestCase):
                 ServiceError, "restore_outcome_unconfirmed_inspect_destination"
             ):
                 ops.restore(self.home, self.receipt, file, digest, True)
+
+    def test_confirmed_guard_refusal_has_a_distinct_error(self):
+        file = self.home / "input.dump"
+        file.write_bytes(b"fixture archive")
+        digest = hashlib.sha256(file.read_bytes()).hexdigest()
+        with patch.object(
+            ops, "compose", return_value='{"error":"restore_destination_not_empty"}\n'
+        ):
+            with self.assertRaisesRegex(
+                ServiceError, "^restore_destination_not_empty$"
+            ):
+                ops.restore(self.home, self.receipt, file, digest, True)
