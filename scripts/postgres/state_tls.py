@@ -9,6 +9,7 @@ import shutil
 
 from state_io import ServiceError, run, sync_directory, write_new
 from state_permissions import private_directory
+from posix_io import read_private
 
 MAX_SERVER_NAMES = 32
 MAX_SAN_BYTES = 4096
@@ -86,7 +87,12 @@ def certificate_files(directory, names, openssl):
                 contents = {
                     name: scope.read(staged / name, 16384)
                     if scope is not None
-                    else (staged / name).read_bytes()
+                    else read_private(
+                        staged / name,
+                        16384,
+                        invalid_type="insecure_certificate_file",
+                        insecure_permissions="insecure_certificate_file",
+                    )
                     for name in outputs
                 }
                 if any(len(data) > 16384 for data in contents.values()):
