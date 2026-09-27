@@ -17,7 +17,7 @@ class StateIoTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.home = Path(self.temp.name)
+        self.home = Path(self.temp.name).resolve()
 
     def test_locked_operation_does_not_delete_other_owners_lock(self):
         marker = self.home / ".operation.lock"
@@ -64,7 +64,8 @@ class StateIoTests(unittest.TestCase):
         file = self.home / "receipt.json"
         state.publish_json(file, {"old": True})
         before = file.read_bytes()
-        with patch("state_io.replace_file", side_effect=OSError("disk failure")):
+        target = "state_io.replace_file" if os.name == "nt" else "posix_io.os.replace"
+        with patch(target, side_effect=OSError("disk failure")):
             with self.assertRaises(OSError):
                 state.publish_json(file, {"new": True})
         self.assertEqual(file.read_bytes(), before)
