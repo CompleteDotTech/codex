@@ -116,7 +116,7 @@ class StateIoTests(unittest.TestCase):
         with self.assertRaisesRegex(state.ServiceError, "symlink_state_path"):
             state.state_path(str(target))
 
-    def test_deleted_marker_cannot_admit_another_process_before_release(self):
+    def test_removed_lock_artifacts_cannot_admit_another_process(self):
         code = """
 import sys
 from pathlib import Path
@@ -130,6 +130,12 @@ except ServiceError as exc:
         with self.assertRaisesRegex(state.ServiceError, "lock_ownership_changed"):
             with state.operation_lock(self.home):
                 (self.home / ".operation.lock").unlink()
+                guard = self.home / ".operation.guard"
+                if os.name == "nt":
+                    with self.assertRaises(PermissionError):
+                        guard.unlink()
+                else:
+                    guard.unlink(missing_ok=True)
                 env = dict(os.environ, PYTHONPATH=str(Path(state.__file__).parent))
                 result = subprocess.run(
                     [sys.executable, "-c", code, str(self.home)],
@@ -138,7 +144,6 @@ except ServiceError as exc:
                     timeout=10,
                 )
                 self.assertEqual((result.returncode, result.stderr), (0, b""))
-        self.assertTrue((self.home / ".operation.guard").is_file())
         with state.operation_lock(self.home):
             self.assertTrue((self.home / ".operation.lock").is_file())
 
