@@ -1,0 +1,11 @@
+---
+source: tui/src/app/tests/new_session_tests.rs
+expression: normalized
+---
+
+  >_ OpenAI Codex (v<VERSION>)
+     <PROJECT>
+
+  <TAGLINE>
+
+  Tip: <TIP>

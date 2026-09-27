@@ -7,6 +7,78 @@ use crossterm::event::KeyModifiers;
 use pretty_assertions::assert_eq;
 
 #[tokio::test]
+async fn new_session_transition_transcript_snapshot() -> Result<()> {
+    let (mut app, mut events, _ops) = make_test_app_with_channels().await;
+    let home = tempdir()?;
+    app.config.codex_home = home.path().to_path_buf().abs();
+    app.config.sqlite = SqliteConfig::new_for_testing(home.path().abs());
+    let previous_thread_id = ThreadId::new();
+    app.chat_widget
+        .handle_thread_session_quiet(test_thread_session(
+            previous_thread_id,
+            app.config.cwd.to_path_buf(),
+        ));
+    app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
+        token_usage_notification(previous_thread_id, "turn-1", Some(100)),
+    )));
+    while events.try_recv().is_ok() {}
+
+    let (mut server, _requests, proxy) = start_recording_app_server_with_history(
+        &app.config,
+        HistoryCapabilities::Current,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+        crate::app_server_session::ThreadParamsMode::Embedded,
+        LoaderOverrides::default(),
+    )
+    .await?;
+    let mut tui = crate::tui::test_support::make_test_tui()?;
+    app.start_fresh_session(
+        &mut tui,
+        &mut server,
+        /*session_start_source*/ None,
+        /*initial_user_message*/ None,
+        /*new_thread_name*/ None,
+    )
+    .await;
+    let transcript = std::iter::from_fn(|| events.try_recv().ok())
+        .filter_map(|event| match event {
+            AppEvent::InsertHistoryCell(cell) => {
+                Some(lines_to_single_string(&cell.display_lines(/*width*/ 80)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !transcript.is_empty(),
+        "transition should render a new transcript"
+    );
+    let normalized = transcript
+        .replace(&app.config.cwd.display().to_string(), "<PROJECT>")
+        .replace(&previous_thread_id.to_string(), "<PREVIOUS_THREAD>")
+        .replace(CODEX_CLI_VERSION, "<VERSION>");
+    let normalized = normalized
+        .lines()
+        .enumerate()
+        .map(|(index, line)| {
+            if index == 4 && line.starts_with("  ") {
+                "  <TAGLINE>"
+            } else if line.starts_with("  Tip:") {
+                "  Tip: <TIP>"
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    insta::assert_snapshot!("new_session_transition_transcript", normalized);
+    server.shutdown().await?;
+    proxy.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn new_session_preserves_vim_line_yank() -> Result<()> {
     let (mut app, _events, _ops) = make_test_app_with_channels().await;
     let home = tempdir()?;
