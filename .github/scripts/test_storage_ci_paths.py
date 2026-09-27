@@ -114,7 +114,11 @@ class StorageCiPathsTests(unittest.TestCase):
         for paths in (
             ["scripts/storage_contract/manifest.py"],
             ["scripts/postgres/compose.yaml", "scripts/postgres/tests/test_state.py"],
-            ["scripts/audit_sqlite_snapshot.py", "scripts/verify_storage_bundle.py"],
+            [
+                "scripts/audit_sqlite_snapshot.py",
+                "scripts/audit_session_index.py",
+                "scripts/verify_storage_bundle.py",
+            ],
             [".codespellignore"],
             [".github/scripts/verify_cargo_workspace_manifests.py"],
             [
