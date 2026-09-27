@@ -29,7 +29,7 @@ def _windows_program(program, directories, cwd):
         names = (
             [candidate]
             if candidate.suffix
-            else [candidate, candidate.with_suffix(".exe")]
+            else [candidate.with_suffix(".exe"), candidate]
         )
         for name in names:
             try:
