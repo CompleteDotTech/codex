@@ -11,8 +11,7 @@ use tokio::net::TcpListener;
 
 use super::disconnect::serve_reconnect_requests;
 
-#[tokio::test]
-async fn pending_settings_override_saved_draft_after_blank_cache_is_lost() -> Result<()> {
+async fn restore_overview_draft_after_blank_cache_is_lost(stale_pending: bool) -> Result<()> {
     let mut app = make_test_app().await;
     let projects = json!({
         app.config.cwd.display().to_string(): {"trust_level": "trusted"},
@@ -44,6 +43,23 @@ async fn pending_settings_override_saved_draft_after_blank_cache_is_lost() -> Re
     );
     let notification = next_thread_settings_updated(&mut server, thread_id).await;
     input_state.pending_thread_settings = Some(notification.clone());
+    let expected_model = if stale_pending {
+        assert!(
+            server
+                .thread_settings_update(codex_app_server_protocol::ThreadSettingsUpdateParams {
+                    thread_id: thread_id.to_string(),
+                    model: Some("gpt-5.3".to_string()),
+                    ..Default::default()
+                })
+                .await?
+        );
+        next_thread_settings_updated(&mut server, thread_id)
+            .await
+            .thread_settings
+            .model
+    } else {
+        notification.thread_settings.model
+    };
     app.agents_overview
         .input_states
         .insert(thread_id, input_state);
@@ -64,16 +80,23 @@ async fn pending_settings_override_saved_draft_after_blank_cache_is_lost() -> Re
         .await?;
 
     assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
-    assert_eq!(
-        app.chat_widget.current_model(),
-        notification.thread_settings.model
-    );
+    assert_eq!(app.chat_widget.current_model(), expected_model);
     assert_eq!(
         app.chat_widget.composer_text_with_pending(),
         "retained draft"
     );
     server.shutdown().await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn pending_settings_override_saved_draft_after_blank_cache_is_lost() -> Result<()> {
+    restore_overview_draft_after_blank_cache_is_lost(false).await
+}
+
+#[tokio::test]
+async fn resumed_overview_prefers_server_settings_to_stale_pending_notification() -> Result<()> {
+    restore_overview_draft_after_blank_cache_is_lost(true).await
 }
 
 #[tokio::test]

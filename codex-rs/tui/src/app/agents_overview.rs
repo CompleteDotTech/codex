@@ -430,6 +430,7 @@ impl App {
         if startup_draft.is_none() {
             loading::draw(tui)?;
         }
+        let mut settings_from_server = false;
         if self.primary_thread_id != Some(root_thread_id) {
             let previous_displayed_thread_id = self.current_displayed_thread_id();
             if let Some(id) = previous_displayed_thread_id
@@ -622,7 +623,10 @@ impl App {
                     )
                     .await
                 {
-                    Ok(resumed) => (resumed, false),
+                    Ok(resumed) => {
+                        settings_from_server = true;
+                        (resumed, false)
+                    }
                     Err(error) if crate::app_server_session::is_active_writer_error(&error) => {
                         match app_server
                             .read_thread_for_viewing(
@@ -634,6 +638,7 @@ impl App {
                         {
                             Ok((thread, notice)) => {
                                 history_notice = notice;
+                                settings_from_server = true;
                                 (thread, true)
                             }
                             Err(_) => {
@@ -831,7 +836,14 @@ impl App {
         if self.current_displayed_thread_id() == Some(root_thread_id)
             && let Some(mut input_state) = self.agents_overview.input_states.remove(&root_thread_id)
         {
-            // A saved draft includes model settings, so apply newer server settings after it.
+            // A resumed server thread is newer than the cached draft and notification.
+            if settings_from_server
+                && let Some(current) = self.chat_widget.capture_thread_input_state()
+            {
+                input_state.current_collaboration_mode = current.current_collaboration_mode;
+                input_state.active_collaboration_mask = current.active_collaboration_mask;
+                input_state.plan_mode_reasoning_effort = current.plan_mode_reasoning_effort;
+            }
             let pending_settings = input_state.pending_thread_settings.take();
             let preserve_in_flight_turn = !read_only
                 && self
@@ -844,7 +856,7 @@ impl App {
                     preserve_in_flight_turn,
                 },
             );
-            if let Some(settings) = pending_settings {
+            if !settings_from_server && let Some(settings) = pending_settings {
                 self.chat_widget.on_thread_settings_updated(settings);
             }
             if !preserve_in_flight_turn {
