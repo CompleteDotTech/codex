@@ -71,10 +71,10 @@ class WindowsStateTests(unittest.TestCase):
 
     def test_load_checks_native_permissions_without_repair(self):
         target = self.home / "receipt.json"
-        state.run(["icacls", str(target), "/grant", "*S-1-1-0:M"])
+        state.run(["icacls", str(target), "/grant", "*S-1-1-0:M"], discard_output=True)
         with self.assertRaisesRegex(state.ServiceError, "windows_state_permissions"):
             state.load(self.home)
-        state.run(["icacls", str(target), "/remove:g", "*S-1-1-0"])
+        state.run(["icacls", str(target), "/remove:g", "*S-1-1-0"], discard_output=True)
         self.assertEqual(state.load(self.home), self.receipt)
 
     def test_load_fails_closed_when_native_inspection_is_unavailable(self):
