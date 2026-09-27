@@ -1,15 +1,16 @@
 """Protected, external state for the development PostgreSQL service, not Codex."""
 
+import contextlib
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import secrets
-import shutil
-import stat
 
+from programs import resolve_program
 from state_io import MAX_RECEIPT_BYTES
+from posix_state import validate_directory
+from posix_io import read_private
 from state_tls import validate_server_names
 
 from state_io import ServiceError as ServiceError
@@ -25,6 +26,20 @@ from state_permissions import (
 )
 from state_tls import certificate_files as certificate_files
 from state_tls import server_names as server_names
+
+
+REQUIRED_FILES = {
+    "admin.password",
+    "runtime.password",
+    "migrator.password",
+    "backup.password",
+    "ca.key",
+    "ca.crt",
+    "server.key",
+    "server.crt",
+    "server.csr",
+    "server.ext",
+}
 
 
 def initialize(path, project, image, port, names, openssl="openssl"):
@@ -52,112 +67,128 @@ def initialize(path, project, image, port, names, openssl="openssl"):
         ) != expected:
             raise ServiceError("existing_state_conflict")
         return saved
-    executable = shutil.which(openssl)
-    if executable is None:
-        raise ServiceError("openssl_unavailable")
-    openssl = str(Path(executable).resolve())
+    try:
+        openssl = resolve_program(openssl)
+    except ServiceError:
+        raise ServiceError("openssl_unavailable") from None
     # Partial initialization is retained and rejected, never regenerated over lost credentials.
     private_directory(path)
-    private_directory(path / "secrets")
-    private_directory(path / "backups")
-    for role in ("admin", "runtime", "migrator", "backup"):
-        write_new(
-            path / "secrets" / (role + ".password"), secrets.token_hex(32).encode()
-        )
-    certificate_files(path / "secrets", sans, openssl)
-    receipt = {
-        "format": 1,
-        "project": project,
-        "instance": secrets.token_hex(16),
-        "image_tag": image,
-        "image_digest": None,
-        "port": port,
-        "volume": project + "-pgdata",
-        "server_names": sans,
-        "openssl": openssl,
-        "file_hashes": {
-            p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in (path / "secrets").iterdir()
-        },
-    }
-    publish_json(path / "receipt.json", receipt)
-    return receipt
+    sync_directory(path.parent)
+    with contextlib.ExitStack() as stack:
+        scope = None
+        if os.name == "nt":
+            from windows_state import pinned_paths
+
+            scope = stack.enter_context(pinned_paths())
+            scope.validate(path, directory=True)
+        private_directory(path / "secrets")
+        private_directory(path / "backups")
+        for role in ("admin", "runtime", "migrator", "backup"):
+            write_new(
+                path / "secrets" / (role + ".password"), secrets.token_hex(32).encode()
+            )
+        certificate_files(path / "secrets", sans, openssl)
+        receipt = {
+            "format": 1,
+            "project": project,
+            "instance": secrets.token_hex(16),
+            "image_tag": image,
+            "image_digest": None,
+            "port": port,
+            "volume": project + "-pgdata",
+            "server_names": sans,
+            "openssl": openssl,
+            "file_hashes": {
+                name: hashlib.sha256(
+                    scope.read(path / "secrets" / name, 16384)
+                    if scope is not None
+                    else read_private(
+                        path / "secrets" / name,
+                        16384,
+                        invalid_type="insecure_secret_file",
+                        insecure_permissions="insecure_secret_file",
+                    )
+                ).hexdigest()
+                for name in sorted(REQUIRED_FILES)
+            },
+        }
+        publish_json(path / "receipt.json", receipt)
+        return receipt
 
 
 def load(path):
-    required = {
-        "admin.password",
-        "runtime.password",
-        "migrator.password",
-        "backup.password",
-        "ca.key",
-        "ca.crt",
-        "server.key",
-        "server.crt",
-        "server.csr",
-        "server.ext",
-    }
     try:
-        for folder in (path, path / "secrets", path / "backups"):
-            mode = folder.lstat().st_mode
-            if not stat.S_ISDIR(mode) or (os.name != "nt" and mode & 0o077):
-                raise ServiceError("insecure_state_directory")
-        receipt_file = path / "receipt.json"
-        mode = receipt_file.lstat().st_mode
-        if not stat.S_ISREG(mode) or receipt_file.stat().st_size > MAX_RECEIPT_BYTES:
-            raise ServiceError("invalid_receipt")
-        if os.name == "nt":
-            _validate_windows_permissions(
-                [
-                    path,
-                    path / "secrets",
-                    path / "backups",
-                    receipt_file,
-                    *(path / "secrets" / name for name in sorted(required)),
-                ]
-            )
-        with receipt_file.open("rb") as stream:
-            encoded = stream.read(MAX_RECEIPT_BYTES + 1)
-        if len(encoded) > MAX_RECEIPT_BYTES:
-            raise ServiceError("invalid_receipt")
-        receipt = json.loads(encoded)
-        if (
-            type(receipt["format"]) is not int
-            or receipt["format"] != 1
-            or not re.fullmatch(r"[a-f0-9]{32}", receipt["instance"])
-            or not re.fullmatch(r"codex-pg-[a-z0-9][a-z0-9-]{0,39}", receipt["project"])
-            or receipt["volume"] != receipt["project"] + "-pgdata"
-            or len(receipt["image_tag"]) > 64
-            or not re.fullmatch(r"postgres:17\.[0-9]+-bookworm", receipt["image_tag"])
-            or type(receipt["port"]) is not int
-            or not 1024 <= receipt["port"] <= 65535
-        ):
-            raise ServiceError("invalid_receipt")
-        validate_server_names(receipt["server_names"])
-        if (
-            type(receipt["file_hashes"]) is not dict
-            or set(receipt["file_hashes"]) != required
-        ):
-            raise ServiceError("invalid_receipt_inventory")
-        for name, expected in receipt["file_hashes"].items():
-            file = path / "secrets" / name
-            mode = file.lstat().st_mode
-            if not stat.S_ISREG(mode) or (os.name != "nt" and mode & 0o077):
-                raise ServiceError("insecure_secret_file")
-            if (
-                file.stat().st_size > 16384
-                or hashlib.sha256(file.read_bytes()).hexdigest() != expected
-            ):
-                raise ServiceError("secret_changed_or_corrupt")
-        digest = receipt["image_digest"]
-        if digest is not None and not re.fullmatch(
-            r"postgres@sha256:[a-f0-9]{64}", digest
-        ):
-            raise ServiceError("invalid_image_digest")
-        from certificates import certificate_path, openssl_program
+        with contextlib.ExitStack() as stack:
+            scope = None
+            if os.name == "nt":
+                from windows_state import pinned_paths
 
-        certificate_path(path, receipt)
-        openssl_program(receipt)
+                scope = stack.enter_context(pinned_paths())
+            for folder in (path, path / "secrets", path / "backups"):
+                if scope is not None:
+                    scope.validate(folder, directory=True)
+                else:
+                    validate_directory(folder)
+            receipt_file = path / "receipt.json"
+            if scope is not None:
+                encoded = scope.read(receipt_file, MAX_RECEIPT_BYTES)
+            else:
+                encoded = read_private(
+                    receipt_file,
+                    MAX_RECEIPT_BYTES,
+                    invalid_type="invalid_receipt",
+                    insecure_permissions="insecure_receipt_file",
+                )
+            if len(encoded) > MAX_RECEIPT_BYTES:
+                raise ServiceError("invalid_receipt")
+            receipt = json.loads(encoded)
+            if (
+                type(receipt["format"]) is not int
+                or receipt["format"] != 1
+                or not re.fullmatch(r"[a-f0-9]{32}", receipt["instance"])
+                or not re.fullmatch(
+                    r"codex-pg-[a-z0-9][a-z0-9-]{0,39}", receipt["project"]
+                )
+                or receipt["volume"] != receipt["project"] + "-pgdata"
+                or len(receipt["image_tag"]) > 64
+                or not re.fullmatch(
+                    r"postgres:17\.[0-9]+-bookworm", receipt["image_tag"]
+                )
+                or type(receipt["port"]) is not int
+                or not 1024 <= receipt["port"] <= 65535
+            ):
+                raise ServiceError("invalid_receipt")
+            validate_server_names(receipt["server_names"])
+            if (
+                type(receipt["file_hashes"]) is not dict
+                or set(receipt["file_hashes"]) != REQUIRED_FILES
+            ):
+                raise ServiceError("invalid_receipt_inventory")
+            for name, expected in receipt["file_hashes"].items():
+                file = path / "secrets" / name
+                if scope is not None:
+                    content = scope.read(file, 16384)
+                else:
+                    content = read_private(
+                        file,
+                        16384,
+                        invalid_type="insecure_secret_file",
+                        insecure_permissions="insecure_secret_file",
+                    )
+                if (
+                    len(content) > 16384
+                    or hashlib.sha256(content).hexdigest() != expected
+                ):
+                    raise ServiceError("secret_changed_or_corrupt")
+            digest = receipt["image_digest"]
+            if digest is not None and not re.fullmatch(
+                r"postgres@sha256:[a-f0-9]{64}", digest
+            ):
+                raise ServiceError("invalid_image_digest")
+            from certificates import certificate_path, openssl_program
+
+            certificate_path(path, receipt)
+            openssl_program(receipt)
     except (OSError, ValueError, KeyError, TypeError):
         raise ServiceError("incomplete_or_invalid_state") from None
     return receipt
