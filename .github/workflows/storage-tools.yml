@@ -8,6 +8,37 @@ permissions:
   contents: read
 
 jobs:
+  postgres:
+    name: Real PostgreSQL qualification (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        if: hashFiles('scripts/postgres/integration.py') != ''
+        with:
+          python-version: "3.14"
+
+      - name: Qualify TLS, roles, restart, backup, and restore with Docker
+        if: hashFiles('scripts/postgres/integration.py') != ''
+        run: >-
+          python scripts/postgres/integration.py
+          --root "$RUNNER_TEMP/codex-pg-qualification"
+          --port-base 56071
+
+      # The report contains outcomes and resource names only. Never upload the
+      # state root: it also holds private keys, passwords, and database backups.
+      - name: Upload qualification report
+        if: always() && hashFiles('scripts/postgres/integration.py') != ''
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: postgres-linux-qualification
+          path: ${{ runner.temp }}/codex-pg-qualification/qualification.json
+          if-no-files-found: ignore
+          retention-days: 7
+
   offline:
     name: Offline tests (${{ matrix.os }}, Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
@@ -69,14 +100,27 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
-        with:
-          tool: actionlint@1.7.12
+      - name: Install checksum-pinned actionlint
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          install_dir="$RUNNER_TEMP/actionlint-bin"
+          curl --fail --location --retry 3 \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "$archive"
+          printf '%s  %s\n' \
+            8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 \
+            "$archive" | sha256sum --check --strict
+          mkdir -p "$install_dir"
+          tar -xzf "$archive" --directory "$install_dir" actionlint
+          echo "$install_dir" >> "$GITHUB_PATH"
       - name: Check storage workflow definitions
         run: >-
           actionlint -color -shellcheck=""
           .github/workflows/blocking-ci.yml
           .github/workflows/postmerge-ci.yml
           .github/workflows/storage-tools.yml
+          .github/workflows/v8-canary.yml
       - name: Test check selection
         run: python3 -m unittest discover -s .github/scripts -p test_storage_ci_paths.py -v

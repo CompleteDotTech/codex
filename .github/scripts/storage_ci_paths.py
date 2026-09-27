@@ -17,18 +17,48 @@ TOOL_FILES = frozenset(
         "scripts/verify_storage_bundle.py",
         ".github/scripts/storage_ci_paths.py",
         ".github/scripts/test_storage_ci_paths.py",
+        ".github/scripts/verify_cargo_workspace_manifests.py",
+        ".codespellignore",
         ".github/workflows/blocking-ci.yml",
         ".github/workflows/postmerge-ci.yml",
         ".github/workflows/storage-tools.yml",
     }
 )
+V8_WORKFLOW = ".github/workflows/v8-canary.yml"
+# Only this metadata guard may change without scheduling native jobs. Comparing
+# the remaining Git blobs preserves full checks for every other V8 edit.
+V8_STORAGE_GUARD = b"""          if [[ "${EVENT_NAME}" == "pull_request" ]] && python3 .github/scripts/storage_ci_paths.py --storage-only; then
+            echo "canary_required=false" >> "$GITHUB_OUTPUT"
+            echo "windows_source_required=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+"""
+V8_GUARD_ANCHOR = (
+    b"          # Manual runs have no meaningful before/after range. Force every V8\n"
+)
 
 
-def requires_native_checks(paths: list[str]) -> bool:
+def requires_native_checks(
+    paths: list[str], *, v8_workflow_change: tuple[bytes, bytes] | None = None
+) -> bool:
     """Unknown/mixed changes run native checks; only named CI glue is exempt."""
-    return not paths or any(
-        not (path.startswith(TOOL_PREFIXES) or path in TOOL_FILES) for path in paths
-    )
+    for path in paths:
+        if path.startswith(TOOL_PREFIXES) or path in TOOL_FILES:
+            continue
+        if path == V8_WORKFLOW and v8_workflow_change is not None:
+            before, after = v8_workflow_change
+            guarded_anchor = V8_STORAGE_GUARD + V8_GUARD_ANCHOR
+            if (
+                before.count(guarded_anchor) <= 1
+                and after.count(guarded_anchor) <= 1
+                and before.count(guarded_anchor) + after.count(guarded_anchor) == 1
+                and before.replace(guarded_anchor, V8_GUARD_ANCHOR)
+                == after.replace(guarded_anchor, V8_GUARD_ANCHOR)
+            ):
+                continue
+        return True
+    return not paths
 
 
 def required_dependencies(needs: dict) -> dict:
@@ -45,9 +75,31 @@ def required_dependencies(needs: dict) -> dict:
     }
 
 
+def changed_paths(
+    base: str, head: str, event: str, *, root: Path | None = None
+) -> tuple[str, list[str]]:
+    """PRs compare their merge base; pushes compare the exact before/after pair."""
+    if event == "pull_request":
+        base = subprocess.check_output(
+            ["git", "merge-base", base, head], cwd=root, text=True
+        ).strip()
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "--no-renames", "-z", base, head],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    paths = (
+        result.stdout.decode("utf-8", errors="surrogateescape").rstrip("\0").split("\0")
+    )
+    return base, paths
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--require", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--require", action="store_true")
+    mode.add_argument("--storage-only", action="store_true")
     args = parser.parse_args()
     if args.require:
         os.environ["NEEDS"] = json.dumps(
@@ -62,17 +114,16 @@ def main() -> None:
     if not base or set(base) == {"0"}:
         native = True
     else:
-        result = subprocess.run(
-            ["git", "diff", "--name-only", "--no-renames", "-z", base, head],
-            check=True,
-            capture_output=True,
-        )
-        paths = (
-            result.stdout.decode("utf-8", errors="surrogateescape")
-            .rstrip("\0")
-            .split("\0")
-        )
-        native = requires_native_checks(paths)
+        base, paths = changed_paths(base, head, os.environ.get("EVENT_NAME", ""))
+        v8_workflow_change = None
+        if V8_WORKFLOW in paths:
+            v8_workflow_change = tuple(
+                subprocess.check_output(["git", "show", f"{revision}:{V8_WORKFLOW}"])
+                for revision in (base, head)
+            )
+        native = requires_native_checks(paths, v8_workflow_change=v8_workflow_change)
+    if args.storage_only:
+        raise SystemExit(1 if native else 0)
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write(f"native={str(native).lower()}\n")
     print(f"Native build checks required: {native}")
