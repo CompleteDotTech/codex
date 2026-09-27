@@ -131,7 +131,7 @@ def encode_row(key: bytes, values: Sequence[object]) -> bytes:
     """Encode scalar values without coercing booleans, text, binary or integers."""
     require(type(key) is bytes and 0 < len(key) <= MAX_KEY_BYTES, "invalid_key")
     cells = []
-    budget = 64 + 2 * len(key)
+    budget = len(_canonical({"key": key.hex(), "values": []}))
     for value in values:
         require(len(cells) < MAX_CELLS, "invalid_cells")
         kind = type(value)
@@ -153,7 +153,8 @@ def encode_row(key: bytes, values: Sequence[object]) -> bytes:
         else:
             raise ContractError("invalid_cell_type")
         cell = {"type": tag, "value": encoded}
-        budget += len(_canonical(cell))
+        # The enclosing row already includes its LF; cells add commas, not LFs.
+        budget += len(_canonical(cell)) - 1 + (1 if cells else 0)
         require(budget <= MAX_ROW_BYTES, "canonical_row_too_large")
         cells.append(cell)
     return validate_row(_canonical({"key": key.hex(), "values": cells}))[1]
