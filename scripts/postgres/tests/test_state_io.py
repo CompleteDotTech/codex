@@ -66,7 +66,8 @@ class StateIoTests(unittest.TestCase):
         file = self.home / "receipt.json"
         state.publish_json(file, {"old": True})
         before = file.read_bytes()
-        with patch("state_io.replace_file", side_effect=OSError("disk failure")):
+        target = "state_io.replace_file" if os.name == "nt" else "posix_io.os.replace"
+        with patch(target, side_effect=OSError("disk failure")):
             with self.assertRaises(OSError):
                 state.publish_json(file, {"new": True})
         self.assertEqual(file.read_bytes(), before)
@@ -108,9 +109,9 @@ class StateIoTests(unittest.TestCase):
     def test_discarded_native_output_does_not_require_utf8(self):
         result = subprocess.CompletedProcess(["native-command"], 0, b"path-\xe9", b"")
         with patch("state_io.subprocess.run", return_value=result):
-            self.assertEqual(state.run(["native-command"], discard_output=True), "")
+            self.assertEqual(state.run([sys.executable], discard_output=True), "")
             with self.assertRaises(UnicodeDecodeError):
-                state.run(["machine-readable-command"])
+                state.run([sys.executable])
 
     @unittest.skipIf(os.name == "nt", "POSIX symlink fixture")
     def test_symlink_state_path_is_refused(self):
@@ -160,7 +161,22 @@ except ServiceError as exc:
                 return True
             return actual_samefile(path, other)
 
-        with patch.object(Path, "samefile", filesystem_identity):
+        context = patch.object(Path, "samefile", filesystem_identity)
+        if os.name != "nt":
+            original_stat = os.fstat
+            source = source_root.stat()
+            home = self.home.stat()
+
+            def pinned_identity(descriptor):
+                metadata = original_stat(descriptor)
+                if (metadata.st_dev, metadata.st_ino) == (home.st_dev, home.st_ino):
+                    values = list(metadata)
+                    values[1:3] = source.st_ino, source.st_dev
+                    return os.stat_result(values)
+                return metadata
+
+            context = patch("posix_io.os.fstat", side_effect=pinned_identity)
+        with context:
             with self.assertRaisesRegex(state.ServiceError, "outside_source"):
                 state.state_path(str(target))
 
