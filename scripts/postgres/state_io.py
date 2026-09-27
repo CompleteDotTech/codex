@@ -31,6 +31,10 @@ def run(argv, *, env=None, timeout=120, discard_output=False):
 
 
 def write_new(path, data):
+    if os.name == "nt":
+        from windows_state import write_new as windows_write_new
+
+        return windows_write_new(path, data)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags, 0o600)
     try:
@@ -110,14 +114,15 @@ def state_path(value):
 
 @contextlib.contextmanager
 def _operation_guard(path):
-    # Never delete this stable guard, including during manual marker recovery.
-    # It couples marker verification/removal with exclusion of other operations.
-    guard = path / ".operation.guard"
-    descriptor = os.open(
-        guard, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
-    )
+    if os.name == "nt":
+        # Windows keeps this open file undeletable until the lock is released.
+        descriptor = os.open(path / ".operation.guard", os.O_RDWR | os.O_CREAT, 0o600)
+    else:
+        # Lock the state directory itself: removing marker files cannot replace it.
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        mode = os.fstat(descriptor).st_mode
+        if not (stat.S_ISREG(mode) if os.name == "nt" else stat.S_ISDIR(mode)):
             raise ServiceError("invalid_operation_guard")
         try:
             if os.name == "nt":
@@ -139,7 +144,13 @@ def _operation_guard(path):
 
 @contextlib.contextmanager
 def operation_lock(path):
-    with _operation_guard(path):
+    with contextlib.ExitStack() as stack:
+        if os.name == "nt":
+            from windows_state import pinned_paths
+
+            scope = stack.enter_context(pinned_paths())
+            scope.validate(path, directory=True)
+        stack.enter_context(_operation_guard(path))
         lock = path / ".operation.lock"
         payload = json.dumps(
             {
