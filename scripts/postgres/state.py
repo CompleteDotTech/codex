@@ -8,7 +8,8 @@ import re
 import secrets
 
 from state_io import MAX_RECEIPT_BYTES
-from posix_state import read_private, validate_directory
+from posix_state import validate_directory
+from posix_io import read_private
 from state_tls import validate_server_names
 
 from state_io import ServiceError as ServiceError
@@ -24,6 +25,20 @@ from state_permissions import (
 )
 from state_tls import certificate_files as certificate_files
 from state_tls import server_names as server_names
+
+
+REQUIRED_FILES = {
+    "admin.password",
+    "runtime.password",
+    "migrator.password",
+    "backup.password",
+    "ca.key",
+    "ca.crt",
+    "server.key",
+    "server.crt",
+    "server.csr",
+    "server.ext",
+}
 
 
 def initialize(path, project, image, port, names, openssl="openssl"):
@@ -78,10 +93,17 @@ def initialize(path, project, image, port, names, openssl="openssl"):
             "volume": project + "-pgdata",
             "server_names": sans,
             "file_hashes": {
-                p.name: hashlib.sha256(
-                    scope.read(p, 16384) if scope is not None else p.read_bytes()
+                name: hashlib.sha256(
+                    scope.read(path / "secrets" / name, 16384)
+                    if scope is not None
+                    else read_private(
+                        path / "secrets" / name,
+                        16384,
+                        invalid_type="insecure_secret_file",
+                        insecure_permissions="insecure_secret_file",
+                    )
                 ).hexdigest()
-                for p in (path / "secrets").iterdir()
+                for name in sorted(REQUIRED_FILES)
             },
         }
         publish_json(path / "receipt.json", receipt)
@@ -89,18 +111,6 @@ def initialize(path, project, image, port, names, openssl="openssl"):
 
 
 def load(path):
-    required = {
-        "admin.password",
-        "runtime.password",
-        "migrator.password",
-        "backup.password",
-        "ca.key",
-        "ca.crt",
-        "server.key",
-        "server.crt",
-        "server.csr",
-        "server.ext",
-    }
     try:
         with contextlib.ExitStack() as stack:
             scope = None
@@ -145,7 +155,7 @@ def load(path):
             validate_server_names(receipt["server_names"])
             if (
                 type(receipt["file_hashes"]) is not dict
-                or set(receipt["file_hashes"]) != required
+                or set(receipt["file_hashes"]) != REQUIRED_FILES
             ):
                 raise ServiceError("invalid_receipt_inventory")
             for name, expected in receipt["file_hashes"].items():

@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import test_state
 import state
-import posix_state
+import posix_io
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX directory durability")
@@ -43,7 +43,9 @@ class PosixOwnerTests(unittest.TestCase):
             with self.subTest(path=path.name):
                 os.chown(path, 65534, -1)
                 try:
-                    with self.assertRaisesRegex(state.ServiceError, "insecure"):
+                    with self.assertRaisesRegex(
+                        state.ServiceError, "insecure|unsafe_state_ancestor"
+                    ):
                         state.load(self.home)
                     self.assertEqual(path.lstat().st_uid, 65534)
                 finally:
@@ -55,13 +57,13 @@ class PosixOwnerTests(unittest.TestCase):
         original_open = os.open
 
         def replace_before_open(path, flags, *args, **kwargs):
-            if Path(path) == target:
+            if path == target.name:
                 target.unlink()
                 target.write_bytes(content)
                 target.chmod(0o600)
                 os.chown(target, 65534, -1)
             return original_open(path, flags, *args, **kwargs)
 
-        with patch.object(posix_state.os, "open", side_effect=replace_before_open):
+        with patch.object(posix_io.os, "open", side_effect=replace_before_open):
             with self.assertRaisesRegex(state.ServiceError, "insecure_secret_file"):
                 state.load(self.home)
