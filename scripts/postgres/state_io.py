@@ -33,10 +33,15 @@ def run(argv, *, env=None, timeout=120, discard_output=False):
 def write_new(path, data):
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(data)
-        stream.flush()
-        os.fsync(stream.fileno())
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        # Creation succeeded, so only this invocation owns this incomplete file.
+        path.unlink(missing_ok=True)
+        raise
 
 
 def publish_json(path, data):
