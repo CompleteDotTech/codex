@@ -11,7 +11,9 @@ def private_directory(path):
 
         create_directory(path)
     else:
-        path.mkdir(mode=0o700)
+        from posix_io import create_directory
+
+        create_directory(path)
 
 
 def _validate_windows_permissions(paths):
