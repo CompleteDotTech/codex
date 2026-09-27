@@ -3,8 +3,10 @@
 import hashlib
 import json
 import os
+from pathlib import Path
 import re
 import secrets
+import shutil
 import stat
 
 from state_io import MAX_RECEIPT_BYTES
@@ -50,6 +52,10 @@ def initialize(path, project, image, port, names, openssl="openssl"):
         ) != expected:
             raise ServiceError("existing_state_conflict")
         return saved
+    executable = shutil.which(openssl)
+    if executable is None:
+        raise ServiceError("openssl_unavailable")
+    openssl = str(Path(executable).resolve())
     # Partial initialization is retained and rejected, never regenerated over lost credentials.
     private_directory(path)
     private_directory(path / "secrets")
@@ -68,6 +74,7 @@ def initialize(path, project, image, port, names, openssl="openssl"):
         "port": port,
         "volume": project + "-pgdata",
         "server_names": sans,
+        "openssl": openssl,
         "file_hashes": {
             p.name: hashlib.sha256(p.read_bytes()).hexdigest()
             for p in (path / "secrets").iterdir()
@@ -147,6 +154,10 @@ def load(path):
             r"postgres@sha256:[a-f0-9]{64}", digest
         ):
             raise ServiceError("invalid_image_digest")
+        from certificates import certificate_path, openssl_program
+
+        certificate_path(path, receipt)
+        openssl_program(receipt)
     except (OSError, ValueError, KeyError, TypeError):
         raise ServiceError("incomplete_or_invalid_state") from None
     return receipt
