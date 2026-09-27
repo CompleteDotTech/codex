@@ -15,7 +15,7 @@ import sys
 
 from docker_ops import docker
 from qualification_checks import checked_backup, command, sql, verify_endpoint
-from state import ServiceError, load, publish_json, state_path
+from state import ServiceError, load, private_directory, publish_json, state_path
 
 
 def qualify(root, port):
@@ -46,7 +46,7 @@ def qualify(root, port):
         report["steps"].append({"name": name, "passed": True})
         publish_json(root / "qualification.json", report)
 
-    root.mkdir(mode=0o700)
+    private_directory(root)
     try:
         publish_json(root / "qualification.json", report)
         for index, home in enumerate(homes):

@@ -2,9 +2,10 @@
 
 import hashlib
 import os
+from pathlib import Path
 import re
 import secrets
-import stat
+import tempfile
 
 from state import ServiceError, publish_json, run, sync_directory, write_new
 
@@ -23,16 +24,21 @@ def certificate_path(path, receipt):
     ):
         raise ServiceError("invalid_active_certificate")
     file = path / "secrets" / active["file"]
-    info = file.lstat()
-    if not stat.S_ISREG(info.st_mode) or info.st_size > 16384:
-        raise ServiceError("invalid_active_certificate")
     if os.name == "nt":
-        from state import _validate_windows_permissions
+        from windows_state import pinned_paths
 
-        _validate_windows_permissions([file])
-    elif info.st_mode & 0o077:
-        raise ServiceError("insecure_secret_file")
-    if hashlib.sha256(file.read_bytes()).hexdigest() != active["sha256"]:
+        with pinned_paths() as scope:
+            data = scope.read(file, 16384)
+    else:
+        from posix_io import read_private
+
+        data = read_private(
+            file,
+            16384,
+            invalid_type="invalid_active_certificate",
+            insecure_permissions="insecure_secret_file",
+        )
+    if len(data) > 16384 or hashlib.sha256(data).hexdigest() != active["sha256"]:
         raise ServiceError("active_certificate_changed_or_corrupt")
     return file
 
@@ -90,38 +96,40 @@ def renew(path, receipt):
     except ServiceError:
         raise ServiceError("ca_check_failed_manual_ca_replacement_required") from None
     file = directory / ("server-" + secrets.token_hex(16) + ".crt")
-    write_new(file, b"")
-    run(
-        [
-            program,
-            "x509",
-            "-req",
-            "-sha256",
-            "-in",
-            str(directory / "server.csr"),
-            "-CA",
-            str(directory / "ca.crt"),
-            "-CAkey",
-            str(directory / "ca.key"),
-            "-set_serial",
-            str(secrets.randbits(128) + 1),
-            "-days",
-            "90",
-            "-extfile",
-            str(directory / "server.ext"),
-            "-out",
-            str(file),
-        ]
-    )
-    file.chmod(0o600)
-    with file.open("r+b") as stream:
-        os.fsync(stream.fileno())
+    with tempfile.TemporaryDirectory(prefix="codex-pg-leaf-") as temporary:
+        staged = Path(temporary) / file.name
+        run(
+            [
+                program,
+                "x509",
+                "-req",
+                "-sha256",
+                "-in",
+                str(directory / "server.csr"),
+                "-CA",
+                str(directory / "ca.crt"),
+                "-CAkey",
+                str(directory / "ca.key"),
+                "-set_serial",
+                str(secrets.randbits(128) + 1),
+                "-days",
+                "90",
+                "-extfile",
+                str(directory / "server.ext"),
+                "-out",
+                str(staged),
+            ]
+        )
+        encoded = staged.read_bytes()
+        if not encoded or len(encoded) > 16384:
+            raise ServiceError("invalid_active_certificate")
+        write_new(file, encoded)
     sync_directory(directory)
     updated = dict(
         receipt,
         active_certificate={
             "file": file.name,
-            "sha256": hashlib.sha256(file.read_bytes()).hexdigest(),
+            "sha256": hashlib.sha256(encoded).hexdigest(),
         },
     )
     certificate_path(path, updated)
