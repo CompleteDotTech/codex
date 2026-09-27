@@ -165,6 +165,10 @@ compatibility decision before migration: retain a host-local mapping from old
 canonical path to migrated thread identity, or introduce a versioned/deprecated
 transition that rejects those paths with usable replacements. Never open the
 preserved stale files as current authority. Test both selected behaviors.
+With remote authority active, `thread/resume.history` must either import
+caller-supplied history through an authorized, explicitly scoped persistence
+operation or return a versioned compatibility error before creating a thread.
+It must never silently write outside the active authority.
 
 ## 7. Enforceable write ownership and cutover
 
@@ -192,6 +196,11 @@ Within one generation, reads that assemble authoritative history must include
 all acknowledged preceding writes. Read from the primary or use a verified
 causal token/equivalent monotonic-read fence; replica or cache lag must never
 silently omit completed turns from resumed model input.
+Pagination cursors for authority-dependent APIs must be bound to the dataset
+and generation, or proven compatible across cutover. A stale cursor returns a
+defined restart error, never a page with silently skipped or duplicated items.
+Peer app-server hosts need distributed notifications or bounded invalidation
+and refresh for shared mutations, including delete, archive and rename.
 
 Keep source and destination fenced through verification and authority commit.
 Persist intent, decision and recovery evidence before allowing writes at the new
@@ -204,6 +213,9 @@ latest-authority evidence before serving reads or writes. Give a new physical
 copy a new instance identity, and advance the epoch through a verified recovery
 transition or reject a rolled-back generation; a backup's old marker cannot
 declare itself current merely because a host is offline.
+Epoch advancement cannot make missing post-backup history current. Recover and
+compare all acknowledged later data first; otherwise fail closed or create an
+explicitly labeled fork with a new dataset identity.
 
 ## 8. Binary, schema and host compatibility matrix
 
@@ -230,6 +242,10 @@ resume requires verified host affinity or explicit workspace-root/path remapping
 before project configuration or tools run; if neither is available, fail closed
 with a remapping request. An absent `thread/resume.cwd` cannot inherit an
 unverified source-host path.
+Revalidate persisted permission profiles against trusted semantic-equivalence
+on the destination host before tools run. A missing or same-named-but-different
+profile requires explicit permission reselection; never silently fall back to
+the destination host's broader default.
 
 No PostgreSQL major, package channel or host combination is certified by this
 slice. The reviewed #4 server-version policy and #18 qualification receipts must
@@ -282,6 +298,8 @@ ownership. Adversarial repository configuration and model-tool attempts must
 not redirect active authority or resolve protected credentials. #4 must test
 exact supported versions, concurrent schema creation,
 namespace isolation, cancellations, bounded pool waits and commit ambiguity.
+Test a candidate connection against empty and foreign namespaces and prove it
+creates no production schema, import or backend-switch acknowledgement.
 #5–#9 must exercise shared SQLite/PostgreSQL public behavior and contention.
 
 #2–#4 must exercise initialization with preserved local history and an
@@ -304,6 +322,10 @@ include unobservable SQLite writers and opposing host clock skew against
 database-consistent expiry. Also prove that a second host holding a
 retired selection cannot list, resume or build model input from stale history,
 and that lost/corrupt active selection never reactivates preserved SQLite data.
+Restart a journaled controller after lease or approval expiry and require fresh
+acquisition or reconciliation before mutation. Keep an unrelated live session
+beside an unobservable writer; migration must report a blocker without killing
+that session, WSL or another user's process.
 Race two confirmed controllers for the same generation: ownership acquisition
 must be linearizable, exactly one destination may publish, and the loser must
 discover and reconcile the durable winner before serving data.
@@ -311,6 +333,12 @@ discover and reconcile the durable winner before serving data.
 missing references, late queue commits, repeated/uncertain append, every durable
 cutover boundary, new remote writes before reverse migration and a second host
 with no source files. No acknowledged canonical data may disappear or duplicate.
+Pause a related operation between two store captures; the operation must drain,
+retry or block rather than publish a mixed logical epoch. Cancel immediately
+before and after the durable authority decision; both response and restart must
+identify the actual winner. Reject omitted, unknown and duplicate/conflicting
+inventory treatments, and unknown control-plan or export-extension versions,
+before staging or mutation.
 Capture a committed, uncheckpointed SQLite WAL and prove its rows reach the
 destination. Alter a payload and all its internal hashes while retaining an
 independently pinned expected digest; reject it before staging or cutover.
@@ -327,12 +355,20 @@ the retired source before a same-dataset local activation, or a per-client copy
 uses a new dataset identity. Test preserved local destination collisions.
 Compare representative pre/post reverse-cutover outbound model input for
 PostgreSQL-to-SQLite history, including fork-only and compaction items.
+Compare resumed outbound model input before and after each in-place schema
+upgrade for histories written by old and new binaries, including fork-only and
+compaction items.
 After plan confirmation, change each bound source, destination occupancy,
 authorization, schema capability and operation scope before cutover; every
 irreversible transition must revalidate and stop on a changed binding.
 
 #16–#17 must exercise the same authorized service through JSON-RPC, CLI and
 reviewed TUI snapshots, showing active authority separately from candidates.
+Resume from caller-supplied history while remote is active and assert its
+authorized persistence or versioned rejection. Request a second page after
+cutover using a cursor from the old generation; continue compatibly or return
+the defined stale-cursor restart error. Mutate a thread on one app-server host
+and verify the subscribed peer refreshes or receives a notification.
 #19–#21 must test actual packages, user-edited receipts/config, locked files,
 concurrent updater/uninstall, offline detach, exact upstream restore and deliberate
 reinstall. Exercise updater pause before publication, uninstall tombstone commit,
@@ -346,8 +382,14 @@ secret-bearing export access. #18 must run the
 complete combined journey, not substitute tool fixtures. Exercise
 `thread/resume.path` and `thread/fork.path` compatibility, and resume an
 existing path-bound rollout from a second host/OS with no mapped workspace to
-prove it fails closed. Detach one of two live clients and prove the peer keeps
-listing, resuming and writing against unchanged remote authority.
+prove it fails closed. Test same-named conflicting and absent permission
+profiles on that host before any tool executes. Detach one of two live clients
+and prove the peer keeps listing, resuming and writing against unchanged remote
+authority. Export a copy with a live peer and verify remote dataset/generation
+and peer read/write behavior remain unchanged. Cancel optional purge, uninstall
+without purge, then authorize a narrowly scoped purge with out-of-scope data;
+only the approved data may be removed. Restore a backup missing acknowledged
+later turns and require recovery, a labeled fork, or fail-closed behavior.
 
 These are required future cases, not executed results. Independent architecture,
 security, API and lifecycle review is outstanding. Issue #2 remains open until
