@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import programs
@@ -33,6 +34,24 @@ class ProgramTests(unittest.TestCase):
     def test_missing_path_tool_does_not_fall_back_to_cwd(self):
         with self.assertRaises(ServiceError):
             programs._windows_program("openssl", [str(self.cwd), ".", ""], self.cwd)
+
+    def test_inaccessible_path_entry_does_not_hide_later_executable(self):
+        original = Path.resolve
+
+        def resolve(path):
+            if path == self.root / "unavailable":
+                raise OSError("fixture path unavailable")
+            return original(path)
+
+        with patch.object(Path, "resolve", resolve):
+            self.assertEqual(
+                programs._windows_program(
+                    "openssl",
+                    [str(self.root / "unavailable"), str(self.trusted)],
+                    self.cwd,
+                ),
+                str(self.trusted / "openssl.exe"),
+            )
 
     def test_explicit_operator_path_is_retained(self):
         explicit = self.cwd / "openssl.exe"
