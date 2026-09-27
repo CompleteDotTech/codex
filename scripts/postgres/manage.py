@@ -74,10 +74,15 @@ def main(argv=None):
                 else:
                     engine(receipt)
                     inspect_owned(receipt)
-                    if args.action == "up":
+                    if args.action in ("up", "restore"):
                         check_expiry(path, receipt)
                         ensure_volume(receipt)
                     if args.action == "restore":
+                        compose(
+                            path,
+                            receipt,
+                            ["up", "-d", "--wait", "--wait-timeout", "120", "postgres"],
+                        )
                         result = restore(
                             path,
                             receipt,

@@ -40,6 +40,49 @@ class ManageTests(unittest.TestCase):
             self.assertEqual(manage.main(["--state", str(self.home), "status"]), 2)
         self.assertNotIn("PRIVATE_RECEIPT_CONTENT", error.getvalue())
 
+    def test_restore_preflights_and_starts_service(self):
+        events = []
+        output = io.StringIO()
+        with (
+            patch.object(manage, "engine"),
+            patch.object(manage, "inspect_owned"),
+            patch.object(
+                manage,
+                "check_expiry",
+                side_effect=lambda *args: events.append("certificate"),
+            ),
+            patch.object(
+                manage,
+                "ensure_volume",
+                side_effect=lambda *args: events.append("volume"),
+            ),
+            patch.object(
+                manage, "compose", side_effect=lambda *args: events.append("up")
+            ),
+            patch.object(
+                manage,
+                "restore",
+                side_effect=lambda *args: events.append("restore") or "{}",
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(
+                manage.main(
+                    [
+                        "--state",
+                        str(self.home),
+                        "restore",
+                        "--archive",
+                        "backup.dump",
+                        "--sha256",
+                        "0" * 64,
+                        "--confirm-empty-destination",
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(events, ["certificate", "volume", "up", "restore"])
+
     def test_pin_reads_receipt_after_acquiring_operation_lock(self):
         initial = {"image_digest": None}
         pinned = {"image_digest": "sha256:established"}
