@@ -14,6 +14,7 @@ TOOL_PREFIXES = ("scripts/storage_contract/", "scripts/postgres/")
 TOOL_FILES = frozenset(
     {
         "scripts/audit_sqlite_snapshot.py",
+        "scripts/audit_session_index.py",
         "scripts/verify_storage_bundle.py",
         ".github/scripts/storage_ci_paths.py",
         ".github/scripts/test_storage_ci_paths.py",
