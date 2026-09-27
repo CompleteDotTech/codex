@@ -36,7 +36,13 @@ class StateTests(unittest.TestCase):
             # copytree preserves POSIX modes, but not protected Windows ACLs.
             for path in (self.home, self.home / "secrets", self.home / "backups"):
                 state.private_directory(path)
-        shutil.copytree(self.seed, self.home, dirs_exist_ok=True)
+            for item in self.seed.rglob("*"):
+                if item.is_file():
+                    state.write_new(
+                        self.home / item.relative_to(self.seed), item.read_bytes()
+                    )
+        else:
+            shutil.copytree(self.seed, self.home)
 
     def test_repeat_init_preserves_every_secret(self):
         before = {p.name: p.read_bytes() for p in (self.home / "secrets").iterdir()}
