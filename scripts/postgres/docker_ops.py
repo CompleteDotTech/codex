@@ -8,6 +8,7 @@ import re
 import secrets
 
 from state import ServiceError, publish_json, run
+from certificates import certificate_path
 
 INSTANCE_LABEL = "com.completedottech.codex.pg.instance"
 
@@ -136,6 +137,7 @@ def compose(path, receipt, arguments):
         "CODEX_PG_VOLUME": receipt["volume"],
         "CODEX_PG_PORT": str(receipt["port"]),
         "CODEX_PG_STATE": path.as_posix(),
+        "CODEX_PG_SERVER_CERT": certificate_path(path, receipt).as_posix(),
         "CODEX_PG_UID": str(os.getuid() if hasattr(os, "getuid") else 1000),
         "CODEX_PG_GID": str(os.getgid() if hasattr(os, "getgid") else 1000),
     }
@@ -179,7 +181,7 @@ def restore(path, receipt, archive, expected, confirmed):
     if digest.hexdigest() != expected:
         raise ServiceError("backup_checksum_mismatch")
     try:
-        return compose(
+        output = compose(
             path,
             receipt,
             [
@@ -199,3 +201,6 @@ def restore(path, receipt, archive, expected, confirmed):
     except ServiceError:
         # A disconnected CLI cannot prove that the server rolled back a COMMIT.
         raise ServiceError("restore_outcome_unconfirmed_inspect_destination") from None
+    if output.strip() == '{"error":"restore_destination_not_empty"}':
+        raise ServiceError("restore_destination_not_empty")
+    return output
