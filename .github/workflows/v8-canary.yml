@@ -53,6 +53,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [[ "${EVENT_NAME}" == "pull_request" ]] && python3 .github/scripts/storage_ci_paths.py --storage-only; then
+            echo "canary_required=false" >> "$GITHUB_OUTPUT"
+            echo "windows_source_required=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # Manual runs have no meaningful before/after range. Force every V8
           # variant so workflow_dispatch remains a reliable retry path.
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then

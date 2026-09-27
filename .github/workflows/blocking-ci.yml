@@ -8,10 +8,34 @@ on:
     branches: [main]
 
 jobs:
+  changed:
+    name: Select checks
+    runs-on: ubuntu-24.04
+    outputs:
+      native: ${{ steps.select.outputs.native }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test check selection
+        run: python3 -m unittest discover -s .github/scripts -p test_storage_ci_paths.py -v
+      - name: Select checks for the changed files
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 .github/scripts/storage_ci_paths.py
+
   # Keep reusable workflow calls alphabetized. The `required` job below is the
   # version-controlled list that the main-branch ruleset should require.
+  # Standalone storage tools and their CI routing use the hosted offline matrix
+  # and actionlint. Native, other workflow, or mixed changes keep full checks.
   bazel:
     name: Bazel
+    needs: changed
+    if: needs.changed.outputs.native == 'true'
     uses: ./.github/workflows/bazel.yml
     secrets: inherit
 
@@ -37,13 +61,21 @@ jobs:
 
   rust-ci:
     name: rust-ci
+    needs: changed
+    if: needs.changed.outputs.native == 'true'
     uses: ./.github/workflows/rust-ci.yml
     secrets: inherit
 
   sdk:
     name: sdk
+    needs: changed
+    if: needs.changed.outputs.native == 'true'
     uses: ./.github/workflows/sdk.yml
     secrets: inherit
+
+  storage-tools:
+    name: Storage tools
+    uses: ./.github/workflows/storage-tools.yml
 
   required:
     name: CI required
@@ -51,6 +83,7 @@ jobs:
     # required check can appear successful instead of reporting the failure.
     if: ${{ always() }}
     needs:
+      - changed
       - bazel
       - blob-size-policy
       - cargo-deny
@@ -58,6 +91,7 @@ jobs:
       - repo-checks
       - rust-ci
       - sdk
+      - storage-tools
     runs-on: ubuntu-24.04
     steps:
       # Keep the helper on the same combined revision as the child workflows so
@@ -69,4 +103,4 @@ jobs:
       - name: Require successful dependencies
         env:
           NEEDS: ${{ toJSON(needs) }}
-        run: python3 .github/scripts/check_ci_results.py
+        run: python3 .github/scripts/storage_ci_paths.py --require
