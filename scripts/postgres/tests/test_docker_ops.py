@@ -3,8 +3,10 @@
 import hashlib
 import json
 import os
+import stat
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import sys
 import unittest
 from unittest.mock import patch
@@ -232,6 +234,45 @@ class DockerTests(unittest.TestCase):
             ops.restore(self.home, self.receipt, file, "a" * 64, True)
         execute.assert_not_called()
 
+    def test_backup_growth_is_rejected_while_hashing(self):
+        file = self.home / "input.dump"
+        file.write_bytes(b"growth")
+        with (
+            patch.object(ops, "MAX_BACKUP_BYTES", 4),
+            patch.object(
+                ops.os,
+                "fstat",
+                return_value=SimpleNamespace(st_mode=stat.S_IFREG, st_size=0),
+            ),
+            patch.object(ops, "compose") as execute,
+            self.assertRaisesRegex(ServiceError, "invalid_or_oversized_backup"),
+        ):
+            ops.restore(self.home, self.receipt, file, "a" * 64, True)
+        execute.assert_not_called()
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO required")
+    def test_fifo_archive_is_rejected_without_waiting_for_a_writer(self):
+        file = self.home / "input.dump"
+        os.mkfifo(file)
+        with (
+            patch.object(Path, "is_file", return_value=True),
+            self.assertRaisesRegex(ServiceError, "invalid_or_oversized_backup"),
+        ):
+            ops.validate_restore_archive(file, "a" * 64, True)
+
+    def test_unpinned_restore_reports_pin_required_before_compose(self):
+        file = self.home / "input.dump"
+        file.write_bytes(b"fixture archive")
+        digest = hashlib.sha256(file.read_bytes()).hexdigest()
+        with (
+            patch.object(ops, "compose") as execute,
+            self.assertRaisesRegex(ServiceError, "image_not_pinned"),
+        ):
+            ops.restore(
+                self.home, dict(self.receipt, image_digest=None), file, digest, True
+            )
+        execute.assert_not_called()
+
     def test_validated_backup_mount_is_read_only(self):
         file = self.home / "input.dump"
         file.write_bytes(b"fixture archive, not a real pg_dump")
@@ -244,6 +285,7 @@ class DockerTests(unittest.TestCase):
         self.assertIn(file.resolve().as_posix() + ":/restore/input.dump:ro", argv)
         self.assertIn("--no-deps", argv)
         self.assertIn("EXPECTED_SHA256=" + digest, argv)
+        self.assertEqual(execute.call_args.kwargs["timeout"], 3600)
 
     def test_failed_remote_restore_does_not_claim_rollback(self):
         file = self.home / "input.dump"
