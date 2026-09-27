@@ -2,8 +2,10 @@
 
 import ipaddress
 import os
+from pathlib import Path
 import re
 import secrets
+import tempfile
 
 from state_io import ServiceError, run, sync_directory, write_new
 
@@ -17,7 +19,7 @@ def server_names(extra):
         raise ServiceError("too_many_or_invalid_certificate_names")
     names = list(DEFAULT_SERVER_NAMES)
     for value in extra:
-        if type(value) is not str or not 0 < len(value) <= 253:
+        if type(value) is not str or not 0 < len(value) <= 253 or "%" in value:
             raise ServiceError("invalid_certificate_name")
         try:
             item = "IP:" + str(ipaddress.ip_address(value))
@@ -55,6 +57,30 @@ def validate_server_names(names):
 
 def certificate_files(directory, names, openssl):
     validate_server_names(names)
+    outputs = (
+        "ca.key",
+        "ca.crt",
+        "server.key",
+        "server.csr",
+        "server.ext",
+        "server.crt",
+    )
+    if any(os.path.lexists(directory / name) for name in outputs):
+        raise ServiceError("certificate_outputs_already_exist")
+    # Generate everything privately before publishing any permanent output.
+    with tempfile.TemporaryDirectory(
+        prefix=".certificate-stage-", dir=directory
+    ) as temporary:
+        staged = Path(temporary)
+        _generate_certificate_files(staged, names, openssl)
+        if any((staged / name).stat().st_size > 16384 for name in outputs):
+            raise ServiceError("certificate_file_too_large")
+        for name in outputs:
+            write_new(directory / name, (staged / name).read_bytes())
+        sync_directory(directory)
+
+
+def _generate_certificate_files(directory, names, openssl):
     # The local CA is for isolated development. Never mount its private key.
     run(
         [
