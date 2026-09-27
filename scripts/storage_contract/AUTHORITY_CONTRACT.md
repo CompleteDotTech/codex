@@ -50,6 +50,17 @@ A matching dataset ID does not grant access. Authentication, trusted host-owned
 configuration, namespace authorization and storage-administration permission
 remain separate checks. Restoring a journal must not restore expired authority.
 
+An existing SQLite home has no persisted storage identities. Before its first
+capture or confirmed migration plan, adopt it under exclusive local writer
+control: durably record one dataset ID, one local storage-instance ID and an
+initial generation in a host-owned record outside replaceable package files.
+Bind that record to the exact source-home identity and source fingerprint, and
+commit it atomically before any staging or export can refer to those IDs.
+Retry, restart, reinstall and recovery must recover and reuse the same record;
+an incomplete or conflicting adoption must fail closed for reconciliation,
+never mint a second identity for the same source history. Later authority
+transitions advance the generation through the cutover protocol, not adoption.
+
 ## 3. Candidate configuration versus active authority
 
 A saved profile is a candidate. Creating/editing/testing it must not change
@@ -188,7 +199,7 @@ not broad deletion. Preserve shared credentials and external services by default
 
 | Action | Required retained state and authority effect |
 | --- | --- |
-| Disable remote storage | Verified reverse migration of current remote data; never activate stale backups. |
+| Disable remote storage | Verified reverse migration of current remote data into a new isolated local instance by default; never activate stale backups or overwrite/merge preserved local stores. |
 | Export a copy | Preserve remote authority and other clients; label the export as a copy, not a global cutover. |
 | Local-client detach | Stop this client's participation; preserve the shared remote namespace and other clients. |
 | Restore upstream | Verify current-data export with the exact unpatched target before changing executable resolution. |
@@ -199,6 +210,13 @@ Offline detach cannot attest to current remote contents. It must not represent
 an old local backup as current history. Package-only removal launching upstream
 requires an explicitly separate local home unless verified current-data restore
 has completed. Report retained remote history accurately.
+
+If unrelated local stores were preserved during initialization or attachment,
+they remain a distinct dataset. Reverse migration may select an existing local
+destination only through an explicit preservation protocol that identifies its
+contents and ownership, rejects collisions, retains a recoverable copy, and
+verifies the user's destination choice before activation. It must never silently
+replace those stores or combine their history with remote data.
 
 An intentional-uninstall decision is durable. Every patch-owned updater must
 check lifecycle ownership and that decision at its publication/activation point,
