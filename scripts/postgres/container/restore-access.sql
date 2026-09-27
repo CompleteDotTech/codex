@@ -1,0 +1,13 @@
+GRANT USAGE ON SCHEMA codex_storage TO codex_runtime, codex_backup;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA codex_storage TO codex_runtime;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA codex_storage TO codex_runtime;
+GRANT SELECT ON ALL TABLES IN SCHEMA codex_storage TO codex_backup;
+GRANT SELECT ON ALL SEQUENCES IN SCHEMA codex_storage TO codex_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner IN SCHEMA codex_storage
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO codex_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner IN SCHEMA codex_storage
+    GRANT USAGE, SELECT ON SEQUENCES TO codex_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner IN SCHEMA codex_storage
+    GRANT SELECT ON TABLES TO codex_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner IN SCHEMA codex_storage
+    GRANT SELECT ON SEQUENCES TO codex_backup;

@@ -1,0 +1,123 @@
+# PostgreSQL infrastructure only; no Codex storage capability is enabled here.
+x-client: &client
+  labels:
+    com.completedottech.codex.pg.instance: ${CODEX_PG_INSTANCE}
+  image: ${CODEX_PG_IMAGE:?Run manage.py pin first}
+  profiles: [tools]
+  restart: "no"
+  read_only: true
+  security_opt: [no-new-privileges:true]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777
+  volumes:
+    - ./container:/opt/codex-pg:ro
+  environment: &client-env
+    PGHOST: postgres
+    PGPORT: "5432"
+    PGDATABASE: codex
+    PGSSLMODE: verify-full
+    PGSSLROOTCERT: /run/secrets/ca.crt
+    PGCONNECT_TIMEOUT: "5"
+    CODEX_PG_INSTANCE: ${CODEX_PG_INSTANCE:?Missing instance receipt}
+  depends_on:
+    postgres:
+      condition: service_healthy
+  networks: [storage]
+  logging:
+    driver: json-file
+    options: {max-size: 5m, max-file: "2"}
+
+services:
+  postgres:
+    image: ${CODEX_PG_IMAGE:?Run manage.py pin first}
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    shm_size: 128mb
+    stop_grace_period: 120s
+    environment:
+      PGDATA: /var/lib/postgresql/data/pgdata
+      POSTGRES_DB: codex
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/codex-pg/admin.password
+      POSTGRES_INITDB_ARGS: --auth-local=peer --auth-host=scram-sha-256 --data-checksums
+      CODEX_PG_INSTANCE: ${CODEX_PG_INSTANCE:?Missing instance receipt}
+    entrypoint: [/bin/bash, /opt/codex-pg/server.sh]
+    ports:
+      - "127.0.0.1:${CODEX_PG_PORT:-55432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./container:/opt/codex-pg:ro
+      - ./container/init.sh:/docker-entrypoint-initdb.d/10-codex-service.sh:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+      - /run/postgresql:rw,nosuid,nodev,size=16m,mode=3775
+      - /run/codex-pg:rw,noexec,nosuid,nodev,size=4m,mode=0755
+    secrets:
+      - {source: admin, target: admin.password}
+      - {source: runtime, target: runtime.password}
+      - {source: migrator, target: migrator.password}
+      - {source: backup, target: backup.password}
+      - {source: server_key, target: server.key}
+      - {source: server_cert, target: server.crt}
+      - {source: ca_cert, target: ca.crt}
+    healthcheck:
+      test: [CMD, /bin/bash, /opt/codex-pg/health.sh]
+      interval: 5s
+      timeout: 8s
+      retries: 12
+      start_period: 30s
+    networks: [storage]
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+    labels:
+      com.completedottech.codex.pg.instance: ${CODEX_PG_INSTANCE}
+      com.completedottech.codex.pg.capability: infrastructure-only
+
+  backup:
+    <<: *client
+    entrypoint: [/bin/bash, /opt/codex-pg/backup.sh]
+    environment:
+      <<: *client-env
+      CODEX_PG_UID: ${CODEX_PG_UID:-1000}
+      CODEX_PG_GID: ${CODEX_PG_GID:-1000}
+    volumes:
+      - ./container:/opt/codex-pg:ro
+      - ${CODEX_PG_STATE:?Missing state directory}/backups:/backups
+    secrets:
+      - {source: backup, target: backup.password}
+      - {source: ca_cert, target: ca.crt}
+
+  restore:
+    <<: *client
+    entrypoint: [/bin/bash, /opt/codex-pg/restore.sh]
+    secrets:
+      - {source: migrator, target: migrator.password}
+      - {source: ca_cert, target: ca.crt}
+
+  smoke:
+    <<: *client
+    entrypoint: [/bin/bash, /opt/codex-pg/smoke.sh]
+    secrets:
+      - {source: runtime, target: runtime.password}
+      - {source: migrator, target: migrator.password}
+      - {source: backup, target: backup.password}
+      - {source: ca_cert, target: ca.crt}
+
+networks:
+  storage:
+    labels:
+      com.completedottech.codex.pg.instance: ${CODEX_PG_INSTANCE}
+volumes:
+  pgdata:
+    external: true
+    name: ${CODEX_PG_VOLUME:?Missing volume receipt}
+secrets:
+  admin: {file: "${CODEX_PG_STATE}/secrets/admin.password"}
+  runtime: {file: "${CODEX_PG_STATE}/secrets/runtime.password"}
+  migrator: {file: "${CODEX_PG_STATE}/secrets/migrator.password"}
+  backup: {file: "${CODEX_PG_STATE}/secrets/backup.password"}
+  server_key: {file: "${CODEX_PG_STATE}/secrets/server.key"}
+  server_cert: {file: "${CODEX_PG_STATE}/secrets/server.crt"}
+  ca_cert: {file: "${CODEX_PG_STATE}/secrets/ca.crt"}
