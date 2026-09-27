@@ -158,7 +158,22 @@ except ServiceError as exc:
                 return True
             return actual_samefile(path, other)
 
-        with patch.object(Path, "samefile", filesystem_identity):
+        context = patch.object(Path, "samefile", filesystem_identity)
+        if os.name != "nt":
+            original_stat = os.fstat
+            source = source_root.stat()
+            home = self.home.stat()
+
+            def pinned_identity(descriptor):
+                metadata = original_stat(descriptor)
+                if (metadata.st_dev, metadata.st_ino) == (home.st_dev, home.st_ino):
+                    values = list(metadata)
+                    values[1:3] = source.st_ino, source.st_dev
+                    return os.stat_result(values)
+                return metadata
+
+            context = patch("posix_io.os.fstat", side_effect=pinned_identity)
+        with context:
             with self.assertRaisesRegex(state.ServiceError, "outside_source"):
                 state.state_path(str(target))
 

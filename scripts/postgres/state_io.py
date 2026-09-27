@@ -129,7 +129,7 @@ def state_path(value):
             raise ServiceError("symlink_state_path") from None
     source_root = Path(__file__).resolve().parents[2]
     # Compare existing directory identities, including case-insensitive volumes.
-    if any(
+    if os.name == "nt" and any(
         candidate.exists() and candidate.samefile(source_root)
         for candidate in (path, *path.parents)
     ):

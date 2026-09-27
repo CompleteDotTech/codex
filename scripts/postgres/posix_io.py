@@ -26,6 +26,7 @@ def lexical_path(value):
 def directory(value, *, create=False, missing=False):
     """Traverse every component from root using pinned parent descriptors."""
     path = lexical_path(value)
+    source = Path(__file__).resolve().parents[2].stat()
     handles = []
     try:
         current = os.open(path.anchor, DIRECTORY_FLAGS)
@@ -46,6 +47,8 @@ def directory(value, *, create=False, missing=False):
                     current = os.open(part, DIRECTORY_FLAGS, dir_fd=current)
                 handles.append(current)
             metadata = os.fstat(current)
+            if (metadata.st_dev, metadata.st_ino) == (source.st_dev, source.st_ino):
+                raise ServiceError("state_must_be_outside_source_tree")
             if metadata.st_uid not in (os.geteuid(), 0) or (
                 metadata.st_mode & 0o022 and not metadata.st_mode & stat.S_ISVTX
             ):
@@ -140,3 +143,25 @@ def release_marker(path, payload):
             ):
                 raise ServiceError("lock_ownership_changed_preserved")
         os.unlink(path.name, dir_fd=parent)
+
+
+def read_private(path, limit, *, invalid_type, insecure_permissions):
+    """Validate the owner/mode of the opened object before consuming bounded bytes."""
+    if type(limit) is not int or not 0 <= limit <= 65536:
+        raise ValueError("invalid private read limit")
+    path = lexical_path(path)
+    with directory(path.parent) as parent:
+        if not stat.S_ISREG(
+            os.stat(path.name, dir_fd=parent, follow_symlinks=False).st_mode
+        ):
+            raise ServiceError(invalid_type)
+        descriptor = os.open(
+            path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ServiceError(invalid_type)
+            if metadata.st_mode & 0o077 or metadata.st_uid not in (os.geteuid(), 0):
+                raise ServiceError(insecure_permissions)
+            return stream.read(limit + 1)

@@ -89,3 +89,29 @@ except ServiceError as exc:
         with self.assertRaisesRegex(state_io.ServiceError, "unsafe_state_ancestor"):
             state_io.write_new(self.home / "credential", b"protected")
         self.assertEqual(list(self.home.iterdir()), [])
+
+    def test_exclusive_write_also_rejects_the_source_tree(self):
+        target = Path(state_io.__file__).parent / "forbidden-state-write"
+        with self.assertRaisesRegex(state_io.ServiceError, "outside_source"):
+            state_io.write_new(target, b"protected")
+        self.assertFalse(target.exists())
+
+    def test_bounded_read_stays_on_the_opened_file_after_leaf_replacement(self):
+        target = self.home / "credential"
+        state_io.write_new(target, b"protected")
+        outside = self.outside / "credential"
+        outside.write_bytes(b"redirected")
+        original = os.open
+
+        def swap(path, flags, *args, **kwargs):
+            descriptor = original(path, flags, *args, **kwargs)
+            if path == target.name:
+                target.unlink()
+                target.symlink_to(outside)
+            return descriptor
+
+        with patch.object(posix_io.os, "open", swap):
+            content = posix_io.read_private(
+                target, 4, invalid_type="invalid", insecure_permissions="insecure"
+            )
+        self.assertEqual(content, b"prote")
