@@ -183,6 +183,7 @@ def qualify(root, port):
     except (ServiceError, OSError, ValueError, subprocess.TimeoutExpired):
         report["status"] = "failed"
     finally:
+        interrupt = None
         if report["status"] == "running":
             report["status"] = "failed"
         try:
@@ -200,6 +201,11 @@ def qualify(root, port):
                         ]
                     )
                     report["volumes_retained"].append(receipt["volume"])
+                except KeyboardInterrupt as error:
+                    if interrupt is None:
+                        interrupt = error
+                    report["status"] = "failed"
+                    report.setdefault("cleanup_blockers", []).append(home.name)
                 except (ServiceError, OSError, subprocess.TimeoutExpired):
                     report["status"] = "failed"
                     report.setdefault("cleanup_blockers", []).append(home.name)
@@ -208,6 +214,8 @@ def qualify(root, port):
                 report["status"] = "failed"
             report["finished_at"] = datetime.now(timezone.utc).isoformat()
             publish_json(root / "qualification.json", report)
+            if interrupt is not None:
+                raise interrupt
     return report
 
 
