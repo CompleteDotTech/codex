@@ -56,6 +56,15 @@ class WindowsStateTests(unittest.TestCase):
                 with patch.object(Path, "open", side_effect=AssertionError("reopened")):
                     self.assertEqual(scope.read(file, 32), b"original")
 
+    def test_native_names_cannot_truncate_or_select_alternate_streams(self):
+        file = self.root / "secret"
+        native.write_new(file, b"original")
+        with native.pinned_paths() as scope:
+            for name in (str(file) + "\0suffix", str(file) + ":stream"):
+                with self.subTest(name=repr(name)), self.assertRaises(ServiceError):
+                    scope.read(name, 32)
+            self.assertEqual(scope.read(file, 32), b"original")
+
     def test_pins_block_another_process_replacing_file_or_ancestor_until_closed(self):
         file = self.root / "secret"
         candidate = self.root / "candidate"
