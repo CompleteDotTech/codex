@@ -72,3 +72,11 @@ class ProgramTests(unittest.TestCase):
             Path(programs.resolve_program(sys.executable)),
             Path(sys.executable).resolve(),
         )
+
+    def test_windows_name_prefers_exe_over_extensionless_wrapper(self):
+        (self.trusted / "docker").write_bytes(b"shell wrapper")
+        (self.trusted / "docker.exe").write_bytes(b"executable fixture")
+        self.assertEqual(
+            programs._windows_program("docker", [str(self.trusted)], self.cwd),
+            str(self.trusted / "docker.exe"),
+        )
