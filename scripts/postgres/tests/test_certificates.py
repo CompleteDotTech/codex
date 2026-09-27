@@ -45,6 +45,21 @@ class CertificateTests(unittest.TestCase):
         certificates.check_expiry(self.home, before)
         self.assertEqual(len(list((self.home / "secrets").glob("server-*.crt"))), 1)
 
+    def test_failed_signing_does_not_publish_an_empty_leaf(self):
+        before = state.load(self.home)
+        real_run = certificates.run
+
+        def fail_signing(argv):
+            if argv[1:3] == ["x509", "-req"]:
+                raise state.ServiceError("command_failed")
+            return real_run(argv)
+
+        with patch.object(certificates, "run", side_effect=fail_signing):
+            with self.assertRaisesRegex(state.ServiceError, "command_failed"):
+                certificates.renew(self.home, before)
+        self.assertEqual(state.load(self.home), before)
+        self.assertEqual(list((self.home / "secrets").glob("server-*.crt")), [])
+
     def test_expired_leaf_can_be_renewed_without_reinitialization(self):
         before = state.load(self.home)
         directory = self.home / "secrets"
