@@ -90,6 +90,12 @@ TUI, CLI, app-server, daemon, extensions and maintenance use one authority
 service. On a remote outage they expose bounded unavailable/reconnecting
 states; they must not create a writable local substitute. Local caches are
 rebuildable and cannot become authoritative merely because they exist.
+Read surfaces must also fail closed when authority or causal freshness cannot
+be validated. Ephemeral threads remain memory-only, non-resumable and absent
+from authority, migration, backups and exports; their lifecycle is explicit
+even during a remote outage. Shared `memory/reset` requires dataset-wide
+authorization and a defined shared versus host-local scope, or a versioned
+rejection before any mutation.
 
 ## 4. Three distinct entry operations
 
@@ -201,6 +207,12 @@ and generation, or proven compatible across cutover. A stale cursor returns a
 defined restart error, never a page with silently skipped or duplicated items.
 Peer app-server hosts need distributed notifications or bounded invalidation
 and refresh for shared mutations, including delete, archive and rename.
+Every live thread is bound to the dataset, instance and generation that supplied
+its context. Drain it before authority activation or revalidate the binding
+before each inference and external tool dispatch; stale in-memory turns cannot
+continue merely because a later write would be rejected. Same-generation
+writers on one thread need serialized turn/queue ownership or a defined conflict
+that preserves exactly-once acknowledged items and model-input order.
 
 Keep source and destination fenced through verification and authority commit.
 Persist intent, decision and recovery evidence before allowing writes at the new
@@ -246,6 +258,11 @@ Revalidate persisted permission profiles against trusted semantic-equivalence
 on the destination host before tools run. A missing or same-named-but-different
 profile requires explicit permission reselection; never silently fall back to
 the destination host's broader default.
+Apply the same equivalence or explicit-reselection gate to model-provider
+endpoint and authentication definitions before sending history to a model.
+Client-supplied dynamic tools require implementation-identity matching or
+explicit re-registration before a cross-host resumed turn; missing or
+conflicting tools disable the call or block the turn.
 
 No PostgreSQL major, package channel or host combination is certified by this
 slice. The reviewed #4 server-version policy and #18 qualification receipts must
@@ -313,6 +330,10 @@ and reinstall recovery, and incomplete/conflicting records; no retry may mint a
 second identity or orphan operation-owned staging. Interrupt and restore an
 active remote connection and prove each write surface stays unavailable or
 reconnecting without acquiring local authority.
+Throughout outage and recovery, list, resume and model-input reads must also
+fail closed or prove current causal authority. Start/fork ephemeral threads
+while remote is active and unavailable; prove their history is absent from
+durable listing, restart, migration and export, then cleaned up in memory.
 Reject attachment before activation for mismatched dataset, namespace,
 generation, authorization scope and reader/writer capability; validate the
 remote transport identity and reject downgrade or an invalid certificate.
@@ -322,6 +343,12 @@ include unobservable SQLite writers and opposing host clock skew against
 database-consistent expiry. Also prove that a second host holding a
 retired selection cannot list, resume or build model input from stale history,
 and that lost/corrupt active selection never reactivates preserved SQLite data.
+Pause a live turn across initialize, attach and cutover; it must be drained or
+revalidated before another inference or tool call. Race two authorized hosts
+on the same thread and queue; require serialization or a defined conflict,
+exactly-once acknowledged items and identical resumed ordering. With skewed
+host clocks, concurrently create/update threads and prove database-consistent
+recency allocation and stable tie-breaking in lists and cursors.
 Restart a journaled controller after lease or approval expiry and require fresh
 acquisition or reconciliation before mutation. Keep an unrelated live session
 beside an unobservable writer; migration must report a blocker without killing
@@ -361,6 +388,10 @@ compaction items.
 After plan confirmation, change each bound source, destination occupancy,
 authorization, schema capability and operation scope before cutover; every
 irreversible transition must revalidate and stop on a changed binding.
+Also substitute the exact destination instance, namespace and profile reference
+while keeping the destination empty; reject redirection before staging. Try
+migration, export and purge with initially read-only or ordinary-writer
+principals; reject before mutation or private-data disclosure.
 
 #16–#17 must exercise the same authorized service through JSON-RPC, CLI and
 reviewed TUI snapshots, showing active authority separately from candidates.
@@ -383,13 +414,25 @@ complete combined journey, not substitute tool fixtures. Exercise
 `thread/resume.path` and `thread/fork.path` compatibility, and resume an
 existing path-bound rollout from a second host/OS with no mapped workspace to
 prove it fails closed. Test same-named conflicting and absent permission
-profiles on that host before any tool executes. Detach one of two live clients
-and prove the peer keeps listing, resuming and writing against unchanged remote
+profiles on that host before any tool executes.
+Compare same-named conflicting and absent model-provider definitions before
+any model request, and missing or conflicting dynamic-tool implementations
+before tool dispatch.
+Detach one of two live clients and prove the peer keeps listing, resuming and
+writing against unchanged remote
 authority. Export a copy with a live peer and verify remote dataset/generation
 and peer read/write behavior remain unchanged. Cancel optional purge, uninstall
 without purge, then authorize a narrowly scoped purge with out-of-scope data;
 only the approved data may be removed. Restore a backup missing acknowledged
 later turns and require recovery, a labeled fork, or fail-closed behavior.
+Export private history off-host and prove no plaintext disclosure; wrong keys
+and authentication-tag tampering must fail before import. Pause an updater after
+file publication but before activation, then uninstall; either uninstall waits
+for the entire update or stale activation loses. Remove the fork while remote
+authority remains active without reverse migration; launching upstream must
+use a separate local home or fail closed until current-data restore. Exercise
+two-host `memory/reset` status and mutation with its declared scope and
+authorization, including preservation of out-of-scope host-local data.
 
 These are required future cases, not executed results. Independent architecture,
 security, API and lifecycle review is outstanding. Issue #2 remains open until
