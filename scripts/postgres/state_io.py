@@ -1,0 +1,171 @@
+"""Durable files and owned operation locks for external PostgreSQL service state."""
+
+import contextlib
+import json
+import os
+from pathlib import Path
+import secrets
+import socket
+import stat
+import subprocess
+
+MAX_RECEIPT_BYTES = 65536
+
+
+class ServiceError(Exception):
+    """A fixed public diagnostic code; never include secret subprocess output."""
+
+
+def run(argv, *, env=None, timeout=120, discard_output=False):
+    try:
+        result = subprocess.run(
+            argv, env=env, capture_output=True, timeout=timeout, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise ServiceError("command_unavailable_or_timed_out") from None
+    if result.returncode:
+        raise ServiceError("command_failed")
+    # Native Windows status output may use a legacy code page. Decode only
+    # machine-readable output that callers actually consume.
+    return "" if discard_output else result.stdout.decode("utf-8")
+
+
+def write_new(path, data):
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        # Creation succeeded, so only this invocation owns this incomplete file.
+        path.unlink(missing_ok=True)
+        raise
+
+
+def publish_json(path, data):
+    encoded = (json.dumps(data, sort_keys=True, indent=2) + "\n").encode()
+    if len(encoded) > MAX_RECEIPT_BYTES:
+        raise ServiceError("receipt_too_large")
+    pending = path.with_name(path.name + ".pending-" + secrets.token_hex(8))
+    write_new(pending, encoded)
+    try:
+        replace_file(pending, path)
+        sync_directory(path.parent)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
+def replace_file(source, destination):
+    """Publish a flushed file, requesting write-through rename on Windows."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        move = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+        move.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        move.restype = wintypes.BOOL
+        # MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH; same-directory move.
+        if not move(str(source), str(destination), 0x1 | 0x8):
+            raise ctypes.WinError(ctypes.get_last_error())
+    else:
+        os.replace(source, destination)
+
+
+def sync_directory(path):
+    if os.name != "nt":
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def state_path(value):
+    path = Path(value).expanduser()
+    if not path.is_absolute() or any(c in str(path) for c in "\r\n'$\0"):
+        raise ServiceError("invalid_state_path")
+    # lstat also identifies NTFS junctions, unlike is_symlink on Windows.
+    for candidate in (path, *path.parents):
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or getattr(metadata, "st_file_attributes", 0) & 0x400
+        ):
+            raise ServiceError("symlink_state_path")
+    path = path.resolve()
+    source_root = Path(__file__).resolve().parents[2]
+    # Compare existing directory identities, including case-insensitive volumes.
+    if any(
+        candidate.exists() and candidate.samefile(source_root)
+        for candidate in (path, *path.parents)
+    ):
+        raise ServiceError("state_must_be_outside_source_tree")
+    return path
+
+
+@contextlib.contextmanager
+def _operation_guard(path):
+    if os.name == "nt":
+        # Windows keeps this open file undeletable until the lock is released.
+        descriptor = os.open(path / ".operation.guard", os.O_RDWR | os.O_CREAT, 0o600)
+    else:
+        # Lock the state directory itself: removing marker files cannot replace it.
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        mode = os.fstat(descriptor).st_mode
+        if not (stat.S_ISREG(mode) if os.name == "nt" else stat.S_ISDIR(mode)):
+            raise ServiceError("invalid_operation_guard")
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise ServiceError(
+                "operation_locked_inspect_owner_before_manual_recovery"
+            ) from None
+        yield
+    finally:
+        os.close(descriptor)
+
+
+@contextlib.contextmanager
+def operation_lock(path):
+    with _operation_guard(path):
+        lock = path / ".operation.lock"
+        payload = json.dumps(
+            {
+                "pid": os.getpid(),
+                "host": socket.gethostname(),
+                "token": secrets.token_hex(16),
+            }
+        ).encode()
+        try:
+            write_new(lock, payload)
+        except FileExistsError:
+            raise ServiceError(
+                "operation_locked_inspect_owner_before_manual_recovery"
+            ) from None
+        try:
+            yield
+        finally:
+            try:
+                mode = lock.lstat().st_mode
+                if (
+                    not stat.S_ISREG(mode)
+                    or lock.stat().st_size != len(payload)
+                    or lock.read_bytes() != payload
+                ):
+                    raise ServiceError("lock_ownership_changed_preserved")
+                lock.unlink()
+            except OSError:
+                raise ServiceError("lock_ownership_changed_preserved") from None
