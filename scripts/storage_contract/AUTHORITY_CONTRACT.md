@@ -159,11 +159,12 @@ that all runtime histories fit. Source paths are provenance/remapping inputs,
 never portable event keys. Do not normalize Unicode, timestamps or numeric types
 without a reviewed, reversible domain rule.
 
-The existing experimental `thread/resume.path` surface needs an explicit
+The existing experimental `thread/resume.path` and `thread/fork.path` surfaces
+need an explicit
 compatibility decision before migration: retain a host-local mapping from old
 canonical path to migrated thread identity, or introduce a versioned/deprecated
-transition that rejects that path with a usable replacement. Never open the
-preserved stale file as current authority. Test the selected behavior.
+transition that rejects those paths with usable replacements. Never open the
+preserved stale files as current authority. Test both selected behaviors.
 
 ## 7. Enforceable write ownership and cutover
 
@@ -224,6 +225,12 @@ proof of compatibility. Resolve and test the actual executable, not only PATH.
 | Reverse export for upstream | Fresh current-data export; exact selected unpatched binary can list/resume history and complete a mocked turn in isolation, with the resumed outbound model input compared against representative current histories, including fork-only and compaction items. Reject a target that silently drops them. |
 | Foreign host combination | Real app/exec/client process tests for each advertised operating-system combination. |
 
+An existing thread's persisted working directory is host-specific. Cross-host
+resume requires verified host affinity or explicit workspace-root/path remapping
+before project configuration or tools run; if neither is available, fail closed
+with a remapping request. An absent `thread/resume.cwd` cannot inherit an
+unverified source-host path.
+
 No PostgreSQL major, package channel or host combination is certified by this
 slice. The reviewed #4 server-version policy and #18 qualification receipts must
 populate the release matrix before opt-in. Missing evidence means unsupported,
@@ -271,14 +278,19 @@ attach to retained remote data; it must not restart old import or updater work.
 ## 10. Required executable cases in dependent PRs
 
 #3 must test candidate edits, managed policy, secret redaction and foreign-host
-ownership. #4 must test exact supported versions, concurrent schema creation,
+ownership. Adversarial repository configuration and model-tool attempts must
+not redirect active authority or resolve protected credentials. #4 must test
+exact supported versions, concurrent schema creation,
 namespace isolation, cancellations, bounded pool waits and commit ambiguity.
 #5–#9 must exercise shared SQLite/PostgreSQL public behavior and contention.
 
 #2–#4 must exercise initialization with preserved local history and an
 idempotent retry that reuses the same new dataset, plus attachment that neither
-imports/merges local history nor advances the remote generation. Test legacy
-adoption interruption immediately before and after record publication, restart
+imports/merges local history nor advances the remote generation.
+For initialize-new, cancel after disclosure of excluded local history and
+verify no authority change; confirm the same disclosure and verify the exact
+new dataset becomes active only afterward.
+Test legacy adoption interruption immediately before and after record publication, restart
 and reinstall recovery, and incomplete/conflicting records; no retry may mint a
 second identity or orphan operation-owned staging. Interrupt and restore an
 active remote connection and prove each write surface stays unavailable or
@@ -292,10 +304,18 @@ include unobservable SQLite writers and opposing host clock skew against
 database-consistent expiry. Also prove that a second host holding a
 retired selection cannot list, resume or build model input from stale history,
 and that lost/corrupt active selection never reactivates preserved SQLite data.
+Race two confirmed controllers for the same generation: ownership acquisition
+must be linearizable, exactly one destination may publish, and the loser must
+discover and reconcile the durable winner before serving data.
 #11–#15 must cover equal-count corruption,
 missing references, late queue commits, repeated/uncertain append, every durable
 cutover boundary, new remote writes before reverse migration and a second host
 with no source files. No acknowledged canonical data may disappear or duplicate.
+Capture a committed, uncheckpointed SQLite WAL and prove its rows reach the
+destination. Alter a payload and all its internal hashes while retaining an
+independently pinned expected digest; reject it before staging or cutover.
+For every `regenerate` domain, omit it from the copy, rebuild it from verified
+authority and compare its public consumer behavior with the source.
 Compare representative pre-cutover SQLite outbound model input to post-cutover
 PostgreSQL input, including fork-only and compaction items. Exercise exact-limit
 and oversized/chunked rows, keys, cells and chunks; preserve Unicode, timestamp,
@@ -305,6 +325,8 @@ domain to prove high-water marks and ordering survive.
 Exercise a reverse move with another remote writer: either every host observes
 the retired source before a same-dataset local activation, or a per-client copy
 uses a new dataset identity. Test preserved local destination collisions.
+Compare representative pre/post reverse-cutover outbound model input for
+PostgreSQL-to-SQLite history, including fork-only and compaction items.
 After plan confirmation, change each bound source, destination occupancy,
 authorization, schema capability and operation scope before cutover; every
 irreversible transition must revalidate and stop on a changed binding.
@@ -319,9 +341,13 @@ upgrades, mixed old/new writers, and exact old-binary rollback against the
 post-upgrade schema, rejecting incompatible binaries. For upstream restore,
 compare resumed outbound model input for fork-only and compaction history, not
 just list/resume success. Test backup restore/clone against a newer epoch, a
-lagging same-generation replica and failover, `thread/resume.path` compatibility,
-staging cleanup/retention and secret-bearing export access. #18 must run the
-complete combined journey, not substitute tool fixtures.
+lagging same-generation replica and failover, staging cleanup/retention and
+secret-bearing export access. #18 must run the
+complete combined journey, not substitute tool fixtures. Exercise
+`thread/resume.path` and `thread/fork.path` compatibility, and resume an
+existing path-bound rollout from a second host/OS with no mapped workspace to
+prove it fails closed. Detach one of two live clients and prove the peer keeps
+listing, resuming and writing against unchanged remote authority.
 
 These are required future cases, not executed results. Independent architecture,
 security, API and lifecycle review is outstanding. Issue #2 remains open until
