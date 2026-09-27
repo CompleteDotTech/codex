@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+# Secrets must live in the external state directory, never here.
+*.key
+*.password
+*.pgpass
+compose.env
