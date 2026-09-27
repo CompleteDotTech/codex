@@ -22,8 +22,14 @@ class CertificateTests(unittest.TestCase):
         before = state.load(self.home)
         after = certificates.renew(self.home, before)
         self.assertEqual(
-            {k: v for k, v in after.items() if k != "active_certificate"}, before
+            {
+                k: v
+                for k, v in after.items()
+                if k not in ("active_certificate", "format")
+            },
+            {k: v for k, v in before.items() if k != "format"},
         )
+        self.assertEqual(after["format"], 2)
         self.assertEqual(state.load(self.home), after)
         certificates.check_expiry(self.home, after)
         self.assertNotEqual(
@@ -128,6 +134,29 @@ commonName = supplied
                     state.ServiceError, "invalid_active_certificate"
                 ):
                     state.load(self.home)
+
+    def test_legacy_receipt_adds_selected_openssl_without_reinitialization(self):
+        before = state.load(self.home)
+        legacy = dict(before)
+        del legacy["openssl"]
+        state.publish_json(self.home / "receipt.json", legacy)
+        after = state.initialize(
+            self.home,
+            before["project"],
+            before["image_tag"],
+            before["port"],
+            ["db.example.test"],
+            before["openssl"],
+        )
+        self.assertEqual(after, before)
+        self.assertEqual(state.load(self.home), before)
+
+    def test_format_one_cannot_select_a_renewed_leaf(self):
+        before = state.load(self.home)
+        renewed = certificates.renew(self.home, before)
+        state.publish_json(self.home / "receipt.json", dict(renewed, format=1))
+        with self.assertRaisesRegex(state.ServiceError, "invalid_active_certificate"):
+            state.load(self.home)
 
     def test_stored_openssl_is_used_for_later_checks(self):
         receipt = dict(state.load(self.home), openssl="custom executable")
