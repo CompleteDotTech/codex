@@ -50,8 +50,6 @@ impl App {
                     | AppEvent::ResetTranscriptForThreadSwitch
                     | AppEvent::ResetTranscriptForThreadSwitchPreservingScreen
                     | AppEvent::FinishPromptRevert { .. }
-                    | AppEvent::PromptSuggestionStarted { .. }
-                    | AppEvent::PromptSuggestionFinished { .. }
                     | AppEvent::ManagedWorktreeCreated(_)
                     | AppEvent::AgentsOverviewWorktreeCreated(_)
                     | AppEvent::AppendMessageHistoryEntry { .. }
@@ -151,7 +149,7 @@ impl App {
             AppEvent::PluginMentionsLoaded { ref cwd, .. }
                 if cwds_differ(cwd, self.config.cwd.as_path()) => {}
             AppEvent::NewSession { name } => {
-                self.start_fresh_session_with_summary_hint(
+                self.start_fresh_session(
                     tui, app_server, /*session_start_source*/ None,
                     /*initial_user_message*/ None, name,
                 )
@@ -391,7 +389,7 @@ impl App {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
 
-                self.start_fresh_session_with_summary_hint(
+                self.start_fresh_session(
                     tui,
                     app_server,
                     Some(ThreadStartSource::Clear),
@@ -411,7 +409,7 @@ impl App {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
 
-                self.start_fresh_session_with_summary_hint(
+                self.start_fresh_session(
                     tui,
                     app_server,
                     Some(ThreadStartSource::Clear),
@@ -2660,19 +2658,6 @@ impl App {
             } => {
                 self.suggest_thread_name(app_server, thread_id, request_id)
                     .await;
-            }
-            AppEvent::GeneratePromptSuggestion(request) => {
-                self.generate_prompt_suggestion(app_server, request);
-            }
-            AppEvent::PromptSuggestionStarted { request, result } => {
-                self.on_prompt_suggestion_started(app_server, request, result);
-            }
-            AppEvent::PromptSuggestionFinished { request, temporary_thread_id, text } => {
-                self.temporary_structured_requests.remove(&temporary_thread_id);
-                if text.is_none() {
-                    request.cancellation.cancel();
-                }
-                self.chat_widget.apply_prompt_suggestion(&request, text);
             }
             AppEvent::ThreadTitleStarted {
                 cancellation,
