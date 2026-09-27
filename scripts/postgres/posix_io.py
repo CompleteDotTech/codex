@@ -17,7 +17,7 @@ DIRECTORY_FLAGS = (
 
 def lexical_path(value):
     path = Path(value)
-    if not path.is_absolute() or ".." in path.parts:
+    if path.anchor != "/" or ".." in path.parts:
         raise ServiceError("invalid_state_path")
     return path
 
