@@ -4618,6 +4618,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-storage-authority"
+version = "0.0.0"
+dependencies = [
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "codex-tcp-tunnel"
 version = "0.0.0"
 dependencies = [
