@@ -1,4 +1,4 @@
-"""Verify a draft manifest and concatenated, record-aligned JSONL chunks.
+"""Validate draft manifests against independently trusted source inventories.
 
 This checks an immutable export artifact, not source completeness, authority,
 writer fences, runtime compatibility, or permission to activate a backend.
@@ -7,11 +7,8 @@ writer fences, runtime compatibility, or permission to activate a backend.
 import hashlib
 import hmac
 import uuid
-from typing import BinaryIO
 
 from .records import (
-    MAX_ROW_BYTES,
-    Fingerprint,
     fields,
     integer,
     parse_json,
@@ -152,60 +149,3 @@ def validate_manifest(data: bytes, expected_sha256: str, inventory: bytes) -> di
         require(records == domain["count"], "manifest_count_mismatch")
     require(seen == set(policy), "inventory_mismatch")
     return manifest
-
-
-def verify(
-    manifest_data: bytes, payload: BinaryIO, expected_sha256: str, inventory: bytes
-) -> dict:
-    """Stream verification with no data extraction, connections, writes or activation.
-
-    Payload is the concatenation of each domain's chunks in manifest order.
-    Chunk boundaries must fall between complete newline-terminated records.
-    Inputs must be immutable, operator-owned export snapshots, not live stores.
-    """
-    manifest = validate_manifest(manifest_data, expected_sha256, inventory)
-    verified_records, verified_domains, chunks_verified, bytes_verified = 0, 0, 0, 0
-    excluded = {key: 0 for key in ("retain", "regenerate", "absent")}
-    for domain in manifest["domains"]:
-        treatment = domain["treatment"]
-        if treatment != "migrate":
-            excluded[treatment] += 1
-            continue
-        logical = Fingerprint(domain["id"], domain["schema"])
-        for chunk in domain["chunks"]:
-            remaining, records, digest = chunk["bytes"], 0, hashlib.sha256()
-            while remaining:
-                line = payload.readline(min(remaining, MAX_ROW_BYTES + 1))
-                require(
-                    type(line) is bytes and 0 < len(line) <= remaining,
-                    "truncated_chunk",
-                )
-                remaining -= len(line)
-                digest.update(line)
-                logical.feed(line)
-                records += 1
-                require(records <= chunk["records"], "chunk_count_mismatch")
-            require(records == chunk["records"], "chunk_count_mismatch")
-            require(
-                hmac.compare_digest(digest.hexdigest(), chunk["sha256"]),
-                "chunk_digest_mismatch",
-            )
-            chunks_verified += 1
-            bytes_verified += chunk["bytes"]
-        require(logical.count == domain["count"], "domain_count_mismatch")
-        require(
-            hmac.compare_digest(logical.hexdigest(), domain["logical_sha256"]),
-            "logical_digest_mismatch",
-        )
-        verified_records += logical.count
-        verified_domains += 1
-    require(payload.read(1) == b"", "trailing_payload")
-    return {
-        "status": "bundle_verified",
-        "activation_permitted": False,
-        "verified_portable_domains": verified_domains,
-        "records_verified": verified_records,
-        "chunks_verified": chunks_verified,
-        "bytes_verified": bytes_verified,
-        "excluded_domains": excluded,
-    }
