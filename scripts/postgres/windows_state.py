@@ -180,13 +180,18 @@ def create_directory(value):
             handle = relative_open(
                 scope.handles[path.parent][0],
                 path.name,
-                0x20080,
+                0x30080,  # READ_CONTROL | FILE_READ_ATTRIBUTES | DELETE.
                 create=True,
                 directory=True,
                 security=attributes.descriptor,
             )
         scope.handles[path] = (handle, True)
-        validate_handle(handle)
+        try:
+            validate_handle(handle)
+        except BaseException:
+            remove = W.BYTE(True)
+            checked(set_info(handle, 4, ctypes.byref(remove), ctypes.sizeof(remove)))
+            raise
 
 
 def write_new(value, data):

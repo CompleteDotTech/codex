@@ -151,6 +151,20 @@ sys.exit(1)
                 self.assertFalse(file.exists())
         self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_failed_directory_validation_removes_only_the_created_directory(self):
+        for error in (ServiceError, PermissionError):
+            path = self.root / error.__name__
+            with self.subTest(error=error.__name__):
+                with patch.object(
+                    native, "validate_handle", side_effect=error("unverifiable")
+                ):
+                    with self.assertRaises(error):
+                        native.create_directory(path)
+                self.assertFalse(path.exists())
+                native.create_directory(path)
+                with native.pinned_paths() as scope:
+                    scope.validate(path, directory=True)
+
     def test_private_creation_ignores_planted_acl_executables_in_current_directory(
         self,
     ):
