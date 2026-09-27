@@ -70,6 +70,16 @@ class StateIoTests(unittest.TestCase):
         self.assertEqual(file.read_bytes(), before)
         self.assertEqual(list(self.home.glob("*.pending-*")), [])
 
+    def test_failed_pending_write_preserves_receipt_and_removes_partial_file(self):
+        file = self.home / "receipt.json"
+        state.publish_json(file, {"old": True})
+        before = file.read_bytes()
+        with patch("state_io.os.fsync", side_effect=OSError("disk failure")):
+            with self.assertRaises(OSError):
+                state.publish_json(file, {"new": True})
+        self.assertEqual(file.read_bytes(), before)
+        self.assertEqual(list(self.home.glob("*.pending-*")), [])
+
     def test_oversized_receipt_is_rejected_before_writing(self):
         file = self.home / "receipt.json"
         state.publish_json(file, {"old": True})
@@ -138,7 +148,7 @@ except ServiceError as exc:
         source_root = Path(state.__file__).resolve().parents[2]
 
         def filesystem_identity(path, other):
-            if path == self.home and other == source_root:
+            if path == self.home.resolve() and other == source_root:
                 return True
             return actual_samefile(path, other)
 
