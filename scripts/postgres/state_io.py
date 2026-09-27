@@ -45,8 +45,27 @@ def publish_json(path, data):
         raise ServiceError("receipt_too_large")
     pending = path.with_name(path.name + ".pending-" + secrets.token_hex(8))
     write_new(pending, encoded)
-    os.replace(pending, path)
-    sync_directory(path.parent)
+    try:
+        replace_file(pending, path)
+        sync_directory(path.parent)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
+def replace_file(source, destination):
+    """Publish a flushed file, requesting write-through rename on Windows."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        move = ctypes.WinDLL("kernel32", use_last_error=True).MoveFileExW
+        move.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        move.restype = wintypes.BOOL
+        # MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH; same-directory move.
+        if not move(str(source), str(destination), 0x1 | 0x8):
+            raise ctypes.WinError(ctypes.get_last_error())
+    else:
+        os.replace(source, destination)
 
 
 def sync_directory(path):
@@ -62,43 +81,85 @@ def state_path(value):
     path = Path(value).expanduser()
     if not path.is_absolute() or any(c in str(path) for c in "\r\n'$\0"):
         raise ServiceError("invalid_state_path")
-    # Reject symlink traversal instead of silently writing a different destination.
-    if any(p.is_symlink() for p in (path, *path.parents)):
-        raise ServiceError("symlink_state_path")
+    # lstat also identifies NTFS junctions, unlike is_symlink on Windows.
+    for candidate in (path, *path.parents):
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            continue
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or getattr(metadata, "st_file_attributes", 0) & 0x400
+        ):
+            raise ServiceError("symlink_state_path")
     path = path.resolve()
     source_root = Path(__file__).resolve().parents[2]
-    if path == source_root or source_root in path.parents:
+    # Compare existing directory identities, including case-insensitive volumes.
+    if any(
+        candidate.exists() and candidate.samefile(source_root)
+        for candidate in (path, *path.parents)
+    ):
         raise ServiceError("state_must_be_outside_source_tree")
     return path
 
 
 @contextlib.contextmanager
-def operation_lock(path):
-    lock = path / ".operation.lock"
-    payload = json.dumps(
-        {
-            "pid": os.getpid(),
-            "host": socket.gethostname(),
-            "token": secrets.token_hex(16),
-        }
-    ).encode()
+def _operation_guard(path):
+    # Never delete this stable guard, including during manual marker recovery.
+    # It couples marker verification/removal with exclusion of other operations.
+    guard = path / ".operation.guard"
+    descriptor = os.open(
+        guard, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
+    )
     try:
-        write_new(lock, payload)
-    except FileExistsError:
-        raise ServiceError(
-            "operation_locked_inspect_owner_before_manual_recovery"
-        ) from None
-    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ServiceError("invalid_operation_guard")
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise ServiceError(
+                "operation_locked_inspect_owner_before_manual_recovery"
+            ) from None
         yield
     finally:
+        os.close(descriptor)
+
+
+@contextlib.contextmanager
+def operation_lock(path):
+    with _operation_guard(path):
+        lock = path / ".operation.lock"
+        payload = json.dumps(
+            {
+                "pid": os.getpid(),
+                "host": socket.gethostname(),
+                "token": secrets.token_hex(16),
+            }
+        ).encode()
         try:
-            mode = lock.lstat().st_mode
-            if (
-                not stat.S_ISREG(mode)
-                or lock.stat().st_size != len(payload)
-                or lock.read_bytes() != payload
-            ):
-                raise ServiceError("lock_ownership_changed_preserved")
-            lock.unlink()
-        except OSError:
-            raise ServiceError("lock_ownership_changed_preserved") from None
+            write_new(lock, payload)
+        except FileExistsError:
+            raise ServiceError(
+                "operation_locked_inspect_owner_before_manual_recovery"
+            ) from None
+        try:
+            yield
+        finally:
+            try:
+                mode = lock.lstat().st_mode
+                if (
+                    not stat.S_ISREG(mode)
+                    or lock.stat().st_size != len(payload)
+                    or lock.read_bytes() != payload
+                ):
+                    raise ServiceError("lock_ownership_changed_preserved")
+                lock.unlink()
+            except OSError:
+                raise ServiceError("lock_ownership_changed_preserved") from None
