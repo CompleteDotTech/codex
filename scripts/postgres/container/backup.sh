@@ -19,6 +19,10 @@ exec 3>&-
 pg_restore --list "$base.partial" >/dev/null 2>>/tmp/dump-error || exit 1
 digest=$(sha256sum "$base.partial"); digest=${digest%% *}
 bytes=$(stat -c %s "$base.partial")
+if (( bytes > 134217728 )); then
+    echo 'PostgreSQL schema backup exceeds the restore size limit; partial artifact retained' >&2
+    exit 1
+fi
 sync -f "$base.partial"
 # Hard-link publication fails on any name conflict without overwriting data.
 ln "$base.partial" "$base.dump"
