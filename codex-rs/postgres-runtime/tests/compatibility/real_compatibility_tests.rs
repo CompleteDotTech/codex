@@ -10,6 +10,7 @@ use pretty_assertions::assert_eq;
 use sqlx::Acquire;
 use std::path::Path;
 use std::time::Duration;
+use tokio::time::Instant;
 
 // Run serially with bootstrap checks because these deliberately damage the same
 // isolated namespace, then restore it before testing the next case.
@@ -169,10 +170,32 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
         "INSERT INTO codex_storage._codex_pg_migrations (version, description, success, checksum, execution_time) SELECT extra, description, TRUE, checksum, execution_time FROM codex_storage._codex_pg_migrations CROSS JOIN generate_series(2, 20001) extra WHERE version = 1",
     )
     .await;
+    let mut bounded_settings = settings(state, "migrator");
+    bounded_settings.limits.max_connections = 1;
+    let bounded_pool = PostgresPool::connect(bounded_settings)
+        .await
+        .expect("bounded history pool");
     assert_eq!(
-        check_codex_storage_compatibility(migrator, capabilities, RequiredAccess::ReadOnly).await,
+        check_codex_storage_compatibility(&bounded_pool, capabilities, RequiredAccess::ReadOnly)
+            .await,
         Err(CompatibilityError::IncompatibleHistory),
     );
+    let mut bounded_connection = bounded_pool.acquire().await.expect("inspect bounded query");
+    let bounded_history_query: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_prepared_statements WHERE statement LIKE '%FROM ONLY codex_storage._codex_pg_migrations history%' AND statement LIKE '%ORDER BY history.version LIMIT $3%')",
+    )
+    .fetch_one(&mut *bounded_connection)
+    .await
+    .expect("inspect server-side history limit");
+    assert!(
+        bounded_history_query,
+        "history query must be bounded on the server"
+    );
+    drop(bounded_connection);
+    bounded_pool
+        .close()
+        .await
+        .expect("close bounded history pool");
     owner_query(
         migrator,
         "DELETE FROM codex_storage._codex_pg_migrations WHERE version <> 1",
@@ -252,10 +275,15 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
         .execute(&mut *transaction)
         .await
         .expect("hold timeout lock");
+    let started = Instant::now();
     assert_eq!(
         check_codex_storage_compatibility(&query_pool, capabilities, RequiredAccess::ReadOnly)
             .await,
         Err(CompatibilityError::Timeout),
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(29),
+        "server timeout must precede the outer 30-second deadline"
     );
     transaction.rollback().await.expect("release timeout lock");
     assert_eq!(
