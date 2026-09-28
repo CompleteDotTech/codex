@@ -4210,6 +4210,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-postgres-runtime"
+version = "0.0.0"
+dependencies = [
+ "rustls",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "codex-process-hardening"
 version = "0.0.0"
 dependencies = [
