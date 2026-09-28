@@ -3,7 +3,7 @@
 use crate::PoolError;
 use crate::PostgresPool;
 use sqlx::Acquire;
-use sqlx::migrate::Migrator;
+use sqlx::migrate::{MigrateError, Migrator};
 use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
@@ -22,6 +22,7 @@ pub enum BootstrapError {
     Connection(PoolError),
     Privilege,
     IncompatibleNamespace,
+    Unavailable,
     Migration,
 }
 
@@ -38,7 +39,47 @@ fn classify_sqlx(error: &sqlx::Error) -> BootstrapError {
         sqlx::Error::Database(error) if error.code().as_deref() == Some("42501") => {
             BootstrapError::Privilege
         }
+        sqlx::Error::Database(error)
+            if error.code().is_some_and(|code| {
+                code.starts_with("08") || matches!(code.as_ref(), "57P01" | "57P02" | "57P03")
+            }) =>
+        {
+            BootstrapError::Unavailable
+        }
+        sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::Protocol(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::WorkerCrashed
+        | sqlx::Error::BeginFailed => BootstrapError::Unavailable,
         _ => BootstrapError::Migration,
+    }
+}
+
+fn classify_migration(error: MigrateError) -> BootstrapError {
+    match error {
+        MigrateError::Execute(error) | MigrateError::ExecuteMigration(error, _) => {
+            classify_sqlx(&error)
+        }
+        _ => BootstrapError::Migration,
+    }
+}
+
+fn classify_namespace_validation(error: sqlx::Error) -> BootstrapError {
+    match &error {
+        sqlx::Error::Database(error)
+            if matches!(
+                error.code().as_deref(),
+                Some("42P01" | "42703" | "42804" | "42809")
+            ) =>
+        {
+            BootstrapError::IncompatibleNamespace
+        }
+        sqlx::Error::Database(error) if error.code().as_deref() == Some("42501") => {
+            BootstrapError::Privilege
+        }
+        _ => classify_sqlx(&error),
     }
 }
 
@@ -91,7 +132,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             )
             .fetch_optional(&mut *transaction)
             .await
-            .map_err(|_| BootstrapError::IncompatibleNamespace)?;
+            .map_err(classify_namespace_validation)?;
             if format != Some(1) {
                 return Err(BootstrapError::IncompatibleNamespace);
             }
@@ -117,7 +158,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         migrator
             .run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
             .await
-            .map_err(|_| BootstrapError::Migration)?;
+            .map_err(classify_migration)?;
         // The fixture's default grants are broad; metadata and history must be immutable to runtime.
         sqlx::query("REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime")
             .execute(&mut *transaction)
@@ -141,3 +182,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
     .await
     .map_err(|_| BootstrapError::Timeout)?
 }
+
+#[cfg(test)]
+#[path = "bootstrap_tests.rs"]
+mod tests;

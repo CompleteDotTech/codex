@@ -8,6 +8,7 @@ use codex_postgres_runtime::ConnectionSettings;
 use codex_postgres_runtime::PoolLimits;
 use codex_postgres_runtime::PostgresPool;
 use codex_postgres_runtime::bootstrap_codex_storage;
+use pretty_assertions::assert_eq;
 use serde_json::Value;
 use sqlx::Acquire;
 use std::path::Path;
