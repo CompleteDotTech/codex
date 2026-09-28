@@ -4,7 +4,7 @@ codex_rust_crate(
     name = "code-mode-runtime",
     crate_name = "codex_code_mode_runtime",
     # A hosted Windows run hit PartitionAlloc's pool reinitialization check
-    # with parallel cells; serial unit tests passed with the same V8 archive.
+    # with parallel unit tests; serial execution passed with the same V8 archive.
     unit_test_args = select({
         "@platforms//os:windows": ["--test-threads=1"],
         "//conditions:default": [],
