@@ -41,4 +41,4 @@ jobs:
             --test_output=errors \
             --build_metadata=TAG_ci56_linker_probe=prebuilt_msvc_v8_without_allocator_shim \
             -- \
-            //codex-rs/code-mode-runtime:code-mode-runtime-array_sort-test
+            //codex-rs/code-mode-runtime:all
