@@ -12,6 +12,7 @@ use crate::guardian::GuardianReviewContext;
 use crate::mcp_openai_file::rewrite_mcp_tool_arguments_for_openai_files;
 use crate::mcp_tool_approval_templates::RenderedMcpToolApprovalParam;
 use crate::mcp_tool_approval_templates::render_mcp_tool_approval_template;
+use crate::memory_mode_pollution;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
 use crate::session::turn_context::TurnContext;
@@ -83,7 +84,6 @@ use codex_protocol::request_user_input::RequestUserInputQuestionOption;
 use codex_protocol::request_user_input::RequestUserInputResponse;
 use codex_rmcp_client::ElicitationAction;
 use codex_rmcp_client::ElicitationResponse;
-use codex_rollout::state_db;
 use codex_tools::ToolName;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_output_truncation::TruncationPolicy;
@@ -932,8 +932,9 @@ async fn maybe_mark_thread_memory_mode_polluted(
     if !prepared_call.server_pollutes_memory() {
         return;
     }
-    state_db::mark_thread_memory_mode_polluted(
+    memory_mode_pollution::mark_thread_memory_mode_polluted(
         sess.services.state_db.as_deref(),
+        turn_context.config.memories.version,
         sess.thread_id,
         "mcp_tool_call",
     )

@@ -24,6 +24,31 @@ impl StateRuntime {
         }
     }
 
+    /// Mark a thread polluted in the selected local memory version and enqueue
+    /// forgetting for that version's completed consolidation, if applicable.
+    ///
+    /// Injected stores are rejected until memory state and the thread catalog
+    /// have a coordinated mutation protocol. This guard does not make injected
+    /// stores safe to activate through callers that only log this error.
+    pub async fn mark_thread_memory_mode_polluted_for_version(
+        &self,
+        version: MemoryVersion,
+        thread_id: ThreadId,
+    ) -> anyhow::Result<bool> {
+        if matches!(
+            &self.memory_store_selection,
+            MemoryStoreSelection::Injected(_)
+        ) {
+            anyhow::bail!(
+                "cannot pollute thread memory mode with injected stores before cross-store coordination"
+            );
+        }
+        self.memory_store_for_version(version)
+            .await?
+            .mark_thread_memory_mode_polluted(thread_id)
+            .await
+    }
+
     pub async fn memories_for_version(
         &self,
         version: MemoryVersion,

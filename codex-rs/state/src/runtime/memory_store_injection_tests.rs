@@ -110,3 +110,54 @@ async fn versioned_injected_stores_receive_writes_deletion_and_reset() -> anyhow
     tokio::fs::remove_dir_all(backend_home).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn injected_memory_store_cannot_pollute_a_separate_thread_catalog() -> anyhow::Result<()> {
+    let local_home = crate::runtime::test_support::unique_temp_dir();
+    let backend_home = crate::runtime::test_support::unique_temp_dir();
+    let backend = StateRuntime::init(
+        SqliteConfig::new_for_testing(backend_home.as_path().abs()),
+        "test-provider".to_string(),
+    )
+    .await?;
+    let local = StateRuntime::init_with_memory_stores(
+        SqliteConfig::new_for_testing(local_home.as_path().abs()),
+        "test-provider".to_string(),
+        VersionedMemoryStores {
+            v1: Arc::new(backend.memories_for_version(MemoryVersion::V1).await?),
+            v2: Arc::new(backend.memories_for_version(MemoryVersion::V2).await?),
+        },
+    )
+    .await?;
+    let thread_id = ThreadId::new();
+    let local_metadata =
+        test_thread_metadata(local_home.as_path(), thread_id, local_home.join("project"));
+    let backend_metadata = test_thread_metadata(
+        backend_home.as_path(),
+        thread_id,
+        backend_home.join("project"),
+    );
+    local.upsert_thread(&local_metadata).await?;
+    backend.upsert_thread(&backend_metadata).await?;
+    local.set_thread_memory_mode(thread_id, "enabled").await?;
+    backend.set_thread_memory_mode(thread_id, "enabled").await?;
+
+    let error = local
+        .mark_thread_memory_mode_polluted_for_version(MemoryVersion::V2, thread_id)
+        .await
+        .expect_err("injected memory store cannot coordinate thread catalog updates");
+    assert!(error.to_string().contains("cross-store coordination"));
+    assert_eq!(
+        local.get_thread_memory_mode(thread_id).await?.as_deref(),
+        Some("enabled")
+    );
+    assert_eq!(
+        backend.get_thread_memory_mode(thread_id).await?.as_deref(),
+        Some("enabled")
+    );
+    local.close().await;
+    backend.close().await;
+    tokio::fs::remove_dir_all(local_home).await?;
+    tokio::fs::remove_dir_all(backend_home).await?;
+    Ok(())
+}
