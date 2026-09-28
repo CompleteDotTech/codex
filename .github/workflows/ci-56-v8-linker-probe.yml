@@ -39,6 +39,7 @@ jobs:
             --@rules_rust//rust/settings:toolchain_linker_preference=cc \
             --subcommands=pretty_print \
             --test_output=errors \
+            --test_arg=--test-threads=1 \
             --build_metadata=TAG_ci56_linker_probe=prebuilt_msvc_v8_without_allocator_shim \
             -- \
             //codex-rs/code-mode-runtime:all
