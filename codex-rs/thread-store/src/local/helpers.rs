@@ -125,7 +125,10 @@ pub(super) fn move_rollout_noclobber(
     destination: &Path,
     codex_home: &Path,
 ) -> std::io::Result<()> {
-    let canonical_home = std::fs::canonicalize(codex_home)?;
+    let canonical_sessions =
+        std::fs::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
+    let canonical_archived =
+        std::fs::canonicalize(codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR))?;
     let canonical_source = std::fs::canonicalize(source)?;
     let canonical_destination_parent = std::fs::canonicalize(
         destination
@@ -135,12 +138,13 @@ pub(super) fn move_rollout_noclobber(
     let destination_name = destination
         .file_name()
         .ok_or_else(|| std::io::Error::other("rollout destination has no filename"))?;
-    if !canonical_source.starts_with(&canonical_home)
-        || !canonical_destination_parent.starts_with(&canonical_home)
-        || !std::fs::symlink_metadata(source)?.file_type().is_file()
-    {
+    let within_collections = (canonical_source.starts_with(&canonical_sessions)
+        && canonical_destination_parent.starts_with(&canonical_archived))
+        || (canonical_source.starts_with(&canonical_archived)
+            && canonical_destination_parent.starts_with(&canonical_sessions));
+    if !within_collections || !std::fs::symlink_metadata(source)?.file_type().is_file() {
         return Err(std::io::Error::other(
-            "rollout move is outside the Codex home or is not a file",
+            "rollout move is outside its collection or is not a file",
         ));
     }
 
