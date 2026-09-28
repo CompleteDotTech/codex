@@ -12,9 +12,12 @@ use sqlx::ConnectOptions;
 use sqlx::PgPool;
 use sqlx::Postgres;
 use sqlx::pool::PoolConnection;
-use sqlx::postgres::PgConnectOptions;
-use sqlx::postgres::PgPoolOptions;
-use sqlx::postgres::PgSslMode;
+use sqlx_postgres::PgConnectOptions;
+use sqlx_postgres::PgPoolOptions;
+use sqlx_postgres::PgSslMode;
+// The workspace SQLx facade includes SQLite. Every enabled driver must provide
+// the offline API once PostgreSQL enables it on their shared sqlx-core crate.
+use sqlx_sqlite as _;
 use std::fmt;
 use std::net::IpAddr;
 use std::path::PathBuf;
