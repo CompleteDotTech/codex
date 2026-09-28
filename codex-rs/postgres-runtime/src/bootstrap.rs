@@ -9,11 +9,11 @@ use std::fmt;
 use std::time::Duration;
 use tokio::time::timeout;
 
-const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
-const LOCK_CLASS: i32 = 0x4344_5850; // CDXP; transaction-scoped, independent of SQLx's session lock.
-const LOCK_RESOURCE: i32 = 1; // Fixed codex_storage metadata namespace.
+pub(crate) const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const LOCK_CLASS: i32 = 0x4344_5850; // CDXP; transaction-scoped, independent of SQLx's session lock.
+pub(crate) const LOCK_RESOURCE: i32 = 1; // Fixed codex_storage metadata namespace.
 const MIGRATIONS_TABLE: &str = "codex_storage._codex_pg_migrations";
-static BASE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
+pub(crate) static BASE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
 
 /// A redacted bootstrap outcome; SQLx diagnostics may contain server details.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
