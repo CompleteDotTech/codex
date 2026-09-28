@@ -295,6 +295,48 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
 
     owner_query(
         &migrator_a,
+        "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_singleton_check",
+    )
+    .await;
+    owner_query(
+        &migrator_a,
+        "ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT codex_schema_meta_singleton_check CHECK (TRUE)",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::IncompatibleNamespace)
+    );
+    owner_query(
+        &migrator_a,
+        "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_singleton_check",
+    )
+    .await;
+    owner_query(
+        &migrator_a,
+        "ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT codex_schema_meta_singleton_check CHECK (singleton)",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+
+    owner_query(
+        &migrator_a,
+        "REVOKE USAGE ON SCHEMA codex_storage FROM codex_runtime, codex_backup",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    let mut schema_observer = migrator_a.acquire().await.expect("inspect schema grants");
+    let schema_usage: (bool, bool) = sqlx::query_as(
+        "SELECT has_schema_privilege('codex_runtime', 'codex_storage', 'USAGE'), has_schema_privilege('codex_backup', 'codex_storage', 'USAGE')",
+    )
+    .fetch_one(&mut *schema_observer)
+    .await
+    .expect("reader roles regain schema access");
+    assert_eq!(schema_usage, (true, true));
+    drop(schema_observer);
+
+    owner_query(
+        &migrator_a,
         "CREATE TYPE codex_storage.occupied_type AS ENUM ('x')",
     )
     .await;

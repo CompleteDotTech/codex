@@ -176,6 +176,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
                         WHERE relation.relnamespace = 'codex_storage'::regnamespace
                           AND relation.relname = required.name
                           AND relation.relkind::text = required.kind
+                          AND relation.relowner = 'codex_owner'::regrole
                     )
                 ) AND EXISTS (
                     SELECT 1 FROM pg_constraint cst
@@ -192,6 +193,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
                     WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
                       AND cst.conname = 'codex_schema_meta_singleton_check'
                       AND cst.contype = 'c'
+                      AND pg_get_constraintdef(cst.oid) = 'CHECK (singleton)'
                 )",
             )
             .fetch_one(&mut *transaction)
@@ -248,6 +250,10 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .await
             .map_err(|error| classify_sqlx(&error))?;
         sqlx::query("GRANT SELECT ON codex_storage._codex_pg_migrations TO codex_backup")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("GRANT USAGE ON SCHEMA codex_storage TO codex_runtime, codex_backup")
             .execute(&mut *transaction)
             .await
             .map_err(|error| classify_sqlx(&error))?;
