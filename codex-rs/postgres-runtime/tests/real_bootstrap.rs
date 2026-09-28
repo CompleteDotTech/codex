@@ -128,6 +128,20 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
         "REVOKE codex_bootstrap_graph_bridge FROM codex_bootstrap_graph_principal",
     )
     .await;
+    migrator_query(
+        &migrator_a,
+        "GRANT codex_bootstrap_graph_bridge TO codex_backup WITH INHERIT FALSE, SET FALSE, ADMIN TRUE",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    migrator_query(
+        &migrator_a,
+        "REVOKE codex_bootstrap_graph_bridge FROM codex_backup",
+    )
+    .await;
 
     owner_query(
         &migrator_a,
@@ -259,6 +273,18 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
         owner_query(&migrator_a, revoke).await;
         assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
     }
+
+    owner_query(
+        &migrator_a,
+        "CREATE SCHEMA codex_view_fixture AUTHORIZATION codex_owner; CREATE VIEW codex_view_fixture.metadata_proxy_base AS SELECT singleton, format_version, min_reader_version, min_writer_version FROM codex_storage.codex_schema_meta; CREATE VIEW codex_view_fixture.metadata_proxy AS SELECT singleton, format_version, min_reader_version, min_writer_version FROM codex_view_fixture.metadata_proxy_base; GRANT USAGE ON SCHEMA codex_view_fixture TO codex_runtime; GRANT UPDATE ON codex_view_fixture.metadata_proxy TO codex_runtime",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    owner_query(&migrator_a, "DROP SCHEMA codex_view_fixture CASCADE").await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
 
     for (raise_minimum, reset_minimum) in [
         (

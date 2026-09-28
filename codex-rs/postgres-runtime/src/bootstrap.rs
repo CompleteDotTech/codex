@@ -71,6 +71,7 @@ fn classify_migration(error: MigrateError) -> BootstrapError {
 
 fn classify_namespace_validation(error: sqlx::Error) -> BootstrapError {
     match &error {
+        sqlx::Error::ColumnDecode { .. } => BootstrapError::IncompatibleNamespace,
         sqlx::Error::Database(error)
             if matches!(
                 error.code().as_deref(),
@@ -183,6 +184,10 @@ async fn require_safe_protected_privileges(
             WHERE membership.admin_option
               AND membership.member <> 'codex_migrator'::regrole
         ) OR EXISTS (
+            SELECT 1 FROM pg_auth_members membership
+            WHERE membership.member = 'codex_backup'::regrole
+              AND membership.admin_option
+        ) OR EXISTS (
             SELECT 1 FROM pg_class history,
                  LATERAL aclexplode(coalesce(history.relacl, acldefault('r', history.relowner))) acl
             WHERE history.oid = 'codex_storage._codex_pg_migrations'::regclass
@@ -196,6 +201,38 @@ async fn require_safe_protected_privileges(
               AND acl.privilege_type = 'SELECT'
               AND acl.is_grantable
               AND acl.grantee NOT IN ('codex_owner'::regrole, 'codex_migrator'::regrole)
+        ) OR EXISTS (
+            WITH RECURSIVE protected_relations(oid) AS (
+                VALUES (
+                    'codex_storage.codex_schema_meta'::regclass::oid
+                ), (
+                    'codex_storage._codex_pg_migrations'::regclass::oid
+                )
+            ), dependent_views(oid) AS (
+                SELECT view.oid
+                FROM pg_class view
+                JOIN pg_rewrite rewrite ON rewrite.ev_class = view.oid
+                JOIN pg_depend dependency
+                  ON dependency.classid = 'pg_rewrite'::regclass
+                 AND dependency.objid = rewrite.oid
+                 AND dependency.refclassid = 'pg_class'::regclass
+                JOIN protected_relations protected ON protected.oid = dependency.refobjid
+                WHERE view.relkind = 'v'
+                UNION
+                SELECT view.oid
+                FROM pg_class view
+                JOIN pg_rewrite rewrite ON rewrite.ev_class = view.oid
+                JOIN pg_depend dependency
+                  ON dependency.classid = 'pg_rewrite'::regclass
+                 AND dependency.objid = rewrite.oid
+                 AND dependency.refclassid = 'pg_class'::regclass
+                JOIN dependent_views parent ON parent.oid = dependency.refobjid
+                WHERE view.relkind = 'v'
+            )
+            SELECT 1
+            FROM pg_class view
+            WHERE view.relowner = 'codex_owner'::regrole
+              AND view.oid IN (SELECT oid FROM dependent_views)
         )",
     )
     .fetch_one(connection)

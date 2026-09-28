@@ -68,6 +68,19 @@ jobs:
           python scripts/postgres/manage.py --state "$state" init --project "codex-pg-rust-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 56081
           python scripts/postgres/manage.py --state "$state" pin
           python scripts/postgres/manage.py --state "$state" up
+      - name: Provision PostgreSQL integration-test role graph
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts/postgres")
+          from qualification_checks import sql
+
+          state = Path(os.environ["CODEX_TEST_POSTGRES_STATE"])
+          sql(state, Path("scripts/postgres/container/real-bootstrap-test-roles.sql").read_text())
       - name: Test PostgreSQL connection pool against real server
         working-directory: codex-rs
         run: just test -p codex-postgres-runtime
