@@ -41,6 +41,15 @@ STORES = {
     "agent_message_board_1.sqlite": "board",
 }
 BOARD_HASH = "ca3d1d2469507160a15df016fb857e827821d6963d3f69e85f930460a45923c5"
+STATE_RETAINED_TABLES = frozenset(
+    {
+        "backfill_state",
+        "external_agent_config_imports",
+        "remote_control_enrollments",
+        "rollout_migration_skipped_rollouts",
+        "rollout_migration_state",
+    }
+)
 
 
 def verified_migrations(store: str, *, directory: Path = FIXTURES) -> tuple[bytes, ...]:
@@ -144,7 +153,19 @@ def build_fixture_policy(store: str, *, version: int) -> bytes:
                 record = encode_row(ordinal.to_bytes(8, "big"), row)
                 digest.update(len(record).to_bytes(8, "big") + record)
             digest.update(len(rows).to_bytes(8, "big"))
-            tables = {row[1]: "migrate" for row in rows if row[0] == "table"}
+            retained = (
+                set(STATE_RETAINED_TABLES) if store == "state_5.sqlite" else set()
+            )
+            if store == "state_5.sqlite" and not any(
+                row[0] == "table" and row[3] and "AUTOINCREMENT" in row[3]
+                for row in rows
+            ):
+                retained.add("sqlite_sequence")
+            tables = {
+                row[1]: ("retain" if row[1] in retained else "migrate")
+                for row in rows
+                if row[0] == "table"
+            }
             return json.dumps(
                 {"version": 1, "schema_sha256": digest.hexdigest(), "tables": tables}
             ).encode()

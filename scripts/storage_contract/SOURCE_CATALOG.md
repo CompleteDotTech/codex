@@ -48,7 +48,7 @@ state for separate logs, queue and board stores is covered by their own catalogs
 | `rollout_migration_state`, `rollout_migration_skipped_rollouts` | `state/src/runtime/rollout_migration.rs` | Retain as host/source maintenance evidence pending #11/#13 review; do not replay into a new host as active work |
 | `remote_control_enrollments` | `state/src/runtime/remote_control.rs` | Host-bound; see `HOST_LOCAL_FIXTURES.md`; #12/#13 classification |
 | `external_agent_config_imports` | `state/src/runtime/external_agent_config_imports.rs` | Host/source import history; see `HOST_LOCAL_FIXTURES.md`; #12/#13 classification |
-| `sqlite_sequence` | SQLite internal table from historical `logs` autoincrement | Current primary has no live generated-ID use; do not infer other stores' high-water marks from it |
+| `sqlite_sequence` | SQLite internal table from historical `logs` autoincrement | Retain in current primary as source-only evidence; historical prefixes with live primary `logs` migrate its high-water mark. Other stores' live sequences are separate |
 
 This maps the directly observed `codex-state` SQL modules, not every transitive
 app-server/TUI/daemon/extension consumer. The complete producer/consumer graph,
