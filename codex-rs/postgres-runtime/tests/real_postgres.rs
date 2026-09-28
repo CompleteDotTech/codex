@@ -7,6 +7,7 @@ use codex_postgres_runtime::ConnectionSettings;
 use codex_postgres_runtime::PoolError;
 use codex_postgres_runtime::PoolLimits;
 use codex_postgres_runtime::PostgresPool;
+use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
@@ -68,6 +69,68 @@ async fn real_postgres_pool_bounds_waits_and_rejects_bad_credentials() {
         PostgresPool::connect(invalid).await.err(),
         Some(PoolError::Authentication)
     );
+}
+
+#[tokio::test]
+async fn real_postgres_acquisition_can_outwait_initial_connection_timeout() {
+    let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_STATE") else {
+        return;
+    };
+    let mut connection_settings = settings(Path::new(&state));
+    connection_settings.limits.connect_timeout = Duration::from_secs(1);
+    connection_settings.limits.acquire_timeout = Duration::from_secs(5);
+    let pool = PostgresPool::connect(connection_settings)
+        .await
+        .expect("connect with verified TLS");
+    let held = pool.acquire().await.expect("hold sole connection");
+    let (acquired, ()) = tokio::join!(pool.acquire(), async {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        drop(held);
+    });
+    let mut acquired = acquired.expect("acquisition honors its longer timeout");
+    assert_eq!(
+        sqlx::query_scalar::<_, i32>("SELECT 1")
+            .fetch_one(&mut *acquired)
+            .await
+            .expect("reused connection works"),
+        1
+    );
+    drop(acquired);
+    pool.close().await.expect("bounded shutdown");
+}
+
+#[tokio::test]
+async fn real_postgres_startup_can_outwait_acquisition_timeout() {
+    let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_STATE") else {
+        return;
+    };
+    let mut connection_settings = settings(Path::new(&state));
+    let upstream_port = connection_settings.port;
+    let relay = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind isolated TLS relay");
+    connection_settings.port = relay.local_addr().expect("relay address").port();
+    let forwarding = tokio::spawn(async move {
+        let (mut client, _) = relay.accept().await.expect("accept pool connection");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let mut upstream = tokio::net::TcpStream::connect(("localhost", upstream_port))
+            .await
+            .expect("connect relay to real PostgreSQL");
+        tokio::io::copy_bidirectional(&mut client, &mut upstream)
+            .await
+            .expect("forward encrypted PostgreSQL traffic");
+    });
+    let pool = PostgresPool::connect(connection_settings)
+        .await
+        .expect("startup honors its longer timeout");
+    pool.health()
+        .await
+        .expect("TLS connection works through relay");
+    pool.close().await.expect("bounded shutdown");
+    tokio::time::timeout(Duration::from_secs(5), forwarding)
+        .await
+        .expect("relay shuts down")
+        .expect("relay completed");
 }
 
 #[tokio::test]
