@@ -279,6 +279,11 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
             "REVOKE CREATE ON SCHEMA codex_storage FROM codex_backup",
             "SELECT has_schema_privilege('codex_backup', 'codex_storage', 'CREATE')",
         ),
+        (
+            "GRANT UPDATE (format_version) ON codex_storage.codex_schema_meta TO codex_bootstrap_graph_principal",
+            "REVOKE UPDATE (format_version) ON codex_storage.codex_schema_meta FROM codex_bootstrap_graph_principal",
+            "SELECT has_column_privilege('codex_bootstrap_graph_principal', 'codex_storage.codex_schema_meta', 'format_version', 'UPDATE')",
+        ),
     ] {
         owner_query(&migrator_a, grant).await;
         assert_eq!(
@@ -353,6 +358,22 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     .await;
     assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
     owner_query(&migrator_a, "DROP SCHEMA codex_backup_view_fixture CASCADE").await;
+
+    owner_query(
+        &migrator_a,
+        "ALTER TABLE codex_storage._codex_pg_migrations ALTER COLUMN installed_on SET DEFAULT NULL",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::IncompatibleNamespace)
+    );
+    owner_query(
+        &migrator_a,
+        "ALTER TABLE codex_storage._codex_pg_migrations ALTER COLUMN installed_on SET DEFAULT CURRENT_TIMESTAMP",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
 
     migrator_query(
         &migrator_a,
