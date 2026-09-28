@@ -81,6 +81,9 @@ schema/SQL level, with only partial current-primary producer/consumer mapping.
 Stored public-protocol payloads remain synthetic. SQLx bookkeeping, Codex consumers, PostgreSQL, and
 canonical history and artifacts are not qualified by these tests. See
 `SOURCE_CATALOG.md` for the exact coverage and exclusions.
+`CANONICAL_HISTORY_SOURCES.md` separately pins a partial source-level map of
+rollout, fork, archive, compression, and attachment call sites. It does not
+qualify a coherent capture or second-host replay.
 
 `migrate`, `regenerate`, `retain`, and `absent` are distinct treatments. Only
 `migrate` contributes verified record counts. Non-migrated entries cannot carry
