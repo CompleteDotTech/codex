@@ -1,11 +1,10 @@
 use super::LocalThreadStore;
-use super::helpers::move_rollout_noclobber;
 use super::helpers::owned_rollout_paths;
-use super::helpers::restore_rollout_moves;
 use super::helpers::rollout_path_is_archived;
 use super::helpers::scoped_rollout_path;
-use super::helpers::touch_modified_time;
 use super::helpers::validated_rollout_file_name;
+use super::rollout_move_file::move_rollout_noclobber_retained;
+use super::rollout_move_file::touch_modified_time;
 use crate::ArchiveThreadParams;
 use crate::ReadThreadParams;
 use crate::StoredThread;
@@ -13,6 +12,9 @@ use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use codex_rollout::rollout_date_parts;
 
+use super::rollout_move_transaction::MoveDirection;
+use super::rollout_move_transaction::begin_move;
+use super::rollout_move_transaction::replay_pending_move;
 use super::thread_rollout_resolver;
 use super::thread_rollout_resolver::RolloutLocation;
 
@@ -25,6 +27,17 @@ pub(super) async fn unarchive_thread(
     // Archive, delete, and revert use the same cross-process lock while moving or selecting
     // rollout files. Unarchive must participate before it moves those files back.
     let _writer_lock = store.acquire_writer_lock(thread_id)?;
+    if replay_pending_move(store, thread_id).await? == Some(MoveDirection::Unarchive) {
+        return super::read_thread::read_thread(
+            store,
+            ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            },
+        )
+        .await;
+    }
     let state_db_ctx = store.state_db().await;
     let selected_archived_path =
         thread_rollout_resolver::resolve_current_including_archived(store, thread_id)
@@ -88,34 +101,23 @@ pub(super) async fn unarchive_thread(
         message: format!("failed to unarchive selected rollout for thread {thread_id}"),
     })?;
 
-    for (index, (source, destination)) in rollout_moves.iter().enumerate() {
-        if let Err(err) =
-            move_rollout_noclobber(source, destination, store.config.codex_home.as_path())
-        {
-            if let Err(restore_err) =
-                restore_rollout_moves(&rollout_moves[..index], store.config.codex_home.as_path())
-            {
-                return Err(ThreadStoreError::Internal {
-                    message: format!(
-                        "failed to unarchive thread: {err}; failed to restore moved rollouts: {restore_err}"
-                    ),
-                });
-            }
-            return Err(ThreadStoreError::Internal {
+    let pending = begin_move(
+        store.config.codex_home.as_path(),
+        thread_id,
+        MoveDirection::Unarchive,
+        restored_path.as_path(),
+        &rollout_moves,
+    )
+    .map_err(|err| ThreadStoreError::Internal {
+        message: format!("failed to record unarchive move: {err}"),
+    })?;
+    for (source, destination) in &rollout_moves {
+        move_rollout_noclobber_retained(source, destination, store.config.codex_home.as_path())
+            .map_err(|err| ThreadStoreError::Internal {
                 message: format!("failed to unarchive thread: {err}"),
-            });
-        }
+            })?;
     }
     if let Err(err) = touch_modified_time(restored_path.as_path()) {
-        if let Err(restore_err) =
-            restore_rollout_moves(&rollout_moves, store.config.codex_home.as_path())
-        {
-            return Err(ThreadStoreError::Internal {
-                message: format!(
-                    "failed to update unarchived thread timestamp: {err}; failed to restore moved rollouts: {restore_err}"
-                ),
-            });
-        }
         return Err(ThreadStoreError::Internal {
             message: format!("failed to update unarchived thread timestamp: {err}"),
         });
@@ -126,19 +128,15 @@ pub(super) async fn unarchive_thread(
             .mark_unarchived(thread_id, restored_path.as_path())
             .await
     {
-        if let Err(restore_err) =
-            restore_rollout_moves(&rollout_moves, store.config.codex_home.as_path())
-        {
-            return Err(ThreadStoreError::Internal {
-                message: format!(
-                    "failed to update unarchived thread metadata: {err}; failed to restore moved rollouts: {restore_err}"
-                ),
-            });
-        }
         return Err(ThreadStoreError::Internal {
             message: format!("failed to update unarchived thread metadata: {err}"),
         });
     }
+    pending
+        .complete()
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to finish unarchive move: {err}"),
+        })?;
 
     super::read_thread::read_thread(
         store,

@@ -1,15 +1,24 @@
 use std::fs;
 use std::io::Write;
+use std::sync::Arc;
 
 use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadMemoryMode;
 use pretty_assertions::assert_eq;
 use uuid::Uuid;
 
 use super::MoveDirection;
 use super::begin_move;
 use super::replay_pending_move;
+use crate::ArchiveThreadParams;
+use crate::DeleteThreadParams;
+use crate::ReadThreadParams;
+use crate::ResumeThreadParams;
+use crate::RevertThreadParams;
+use crate::ThreadPersistenceMetadata;
+use crate::ThreadStore;
 use crate::local::LocalThreadStore;
 use crate::local::rollout_move_file::move_rollout_noclobber_retained;
 use crate::local::test_support::test_config;
@@ -290,6 +299,294 @@ async fn replay_rejects_replaced_destination_without_clearing_journal()
     assert!(archive.join("preserved-original.jsonl").exists());
     assert!(
         home.path()
+            .join("rollout_move_transactions")
+            .join(format!("{thread_id}.json"))
+            .exists()
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn read_replays_pending_archive_before_using_sqlite_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let config = test_config(home.path());
+    let uuid = Uuid::from_u128(515);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_session_file(home.path(), "2025-01-03T16-00-00", uuid)?;
+    let runtime = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await?;
+    let metadata = codex_state::ThreadMetadataBuilder::new(
+        thread_id,
+        source.clone(),
+        Utc::now(),
+        SessionSource::Cli,
+    )
+    .build(config.default_model_provider_id.as_str());
+    runtime.upsert_thread(&metadata).await?;
+    let store = LocalThreadStore::new(config, Some(runtime.clone()));
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let destination = archive.join(source.file_name().expect("filename"));
+    let pending = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Archive,
+        &destination,
+        &[(source.clone(), destination.clone())],
+    )?;
+    move_rollout_noclobber_retained(&source, &destination, home.path())?;
+    drop(pending);
+
+    let thread = store
+        .read_thread(ReadThreadParams {
+            thread_id,
+            include_archived: true,
+            include_history: false,
+        })
+        .await?;
+
+    assert_eq!(thread.rollout_path, Some(destination.clone()));
+    let updated = runtime.get_thread(thread_id).await?.expect("SQLite row");
+    assert_eq!(updated.rollout_path, destination);
+    assert!(updated.archived_at.is_some());
+    assert_eq!(replay_pending_move(&store, thread_id).await?, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn resume_replays_move_before_rejecting_old_explicit_path()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let uuid = Uuid::from_u128(516);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_session_file(home.path(), "2025-01-03T16-00-01", uuid)?;
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let destination = archive.join(source.file_name().expect("filename"));
+    let pending = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Archive,
+        &destination,
+        &[(source.clone(), destination.clone())],
+    )?;
+    move_rollout_noclobber_retained(&source, &destination, home.path())?;
+    drop(pending);
+
+    assert!(
+        store
+            .resume_thread(ResumeThreadParams {
+                thread_id,
+                rollout_path: Some(source.clone()),
+                history: Some(Arc::new(Vec::new())),
+                include_archived: false,
+                metadata: ThreadPersistenceMetadata {
+                    cwd: Some(home.path().to_path_buf()),
+                    model_provider: "test-provider".into(),
+                    memory_mode: ThreadMemoryMode::Enabled,
+                },
+            })
+            .await
+            .is_err()
+    );
+
+    assert!(!source.exists());
+    assert!(destination.exists());
+    assert_eq!(replay_pending_move(&store, thread_id).await?, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn delete_replays_pending_move_before_reference_scan()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let uuid = Uuid::from_u128(517);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_session_file(home.path(), "2025-01-03T16-00-02", uuid)?;
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let destination = archive.join(source.file_name().expect("filename"));
+    let pending = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Archive,
+        &destination,
+        &[(source.clone(), destination.clone())],
+    )?;
+    move_rollout_noclobber_retained(&source, &destination, home.path())?;
+    drop(pending);
+
+    store
+        .delete_thread(DeleteThreadParams { thread_id })
+        .await?;
+
+    assert!(!source.exists());
+    assert!(!destination.exists());
+    assert_eq!(replay_pending_move(&store, thread_id).await?, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn revert_replays_pending_archive_before_resolving_source()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let config = test_config(home.path());
+    let uuid = Uuid::from_u128(518);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_session_file(home.path(), "2025-01-03T16-00-03", uuid)?;
+    let runtime = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await?;
+    let metadata = codex_state::ThreadMetadataBuilder::new(
+        thread_id,
+        source.clone(),
+        Utc::now(),
+        SessionSource::Cli,
+    )
+    .build(config.default_model_provider_id.as_str());
+    runtime.upsert_thread(&metadata).await?;
+    let store = LocalThreadStore::new(config, Some(runtime.clone()));
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let destination = archive.join(source.file_name().expect("filename"));
+    let pending = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Archive,
+        &destination,
+        &[(source.clone(), destination.clone())],
+    )?;
+    move_rollout_noclobber_retained(&source, &destination, home.path())?;
+    drop(pending);
+
+    assert!(
+        store
+            .revert_thread(RevertThreadParams {
+                thread_id,
+                before_turn_id: "turn-1".to_string(),
+                multi_agent_version: None,
+            })
+            .await
+            .is_err()
+    );
+
+    assert!(!source.exists());
+    assert!(destination.exists());
+    assert_eq!(
+        runtime
+            .get_thread(thread_id)
+            .await?
+            .expect("row")
+            .rollout_path,
+        destination
+    );
+    assert_eq!(replay_pending_move(&store, thread_id).await?, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn archive_replays_destination_only_and_partially_moved_rollouts()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let uuid = Uuid::from_u128(510);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let first = write_session_file(home.path(), "2025-01-03T12-00-00", uuid)?;
+    let second = write_session_file(home.path(), "2025-01-03T12-00-01", uuid)?;
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let first_destination = archive.join(first.file_name().expect("first filename"));
+    let second_destination = archive.join(second.file_name().expect("second filename"));
+    let moves = vec![
+        (first.clone(), first_destination.clone()),
+        (second.clone(), second_destination.clone()),
+    ];
+    let pending = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Archive,
+        &first_destination,
+        &moves,
+    )?;
+    move_rollout_noclobber_retained(&first, &first_destination, home.path())?;
+    drop(pending); // Simulate process exit before the second move and SQLite update.
+
+    store
+        .archive_thread(ArchiveThreadParams { thread_id })
+        .await?;
+    assert_eq!(replay_pending_move(&store, thread_id).await?, None);
+
+    assert!(!first.exists());
+    assert!(!second.exists());
+    assert!(first_destination.exists());
+    assert!(second_destination.exists());
+    assert!(
+        !home
+            .path()
+            .join("rollout_move_transactions")
+            .join(format!("{thread_id}.json"))
+            .exists()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn unarchive_replays_destination_only_before_archived_lookup()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let config = test_config(home.path());
+    let uuid = Uuid::from_u128(511);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_archived_session_file(home.path(), "2025-01-03T13-00-00", uuid)?;
+    let runtime = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await?;
+    let mut metadata = codex_state::ThreadMetadataBuilder::new(
+        thread_id,
+        source.clone(),
+        Utc::now(),
+        SessionSource::Cli,
+    )
+    .build(config.default_model_provider_id.as_str());
+    metadata.archived_at = Some(metadata.updated_at);
+    runtime.upsert_thread(&metadata).await?;
+    let store = LocalThreadStore::new(config, Some(runtime.clone()));
+    let destination_directory = home.path().join("sessions/2025/01/03");
+    fs::create_dir_all(&destination_directory)?;
+    let destination = destination_directory.join(source.file_name().expect("filename"));
+    let pending = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Unarchive,
+        &destination,
+        &[(source.clone(), destination.clone())],
+    )?;
+    move_rollout_noclobber_retained(&source, &destination, home.path())?;
+    drop(pending); // Simulate process exit before SQLite update.
+
+    let restored = store
+        .unarchive_thread(ArchiveThreadParams { thread_id })
+        .await?;
+    assert_eq!(replay_pending_move(&store, thread_id).await?, None);
+
+    assert_eq!(restored.rollout_path, Some(destination.clone()));
+    let updated = runtime.get_thread(thread_id).await?.expect("SQLite row");
+    assert_eq!(updated.rollout_path, destination.clone());
+    assert_eq!(updated.archived_at, None);
+    assert!(!source.exists());
+    assert!(destination.exists());
+    assert!(
+        !home
+            .path()
             .join("rollout_move_transactions")
             .join(format!("{thread_id}.json"))
             .exists()

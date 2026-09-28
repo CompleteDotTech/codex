@@ -1,11 +1,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::fs::FileTimes;
-use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -113,55 +110,6 @@ pub(super) fn validated_rollout_file_name(
             ),
         })
     }
-}
-
-pub(super) fn touch_modified_time(path: &Path) -> std::io::Result<()> {
-    let times = FileTimes::new().set_modified(SystemTime::now());
-    OpenOptions::new().append(true).open(path)?.set_times(times)
-}
-
-pub(super) fn move_rollout_noclobber(
-    source: &Path,
-    destination: &Path,
-    codex_home: &Path,
-) -> std::io::Result<()> {
-    let canonical_sessions =
-        std::fs::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
-    let canonical_archived =
-        std::fs::canonicalize(codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR))?;
-    let canonical_source = std::fs::canonicalize(source)?;
-    let canonical_destination_parent = std::fs::canonicalize(
-        destination
-            .parent()
-            .ok_or_else(|| std::io::Error::other("rollout destination has no parent"))?,
-    )?;
-    let destination_name = destination
-        .file_name()
-        .ok_or_else(|| std::io::Error::other("rollout destination has no filename"))?;
-    let within_collections = (canonical_source.starts_with(&canonical_sessions)
-        && canonical_destination_parent.starts_with(&canonical_archived))
-        || (canonical_source.starts_with(&canonical_archived)
-            && canonical_destination_parent.starts_with(&canonical_sessions));
-    if !within_collections || !std::fs::symlink_metadata(source)?.file_type().is_file() {
-        return Err(std::io::Error::other(
-            "rollout move is outside its collection or is not a file",
-        ));
-    }
-
-    // Both collections are under one home. Linking publishes the destination only if absent.
-    // If unlink fails, retain both links so neither copy is lost.
-    std::fs::hard_link(source, canonical_destination_parent.join(destination_name))?;
-    std::fs::remove_file(source)
-}
-
-pub(super) fn restore_rollout_moves(
-    moves: &[(PathBuf, PathBuf)],
-    codex_home: &Path,
-) -> std::io::Result<()> {
-    for (source, destination) in moves.iter().rev() {
-        move_rollout_noclobber(destination, source, codex_home)?;
-    }
-    Ok(())
 }
 
 pub(super) fn stored_thread_from_rollout_item(

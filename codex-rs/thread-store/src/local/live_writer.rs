@@ -44,6 +44,16 @@ pub(super) async fn resume_thread(
     let _live_writer_guard = store.live_writer_locks.lock(params.thread_id).await;
     store.ensure_live_recorder_absent(params.thread_id).await?;
     let writer_lock = store.acquire_writer_lock(params.thread_id)?;
+    super::rollout_move_transaction::replay_pending_move(store, params.thread_id).await?;
+    if let Some(rollout_path) = params.rollout_path.as_ref()
+        && codex_rollout::existing_rollout_path(rollout_path)
+            .await
+            .is_none()
+    {
+        return Err(ThreadStoreError::InvalidRequest {
+            message: format!("rollout path `{}` no longer exists", rollout_path.display()),
+        });
+    }
     let history_mode = if let Some(history) = params.history.as_deref() {
         canonical_history_mode_from_rollout_items(history)
     } else if let Some(rollout_path) = params.rollout_path.as_ref() {
