@@ -44,11 +44,22 @@ class CoverageMatrixTests(unittest.TestCase):
     def test_queue_edges_match_migrations_and_production_callers(self):
         matrix = audit_coverage()["stores"]["queue_1.sqlite"]
         root = Path(__file__).resolve().parents[2] / "codex-rs"
-        for table in QUEUE_EDGES:
+        expected_tables = {"queued_items", "queued_thread_revisions"}
+        self.assertEqual(set(QUEUE_EDGES), expected_tables)
+        observed = {
+            table: row["observed_queue_edges"]
+            for table, row in matrix.items()
+            if row["observed_queue_edges"]
+        }
+        self.assertEqual(observed, QUEUE_EDGES)
+        for table in expected_tables:
             modules = matrix[table]["observed_queue_edges"]
             for module, operations in modules.items():
                 source = (
-                    (root / module).read_text(encoding="utf-8").replace("\r\n", "\n")
+                    (root / module)
+                    .read_text(encoding="utf-8")
+                    .split("#[cfg(test)]", 1)[0]
+                    .replace("\r\n", "\n")
                 )
                 for operation, clause in operations.items():
                     with self.subTest(table=table, module=module, operation=operation):

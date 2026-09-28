@@ -182,10 +182,10 @@ QUEUE_EDGES = {
             "delete": "DELETE FROM queued_items",
         },
         "thread-store/src/queue_store.rs": {
-            "adapter": ".enqueue(thread_id, &payload)",
+            "adapter": "self.queue().list_page(thread_id, offset, limit)",
         },
         "ext/queue/src/service.rs": {
-            "consumer": "self.queue.enqueue(thread_id, payload).await?",
+            "consumer": ".list_page(thread_id, offset, limit)",
         },
         "app-server/src/message_processor.rs": {
             "factory": "LocalQueueStore::new(Arc::clone(state_db))",
@@ -204,9 +204,11 @@ QUEUE_EDGES = {
         },
         "thread-store/src/queue_store.rs": {
             "adapter": "self.queue().changes_since(revision, thread_ids)",
+            "commit_observation": "self.queue().change_version()",
         },
         "ext/queue/src/service.rs": {
             "watcher": ".changes_since(last_revision, &thread_ids)",
+            "commit_observation": "service.queue.change_version().await",
         },
         "app-server/src/message_processor.rs": {
             "factory": "LocalQueueStore::new(Arc::clone(state_db))",
