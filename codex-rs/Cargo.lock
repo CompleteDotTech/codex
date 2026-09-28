@@ -4212,6 +4212,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-postgres-import-store"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "codex-postgres-runtime",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "codex-postgres-runtime"
 version = "0.0.0"
 dependencies = [
