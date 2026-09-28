@@ -14,6 +14,9 @@ def _cleanup_roles(destination):
         "THEN REVOKE codex_restore_inherited FROM codex_runtime, codex_backup; DROP ROLE codex_restore_inherited; END IF; "
         "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'codex_restore_assumable') "
         "THEN REVOKE codex_restore_assumable FROM codex_runtime, codex_backup; DROP ROLE codex_restore_assumable; END IF; "
+        "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'codex_restore_bridge') "
+        "THEN REVOKE codex_restore_bridge FROM codex_backup; "
+        "REVOKE codex_runtime FROM codex_restore_bridge; DROP ROLE codex_restore_bridge; END IF; "
         "END $$",
     )
 
@@ -83,7 +86,7 @@ def _qualify_restore_access(source, destination, owned_roles):
         sql(
             destination,
             "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname "
-            "IN ('codex_restore_inherited', 'codex_restore_assumable'))",
+            "IN ('codex_restore_inherited', 'codex_restore_assumable', 'codex_restore_bridge'))",
         )
         != "f"
     ):
@@ -129,6 +132,31 @@ def _qualify_restore_access(source, destination, owned_roles):
         "--confirm-empty-destination",
     )
     report = {"scope": "protected_metadata_restore_only", "steps": []}
+
+    def reject_and_revert(name, setup, cleanup):
+        sql(destination, setup)
+        primary_failure = None
+        try:
+            before = json.loads(sql(destination, snapshot))
+            command(
+                destination,
+                *restore_args,
+                expected_error="restore_outcome_unconfirmed_inspect_destination",
+            )
+            if json.loads(sql(destination, snapshot)) != before:
+                raise ServiceError("unsafe_restore_changed_empty_destination")
+        except Exception as error:
+            primary_failure = error
+            raise
+        finally:
+            try:
+                sql(destination, cleanup)
+            except Exception:
+                if primary_failure is None:
+                    raise
+        report["steps"].append({"name": name, "rejected_and_rolled_back": True})
+        publish_json(destination / "restore-qualification.json", report)
+
     for name, grantee, privilege in (
         ("public_metadata_write", "PUBLIC", "UPDATE"),
         ("inherited_metadata_write", "codex_restore_inherited", "UPDATE"),
@@ -140,26 +168,13 @@ def _qualify_restore_access(source, destination, owned_roles):
         ("backup_set_role_metadata_write", "codex_restore_assumable", "UPDATE"),
     ):
         # Global ACLs survive the guard's DROP SCHEMA and affect restored tables.
-        sql(
-            destination,
+        reject_and_revert(
+            name,
             "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
             f"GRANT {privilege} ON TABLES TO {grantee}",
-        )
-        before = json.loads(sql(destination, snapshot))
-        command(
-            destination,
-            *restore_args,
-            expected_error="restore_outcome_unconfirmed_inspect_destination",
-        )
-        if json.loads(sql(destination, snapshot)) != before:
-            raise ServiceError("unsafe_restore_changed_empty_destination")
-        sql(
-            destination,
             "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
             f"REVOKE {privilege} ON TABLES FROM {grantee}",
         )
-        report["steps"].append({"name": name, "rejected_and_rolled_back": True})
-        publish_json(destination / "restore-qualification.json", report)
 
     for name, grantee in (
         ("runtime_sequence_write", "codex_runtime"),
@@ -168,26 +183,13 @@ def _qualify_restore_access(source, destination, owned_roles):
         ("backup_inherited_sequence_write", "codex_restore_inherited"),
         ("backup_set_role_sequence_write", "codex_restore_assumable"),
     ):
-        sql(
-            destination,
+        reject_and_revert(
+            name,
             "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
             f"GRANT UPDATE ON SEQUENCES TO {grantee}",
-        )
-        before = json.loads(sql(destination, snapshot))
-        command(
-            destination,
-            *restore_args,
-            expected_error="restore_outcome_unconfirmed_inspect_destination",
-        )
-        if json.loads(sql(destination, snapshot)) != before:
-            raise ServiceError("unsafe_restore_changed_empty_destination")
-        sql(
-            destination,
             "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
             f"REVOKE UPDATE ON SEQUENCES FROM {grantee}",
         )
-        report["steps"].append({"name": name, "rejected_and_rolled_back": True})
-        publish_json(destination / "restore-qualification.json", report)
 
     for name, grantee in (
         ("public_schema_create", "PUBLIC"),
@@ -196,41 +198,28 @@ def _qualify_restore_access(source, destination, owned_roles):
         ("inherited_schema_create", "codex_restore_inherited"),
         ("set_role_schema_create", "codex_restore_assumable"),
     ):
-        sql(
-            destination,
+        reject_and_revert(
+            name,
             "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
             f"GRANT CREATE ON SCHEMAS TO {grantee}",
-        )
-        before = json.loads(sql(destination, snapshot))
-        command(
-            destination,
-            *restore_args,
-            expected_error="restore_outcome_unconfirmed_inspect_destination",
-        )
-        if json.loads(sql(destination, snapshot)) != before:
-            raise ServiceError("unsafe_restore_changed_empty_destination")
-        sql(
-            destination,
             "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
             f"REVOKE CREATE ON SCHEMAS FROM {grantee}",
         )
-        report["steps"].append({"name": name, "rejected_and_rolled_back": True})
-        publish_json(destination / "restore-qualification.json", report)
 
-    sql(destination, "GRANT codex_runtime TO codex_backup WITH INHERIT FALSE, SET TRUE")
-    before = json.loads(sql(destination, snapshot))
-    command(
-        destination,
-        *restore_args,
-        expected_error="restore_outcome_unconfirmed_inspect_destination",
+    reject_and_revert(
+        "backup_runtime_role_escalation",
+        "GRANT codex_runtime TO codex_backup WITH INHERIT FALSE, SET TRUE",
+        "REVOKE codex_runtime FROM codex_backup",
     )
-    if json.loads(sql(destination, snapshot)) != before:
-        raise ServiceError("unsafe_restore_changed_empty_destination")
-    sql(destination, "REVOKE codex_runtime FROM codex_backup")
-    report["steps"].append(
-        {"name": "backup_runtime_role_escalation", "rejected_and_rolled_back": True}
+    reject_and_revert(
+        "backup_assumable_runtime_role_escalation",
+        "BEGIN; CREATE ROLE codex_restore_bridge; "
+        "GRANT codex_restore_bridge TO codex_backup WITH INHERIT FALSE, SET TRUE; "
+        "GRANT codex_runtime TO codex_restore_bridge WITH INHERIT TRUE, SET FALSE; COMMIT",
+        "BEGIN; REVOKE codex_restore_bridge FROM codex_backup; "
+        "REVOKE codex_runtime FROM codex_restore_bridge; "
+        "DROP ROLE codex_restore_bridge; COMMIT",
     )
-    publish_json(destination / "restore-qualification.json", report)
 
     command(destination, *restore_args)
     verify_endpoint(destination)

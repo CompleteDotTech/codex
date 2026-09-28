@@ -107,6 +107,13 @@ pub(crate) async fn require_safe_protected_privileges(
                 OR has_table_privilege(oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
                 OR has_any_column_privilege(oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,REFERENCES')
               )
+        ) OR EXISTS (
+            SELECT 1 FROM pg_roles candidate
+            WHERE (candidate.rolname = 'codex_backup'
+                   OR pg_has_role('codex_backup', candidate.oid, 'USAGE')
+                   OR pg_has_role('codex_backup', candidate.oid, 'SET'))
+              AND (pg_has_role(candidate.oid, 'codex_runtime', 'USAGE')
+                   OR pg_has_role(candidate.oid, 'codex_runtime', 'SET'))
         )",
     )
     .fetch_one(connection)
