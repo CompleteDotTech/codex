@@ -12,8 +12,10 @@ workspace = true
 
 [dependencies]
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
-sqlx = { workspace = true }
+sqlx = { workspace = true, features = ["postgres"] }
 sqlx-macros = { workspace = true }
+sqlx-postgres = { workspace = true }
+sqlx-sqlite = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
