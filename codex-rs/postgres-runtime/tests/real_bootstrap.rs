@@ -97,6 +97,9 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     let runtime = PostgresPool::connect(settings(state, "runtime"))
         .await
         .expect("runtime pool");
+    let backup = PostgresPool::connect(settings(state, "backup"))
+        .await
+        .expect("backup pool");
 
     owner_query(
         &migrator_a,
@@ -247,6 +250,21 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
         owner_query(&migrator_a, reset_minimum).await;
         assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
     }
+
+    owner_query(
+        &migrator_a,
+        "REVOKE SELECT ON codex_storage.codex_schema_meta FROM codex_backup",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    let mut backup_reader = backup.acquire().await.expect("backup metadata reader");
+    let backup_can_read: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM codex_storage.codex_schema_meta")
+            .fetch_one(&mut *backup_reader)
+            .await
+            .expect("backup can read metadata");
+    assert_eq!(backup_can_read, 1);
+    drop(backup_reader);
 
     for (drop_key, restore_key) in [
         (
