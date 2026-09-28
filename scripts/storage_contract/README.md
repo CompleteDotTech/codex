@@ -21,6 +21,7 @@ always includes `"activation_permitted": false`.
   fixture tables and reports unresolved forward/reverse treatment explicitly.
   Its queue-family source edges are described in `QUEUE_SOURCE_EDGES.md`.
   Selected goal-table and cross-rollout edges are described in `GOAL_SOURCE_EDGES.md`.
+  Versioned memory-table and generated-file edges are described in `MEMORY_SOURCE_EDGES.md`.
 - `control_plan.py`: a separate, offline operation-plan validator and exclusion
   preview for initialize, local migration, and attachment; see `CONTROL_PLAN.md`.
 - `compatibility.py`: a strict offline descriptor and observation prefilter for

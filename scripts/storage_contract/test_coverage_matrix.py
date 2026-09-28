@@ -7,6 +7,8 @@ from unittest.mock import patch
 from .coverage_matrix import (
     FILES,
     GOAL_EDGES,
+    MEMORY_EDGES,
+    MEMORY_FILE_EDGES,
     PRIMARY_PROJECT_EDGES,
     QUEUE_EDGES,
     TABLES,
@@ -67,3 +69,25 @@ class CoverageMatrixTests(unittest.TestCase):
                 for operation, clause in operations.items():
                     with self.subTest(table=table, module=module, operation=operation):
                         self.assertIn(clause, source)
+
+    def test_versioned_memory_and_generated_file_edges_match_source(self):
+        matrix = audit_coverage()
+        root = Path(__file__).resolve().parents[2] / "codex-rs"
+        for store in ("memories_1.sqlite", "memories_v2_1.sqlite"):
+            for table in MEMORY_EDGES:
+                modules = matrix["stores"][store][table]["observed_memory_edges"]
+                for module, operations in modules.items():
+                    source = (root / module).read_text(encoding="utf-8")
+                    for operation, clause in operations.items():
+                        with self.subTest(
+                            store=store, table=table, module=module, operation=operation
+                        ):
+                            self.assertIn(clause, source)
+        modules = matrix["files"]["memory_artifact"]["observed_memory_file_edges"]
+        for module, operations in modules.items():
+            source = (root / module).read_text(encoding="utf-8")
+            for operation, clause in operations.items():
+                with self.subTest(
+                    file="memory_artifact", module=module, operation=operation
+                ):
+                    self.assertIn(clause, source)

@@ -213,6 +213,70 @@ GOAL_EDGES = {
     },
 }
 
+# Both versioned memory SQLite files use this schema. These are selected
+# source edges; file artifacts and lease ownership require separate closure.
+MEMORY_EDGES = {
+    "stage1_outputs": {
+        "state/memory_migrations/0001_memories.sql": {
+            "schema": "CREATE TABLE stage1_outputs (",
+        },
+        "state/src/runtime/memories.rs": {
+            "read": "FROM stage1_outputs",
+            "write": "INSERT INTO stage1_outputs (",
+            "usage": "UPDATE stage1_outputs",
+            "delete": "DELETE FROM stage1_outputs",
+        },
+        "state/src/runtime/memory_versions.rs": {
+            "version_selection": "MemoryVersion::V2 => self",
+        },
+        "memories/write/src/runtime.rs": {
+            "writer_selection": ".memories_for_version(self.version)",
+        },
+        "memories/write/src/phase2.rs": {
+            "file_materialization": "sync_rollout_summaries_from_memories(root, raw_memories, raw_memory_count)",
+        },
+    },
+    "jobs": {
+        "state/memory_migrations/0001_memories.sql": {
+            "schema": "CREATE TABLE jobs (",
+        },
+        "state/src/runtime/memories.rs": {
+            "claim": "INSERT INTO jobs (",
+            "lease": "UPDATE jobs",
+            "read": "FROM jobs",
+            "delete": "DELETE FROM jobs",
+        },
+        "state/src/runtime/memory_versions.rs": {
+            "version_selection": "MemoryVersion::V2 => self",
+        },
+    },
+    "consolidation_progress": {
+        "state/memory_migrations/0002_consolidation_progress.sql": {
+            "schema": "CREATE TABLE consolidation_progress (",
+        },
+        "state/src/runtime/memories.rs": {
+            "write": "UPDATE consolidation_progress SET max_thread_count",
+        },
+        "state/src/runtime/memory_readiness.rs": {
+            "read": "SELECT max_thread_count FROM consolidation_progress WHERE singleton = 1",
+        },
+        "state/src/runtime/memory_versions.rs": {
+            "version_selection": "MemoryVersion::V2 => self",
+        },
+    },
+}
+
+MEMORY_FILE_EDGES = {
+    "memories/write/src/storage.rs": {
+        "raw_summary_write": "tokio::fs::write(raw_memories_file(root), body)",
+        "rollout_summary_write": "tokio::fs::write(path, body)",
+    },
+    "memories/write/src/phase2.rs": {
+        "summary_sync": "sync_rollout_summaries_from_memories(root, raw_memories, raw_memory_count)",
+        "v1_raw_file": "rebuild_raw_memories_file_from_memories(root, raw_memories, raw_memory_count)",
+    },
+}
+
 # Direct queue data and notification edges. The revision table is written by
 # SQLite triggers, not by queued_items.rs. These source clauses cover the local
 # adapter and service entry points, but not every app-server RPC caller.
@@ -289,6 +353,9 @@ def audit_coverage() -> dict:
                 "observed_goal_edges": GOAL_EDGES.get(table, {})
                 if store == "goals_1.sqlite"
                 else {},
+                "observed_memory_edges": MEMORY_EDGES.get(table, {})
+                if store in {"memories_1.sqlite", "memories_v2_1.sqlite"}
+                else {},
             }
             for table, (issue, source) in entries.items()
         }
@@ -302,6 +369,9 @@ def audit_coverage() -> dict:
                 "source": source,
                 "producer_consumer_audit": "partial",
                 "forward_reverse_decision": "unresolved",
+                "observed_memory_file_edges": MEMORY_FILE_EDGES
+                if name == "memory_artifact"
+                else {},
             }
             for name, (issue, source) in FILES.items()
         },
