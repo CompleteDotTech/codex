@@ -45,7 +45,8 @@ pub struct LocalAuthority {
 }
 
 /// A host-supplied reference to protected credential material, never a secret.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, schemars::JsonSchema)]
+#[schemars(transparent)]
 pub struct CredentialRef(String);
 
 impl std::fmt::Debug for CredentialRef {

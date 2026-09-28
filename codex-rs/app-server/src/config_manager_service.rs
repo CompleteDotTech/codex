@@ -134,7 +134,10 @@ impl ConfigManager {
             })?,
         };
 
-        let effective = layers.effective_config();
+        let mut effective = layers.effective_config();
+        if let Some(table) = effective.as_table_mut() {
+            table.remove(codex_config::STORAGE_CANDIDATE_KEY);
+        }
         let mut effective_config_toml: ConfigToml = effective
             .try_into()
             .map_err(|err| ConfigManagerError::toml("invalid configuration", err))?;
@@ -143,16 +146,22 @@ impl ConfigManager {
             .apply_exact_to_config(&mut effective_config_toml);
         effective_config_toml.allow_login_shell.get_or_insert(true);
 
-        let json_value = serde_json::to_value(&effective_config_toml)
+        let mut json_value = serde_json::to_value(&effective_config_toml)
             .map_err(|err| ConfigManagerError::json("failed to serialize configuration", err))?;
+        if let Some(config) = json_value.as_object_mut() {
+            config.remove(codex_config::STORAGE_CANDIDATE_KEY);
+        }
         let config: ApiConfig = serde_json::from_value(json_value)
             .map_err(|err| ConfigManagerError::json("failed to deserialize configuration", err))?;
 
         let mut origins = layers.origins_with_path_filter(|segments| {
-            layers
-                .requirements_toml()
-                .exact_requirement_for_config_path(segments)
-                .is_none()
+            segments
+                .first()
+                .is_none_or(|segment| segment != codex_config::STORAGE_CANDIDATE_KEY)
+                && layers
+                    .requirements_toml()
+                    .exact_requirement_for_config_path(segments)
+                    .is_none()
         });
         origins.retain(|_, metadata| {
             !matches!(&metadata.name, ConfigLayerSource::PackagedDefaults { .. })
@@ -264,6 +273,15 @@ impl ConfigManager {
             let mut segments = parse_key_path(&key_path).map_err(|message| {
                 ConfigManagerError::write(ConfigWriteErrorCode::ConfigValidationError, message)
             })?;
+            if segments
+                .first()
+                .is_some_and(|segment| segment == codex_config::STORAGE_CANDIDATE_KEY)
+            {
+                return Err(ConfigManagerError::write(
+                    ConfigWriteErrorCode::ConfigLayerReadonly,
+                    "Storage candidates can only be edited in host-owned configuration files",
+                ));
+            }
             if let Some(field) = layers
                 .requirements_toml()
                 .exact_requirement_for_config_path(&segments)

@@ -54,6 +54,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
+use codex_storage_authority::StorageCandidateProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::Platform;
 use schemars::JsonSchema;
@@ -366,6 +367,9 @@ pub struct ConfigToml {
     /// Directory where Codex stores the SQLite state DB.
     /// Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`.
     pub sqlite_home: Option<AbsolutePathBuf>,
+
+    /// Validated proposal only. Editing this never selects an active backend.
+    pub storage_candidate: Option<StorageCandidateProfile>,
 
     /// Directory where Codex writes log files. Setting this value explicitly
     /// also enables the TUI text log in this directory.

@@ -13,6 +13,7 @@ use crate::ConfigLayerMetadata;
 use crate::ConfigLayerSource;
 use crate::ProfileV2Name;
 use crate::shell_environment_policy::validate_shell_environment_policy_filter_config;
+use crate::storage_candidate::validate_storage_candidate_layer;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -477,6 +478,15 @@ impl ConfigLayerStack {
         for layer in self.layers_low_to_high() {
             merge_toml_values(&mut merged, &layer.config);
         }
+        // A candidate is one complete host-owned proposal, not a merged table
+        // whose endpoint and credential can come from different layers.
+        if let Some(candidate) = self
+            .layers_high_to_low()
+            .find_map(|layer| layer.config.get(crate::STORAGE_CANDIDATE_KEY).cloned())
+            && let Some(table) = merged.as_table_mut()
+        {
+            table.insert(crate::STORAGE_CANDIDATE_KEY.to_string(), candidate);
+        }
         if let Some(requirements) = &self.model_provider_requirements {
             crate::model_provider_requirements::apply(&mut merged, requirements);
         }
@@ -577,6 +587,7 @@ impl ConfigLayerStack {
 /// Validates before merging so mixed forms and malformed filter entries cannot be normalized away.
 pub(crate) fn validate_enabled_config_layers(layers: &[ConfigLayerEntry]) -> std::io::Result<()> {
     for layer in layers.iter().filter(|layer| !layer.is_disabled()) {
+        validate_storage_candidate_layer(layer)?;
         validate_shell_environment_policy_filter_config(&layer.config).map_err(|error| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
