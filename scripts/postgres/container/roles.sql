@@ -6,6 +6,12 @@ SELECT format('CREATE ROLE %I LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROL
 FROM (VALUES ('runtime'), ('migrator'), ('backup')) AS credentials(role)
 \gexec
 GRANT codex_owner TO codex_migrator WITH INHERIT FALSE, SET TRUE;
+-- The bootstrap integration test uses this non-inheriting chain to exercise
+-- ADMIN traversal without granting the fixture login CREATEROLE or superuser.
+CREATE ROLE codex_bootstrap_graph_bridge NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+CREATE ROLE codex_bootstrap_graph_principal NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+GRANT codex_owner TO codex_bootstrap_graph_bridge WITH INHERIT FALSE, SET FALSE;
+GRANT codex_bootstrap_graph_bridge TO codex_migrator WITH INHERIT FALSE, SET FALSE, ADMIN TRUE;
 REVOKE ALL ON DATABASE codex FROM PUBLIC;
 GRANT CONNECT ON DATABASE codex TO codex_runtime, codex_migrator, codex_backup;
 GRANT CREATE ON DATABASE codex TO codex_owner;
