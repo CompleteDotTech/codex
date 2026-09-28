@@ -174,7 +174,7 @@ pub async fn check_codex_storage_compatibility(
         let remaining = deadline
             .saturating_duration_since(Instant::now())
             .as_millis()
-            .saturating_sub(1000);
+            .saturating_sub(3000);
         if remaining == 0 {
             return Err(CompatibilityError::Timeout);
         }
