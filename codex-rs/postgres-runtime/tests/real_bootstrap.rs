@@ -358,6 +358,40 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
         "ALTER TABLE codex_storage.codex_schema_meta DISABLE ROW LEVEL SECURITY",
     )
     .await;
+    for (damage, repair, expected_error) in [
+        (
+            "ALTER TABLE codex_storage.codex_schema_meta SET UNLOGGED",
+            "ALTER TABLE codex_storage.codex_schema_meta SET LOGGED",
+            BootstrapError::IncompatibleNamespace,
+        ),
+        (
+            "CREATE RULE history_update_rewrite AS ON UPDATE TO codex_storage._codex_pg_migrations DO INSTEAD NOTHING",
+            "DROP RULE history_update_rewrite ON codex_storage._codex_pg_migrations",
+            BootstrapError::IncompatibleNamespace,
+        ),
+        (
+            "CREATE TRIGGER metadata_update_probe BEFORE UPDATE ON codex_storage.codex_schema_meta FOR EACH ROW EXECUTE FUNCTION pg_catalog.suppress_redundant_updates_trigger()",
+            "DROP TRIGGER metadata_update_probe ON codex_storage.codex_schema_meta",
+            BootstrapError::IncompatibleNamespace,
+        ),
+        (
+            "CREATE SCHEMA codex_external AUTHORIZATION codex_owner; CREATE TABLE codex_external.metadata_child () INHERITS (codex_storage.codex_schema_meta)",
+            "DROP SCHEMA codex_external CASCADE",
+            BootstrapError::IncompatibleNamespace,
+        ),
+        (
+            "GRANT SELECT(version) ON codex_storage._codex_pg_migrations TO codex_backup WITH GRANT OPTION",
+            "REVOKE GRANT OPTION FOR SELECT(version) ON codex_storage._codex_pg_migrations FROM codex_backup CASCADE",
+            BootstrapError::Privilege,
+        ),
+    ] {
+        owner_query(&migrator_a, damage).await;
+        assert_eq!(
+            bootstrap_codex_storage(&migrator_a).await,
+            Err(expected_error)
+        );
+        owner_query(&migrator_a, repair).await;
+    }
 
     owner_query(
         &migrator_a,
