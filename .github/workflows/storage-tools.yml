@@ -84,9 +84,12 @@ jobs:
           from pathlib import Path
           import sys
           sys.path.insert(0, "scripts/postgres")
-          from restore_qualification import qualify_restore_access
+          from qualification_checks import checked_backup, command, verify_endpoint
+          backup, archive = checked_backup(Path(os.environ["CODEX_TEST_POSTGRES_STATE"]))
           destination = Path(os.environ["RESTORE_STATE"])
-          qualify_restore_access(Path(os.environ["CODEX_TEST_POSTGRES_STATE"]), destination)
+          command(destination, "restore", "--archive", str(archive),
+                  "--sha256", backup["sha256"], "--confirm-empty-destination")
+          verify_endpoint(destination)
           PY
       - name: Verify restored metadata with the real Rust bootstrap
         working-directory: codex-rs
