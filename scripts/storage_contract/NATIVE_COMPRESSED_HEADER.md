@@ -15,7 +15,15 @@ limits compressed bytes read to 1 MiB, decoded prefix to 64 KiB, and zstd
 window to 8 MiB. A valid header in that prefix can be reported even if the
 whole file is larger; the response does not verify the rest of the file.
 
-This helper is not yet called by `preview_rollout_snapshot.py`. Its response
-does not establish an immutable snapshot, choose an authoritative copy, prove
-whole-file integrity or lineage closure, or permit activation. Concurrent path
-replacement remains outside its guarantee until snapshot fencing exists.
+`preview_rollout_snapshot.py --snapshot-home HOME --compressed-header-helper
+ABSOLUTE_BINARY_PATH` optionally sends one bounded batch of compressed paths to
+this helper. The binary path is supplied explicitly; the preview does not search
+`PATH` or build it. The Python preview accepts only a complete, strictly shaped
+response batch with matching filename thread IDs. A failed, timed-out, oversized,
+or malformed batch leaves every compressed header unknown and reports a stable,
+path-free code. More than 1,024 compressed candidates are left unknown.
+
+Neither helper nor preview establishes an immutable snapshot, chooses an
+authoritative copy, proves whole-file integrity or lineage closure, or permits
+activation. Concurrent path replacement remains outside their guarantee until
+snapshot fencing exists.
