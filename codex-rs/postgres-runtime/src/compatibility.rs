@@ -225,6 +225,18 @@ pub async fn check_codex_storage_compatibility(
         if !valid_checks {
             return Err(CompatibilityError::MissingMetadata);
         }
+        let valid_history_constraints: bool = sqlx::query_scalar(
+            "SELECT count(*) = 1 AND COALESCE(bool_and(contype = 'p'
+                AND conname = '_codex_pg_migrations_pkey'
+                AND conindid = 'codex_storage._codex_pg_migrations_pkey'::regclass), FALSE)
+             FROM pg_constraint WHERE conrelid = 'codex_storage._codex_pg_migrations'::regclass",
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| classify_schema(&error, CompatibilityError::IncompatibleHistory))?;
+        if !valid_history_constraints {
+            return Err(CompatibilityError::IncompatibleHistory);
+        }
         require_safe_protected_privileges(&mut transaction)
             .await
             .map_err(classify_bootstrap)?;
