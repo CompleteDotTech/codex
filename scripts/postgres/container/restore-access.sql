@@ -249,21 +249,60 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe owner role administration';
     END IF;
     -- String and dynamic routine bodies need not record table dependencies.
-    -- Refuse executable definer authority capable of crossing the store policy.
+    -- Trigger execution does not recheck EXECUTE; definer owners can also call
+    -- other definers. Follow both entry routes and their owner authority.
     IF EXISTS (
-        WITH callers AS (
+        WITH RECURSIVE callers AS (
             SELECT candidate.oid, audience.roleid
             FROM pg_roles candidate
             CROSS JOIN (VALUES ('codex_runtime'::regrole), ('codex_backup'::regrole)) audience(roleid)
             WHERE pg_has_role(audience.roleid, candidate.oid, 'USAGE')
                OR pg_has_role(audience.roleid, candidate.oid, 'SET')
+        ), entry_routines(routine_oid, roleid) AS (
+            SELECT routine.oid, caller.roleid
+            FROM pg_proc routine
+            JOIN callers caller ON has_function_privilege(caller.oid, routine.oid, 'EXECUTE')
+            WHERE routine.prosecdef
+              AND routine.prokind IN ('f', 'p')
+              AND routine.prorettype NOT IN ('trigger'::regtype, 'event_trigger'::regtype)
+              AND routine.pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace)
+              AND has_schema_privilege(caller.oid, routine.pronamespace, 'USAGE')
+            UNION
+            SELECT routine.oid, caller.roleid
+            FROM pg_trigger trigger_row
+            JOIN pg_class relation ON relation.oid = trigger_row.tgrelid
+            JOIN pg_proc routine ON routine.oid = trigger_row.tgfoid
+            JOIN callers caller ON has_schema_privilege(caller.oid, relation.relnamespace, 'USAGE')
+            WHERE NOT trigger_row.tgisinternal
+              AND trigger_row.tgenabled <> 'D'
+              AND routine.prosecdef
+              AND routine.pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace)
+              AND relation.relkind IN ('r', 'p', 'v', 'f')
+              AND (
+                ((trigger_row.tgtype::integer & 4) <> 0 AND has_table_privilege(caller.oid, relation.oid, 'INSERT'))
+                OR ((trigger_row.tgtype::integer & 8) <> 0 AND has_table_privilege(caller.oid, relation.oid, 'DELETE'))
+                OR ((trigger_row.tgtype::integer & 16) <> 0 AND (
+                    has_table_privilege(caller.oid, relation.oid, 'UPDATE')
+                    OR has_any_column_privilege(caller.oid, relation.oid, 'UPDATE')
+                ))
+                OR ((trigger_row.tgtype::integer & 32) <> 0 AND has_table_privilege(caller.oid, relation.oid, 'TRUNCATE'))
+              )
+        ), reachable_definers(routine_oid, roleid) AS (
+            SELECT routine_oid, roleid FROM entry_routines
+            UNION
+            SELECT nested.oid, reached.roleid
+            FROM reachable_definers reached
+            JOIN pg_proc current_routine ON current_routine.oid = reached.routine_oid
+            JOIN pg_proc nested ON nested.prosecdef
+            WHERE nested.prokind IN ('f', 'p')
+              AND nested.prorettype NOT IN ('trigger'::regtype, 'event_trigger'::regtype)
+              AND nested.pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace)
+              AND has_schema_privilege(current_routine.proowner, nested.pronamespace, 'USAGE')
+              AND has_function_privilege(current_routine.proowner, nested.oid, 'EXECUTE')
         )
         SELECT 1 FROM pg_proc routine
-        JOIN callers caller ON has_function_privilege(caller.oid, routine.oid, 'EXECUTE')
-        WHERE routine.prosecdef
-          AND routine.pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace)
-          AND has_schema_privilege(caller.oid, routine.pronamespace, 'USAGE')
-          AND (
+        JOIN reachable_definers reached ON reached.routine_oid = routine.oid
+        WHERE (
             has_schema_privilege(routine.proowner, 'codex_storage', 'CREATE')
             OR (metadata IS NOT NULL AND (
                 has_table_privilege(routine.proowner, metadata, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
@@ -272,12 +311,12 @@ BEGIN
             OR (history IS NOT NULL AND (
                 has_table_privilege(routine.proowner, history, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
                 OR has_any_column_privilege(routine.proowner, history, 'INSERT,UPDATE,REFERENCES')
-                OR (caller.roleid = 'codex_runtime'::regrole AND (
+                OR (reached.roleid = 'codex_runtime'::regrole AND (
                     has_table_privilege(routine.proowner, history, 'SELECT')
                     OR has_any_column_privilege(routine.proowner, history, 'SELECT')
                 ))
             ))
-            OR (caller.roleid = 'codex_backup'::regrole AND EXISTS (
+            OR (reached.roleid = 'codex_backup'::regrole AND EXISTS (
                 SELECT 1 FROM pg_class relation
                 WHERE relation.relnamespace = 'codex_storage'::regnamespace
                   AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
@@ -291,7 +330,7 @@ BEGIN
                 WHERE sequence.relnamespace = 'codex_storage'::regnamespace
                   AND CASE WHEN sequence.relkind = 'S' THEN has_sequence_privilege(
                     routine.proowner, sequence.oid,
-                    CASE WHEN caller.roleid = 'codex_backup'::regrole THEN 'USAGE,UPDATE' ELSE 'UPDATE' END
+                    CASE WHEN reached.roleid = 'codex_backup'::regrole THEN 'USAGE,UPDATE' ELSE 'UPDATE' END
                   ) ELSE FALSE END
             )
           )
