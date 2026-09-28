@@ -51,11 +51,11 @@ class SourceCatalogTests(unittest.TestCase):
                 )
                 self.assertEqual(json.loads(actual), json.loads(expected))
 
-    def test_unknown_primary_store_cannot_be_reported_as_an_empty_supported_schema(
-        self,
-    ):
-        with self.assertRaisesRegex(ContractError, "unsupported_store_schema"):
-            build_fixture_policy("state_5.sqlite", version=1)
+    def test_current_primary_store_has_an_authenticated_nonempty_schema(self):
+        policy = json.loads(build_fixture_policy("state_5.sqlite", version=58))
+        self.assertIn("threads", policy["tables"])
+        self.assertIn("thread_attachments", policy["tables"])
+        self.assertNotIn("_sqlx_migrations", policy["tables"])
 
     def test_unknown_or_boolean_versions_are_rejected(self):
         for version in (0, 3, True, "2", None):

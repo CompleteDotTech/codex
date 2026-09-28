@@ -113,7 +113,413 @@
       "source_blob": "6fe293575b3102a2950c084e6ff561e81dafd67b",
       "representation": "entire_file",
       "sha256": "2e346fdea5fbfcdba6ebeb0f244f64eafcda891bc023331a8e18d71569b38518"
+    },
+    {
+      "file": "state_0001.sql",
+      "source_path": "codex-rs/state/migrations/0001_threads.sql",
+      "source_blob": "7063ce11a45be508749bfe70de23bc64ac2a03d0",
+      "representation": "entire_file",
+      "sha256": "7a89ab37ba540b92781868aec12e7dc0a49eeb9a4b81125236e500534b012758"
+    },
+    {
+      "file": "state_0002.sql",
+      "source_path": "codex-rs/state/migrations/0002_logs.sql",
+      "source_blob": "b9a2c681d439968e7fd1bd2b2e30d4e714df6bfb",
+      "representation": "entire_file",
+      "sha256": "975fa08795fd985091d67af98f6c7832763c0ad04f875be758fe2171d294015d"
+    },
+    {
+      "file": "state_0003.sql",
+      "source_path": "codex-rs/state/migrations/0003_logs_thread_id.sql",
+      "source_blob": "c4badb6885592eeefe8b2630ff22aa3c2dba2d1c",
+      "representation": "entire_file",
+      "sha256": "c905b4affdc8cc99c21f7eceaed93e62b913c9aef789e862ad1cc0faab64a387"
+    },
+    {
+      "file": "state_0004.sql",
+      "source_path": "codex-rs/state/migrations/0004_thread_dynamic_tools.sql",
+      "source_blob": "0f40b5f800599fde7d470f966a980e33f3462429",
+      "representation": "entire_file",
+      "sha256": "89a39b8c371624551eafee412f683fab77459c503c48ec6cea8231d1e8c995fe"
+    },
+    {
+      "file": "state_0005.sql",
+      "source_path": "codex-rs/state/migrations/0005_threads_cli_version.sql",
+      "source_blob": "8891562d90075f58db69219bfd843415ef9c5780",
+      "representation": "entire_file",
+      "sha256": "faf7b05b3f20ef2e5bf2cc30367fc9c8aaa8031a259173e500d065677d08c606"
+    },
+    {
+      "file": "state_0006.sql",
+      "source_path": "codex-rs/state/migrations/0006_memories.sql",
+      "source_blob": "e5e34307fc8737478ad1b8443f16711b69a4befe",
+      "representation": "entire_file",
+      "sha256": "1dc4424b5bd647a9c6195d8f7fc4c6a2da3f2ea35e6c105c1c8486cfbd9f98e2"
+    },
+    {
+      "file": "state_0007.sql",
+      "source_path": "codex-rs/state/migrations/0007_threads_first_user_message.sql",
+      "source_blob": "5e9a7649bb7743f85645b08d9878569292e4acb7",
+      "representation": "entire_file",
+      "sha256": "352f5f47318c3b60ed3f130f6416a9a8c5ea3e0441b6b636ba73f7d57d8c9074"
+    },
+    {
+      "file": "state_0008.sql",
+      "source_path": "codex-rs/state/migrations/0008_backfill_state.sql",
+      "source_blob": "c9fc1fdeb7118b2cf9e1d2400ff72ddca3989c02",
+      "representation": "entire_file",
+      "sha256": "357c26e13979956dae3bdbb4f516834175a9b24ed751907b9132b921e6e3b02b"
+    },
+    {
+      "file": "state_0009.sql",
+      "source_path": "codex-rs/state/migrations/0009_stage1_outputs_rollout_slug.sql",
+      "source_blob": "9b3a1e077da022e5a94f27bfa1abde2e2a9bea1c",
+      "representation": "entire_file",
+      "sha256": "3554841d39c7f791aeccad770894c96b2161c3c87d38aed7ce3c9c753ab818f5"
+    },
+    {
+      "file": "state_0010.sql",
+      "source_path": "codex-rs/state/migrations/0010_logs_process_id.sql",
+      "source_blob": "fdefcd53a8220f04dcdf128907b8bce63a664acc",
+      "representation": "entire_file",
+      "sha256": "68bc6771638f826f1cc8e136d8004d787ea8c519935578eddd76348657d4013d"
+    },
+    {
+      "file": "state_0011.sql",
+      "source_path": "codex-rs/state/migrations/0011_logs_partition_prune_indexes.sql",
+      "source_blob": "06a4cde563a21b4f1d346939a259fb5f0525eaab",
+      "representation": "entire_file",
+      "sha256": "de8f56961cf06c292aa42c35aaa5508409431148726b972c11c5e6211aaa0e08"
+    },
+    {
+      "file": "state_0012.sql",
+      "source_path": "codex-rs/state/migrations/0012_logs_estimated_bytes.sql",
+      "source_blob": "a3fb3495b016f1f7a9441d2c1222370add5b23b6",
+      "representation": "entire_file",
+      "sha256": "483c20e16126ca938beee39ae0901e0aaa8770b756f1c872ec5b81eea5793933"
+    },
+    {
+      "file": "state_0013.sql",
+      "source_path": "codex-rs/state/migrations/0013_threads_agent_nickname.sql",
+      "source_blob": "80394c88b564ee42241c53923911a31fe1800bcc",
+      "representation": "entire_file",
+      "sha256": "45a2e3e68297fc2dad5061890cca16059e7fd2692c3da733fe2eb845e5ca98bb"
+    },
+    {
+      "file": "state_0014.sql",
+      "source_path": "codex-rs/state/migrations/0014_agent_jobs.sql",
+      "source_blob": "d8968c405ec2a08be7d9909a8e3dcfbee04779de",
+      "representation": "entire_file",
+      "sha256": "a0bcc52368ee5f212771874eaafcbca23708755e62e931e57cec5431780e71b2"
+    },
+    {
+      "file": "state_0015.sql",
+      "source_path": "codex-rs/state/migrations/0015_agent_jobs_max_runtime_seconds.sql",
+      "source_blob": "ab1006d45278c1aa42e6a7b1c79c9b02765dd152",
+      "representation": "entire_file",
+      "sha256": "bdf15aca46cd30556a8fa2f4afbf0d223be9eade4816cc98209b8093852ea4e8"
+    },
+    {
+      "file": "state_0016.sql",
+      "source_path": "codex-rs/state/migrations/0016_memory_usage.sql",
+      "source_blob": "1067ab2e756245ad21f9833c64c5806fe7b22cf5",
+      "representation": "entire_file",
+      "sha256": "2e85813f2688af759d474f9d2ad6eb85f5790042c515ce0caaec52b76b3beb7d"
+    },
+    {
+      "file": "state_0017.sql",
+      "source_path": "codex-rs/state/migrations/0017_phase2_selection_flag.sql",
+      "source_blob": "1d95d9a40e0b411dd270c0d9c0e0c0567a748967",
+      "representation": "entire_file",
+      "sha256": "8da522646dc0813d802fc7ffb651a45ceea30454c2858004350dec17afc5f162"
+    },
+    {
+      "file": "state_0018.sql",
+      "source_path": "codex-rs/state/migrations/0018_phase2_selection_snapshot.sql",
+      "source_blob": "f175980fc7617ab9c04307534d4b796a6d8e75b1",
+      "representation": "entire_file",
+      "sha256": "88a523608a3d02e27ada7df2f118868d9ca4e0514565dd1139a9673a7d0dbbcd"
+    },
+    {
+      "file": "state_0019.sql",
+      "source_path": "codex-rs/state/migrations/0019_thread_dynamic_tools_defer_loading.sql",
+      "source_blob": "4ab59463ab4c662c4737bd7a12751843883dd2b1",
+      "representation": "entire_file",
+      "sha256": "7315465158900ae372f9a0fee30927e0af15e54efc536e70e78a667fd16d91af"
+    },
+    {
+      "file": "state_0020.sql",
+      "source_path": "codex-rs/state/migrations/0020_threads_model_reasoning_effort.sql",
+      "source_blob": "b15f4be37f5a8d4fedbfeb916f5031c38f99984c",
+      "representation": "entire_file",
+      "sha256": "7ab7820e54c4a882e96bcdbf878c366cc49ec7b643e2bfdf527786a790516dd0"
+    },
+    {
+      "file": "state_0021.sql",
+      "source_path": "codex-rs/state/migrations/0021_thread_spawn_edges.sql",
+      "source_blob": "d6514c46e3ad6d7ca2ae4c5827005d62804f6b83",
+      "representation": "entire_file",
+      "sha256": "5c03fe4571b35f8d9181834327608bb4c2c7239cb9eeda2e4ee6dc0b57599f12"
+    },
+    {
+      "file": "state_0022.sql",
+      "source_path": "codex-rs/state/migrations/0022_threads_agent_path.sql",
+      "source_blob": "9340945703ce4ea51842c2ca88dcf33cf7dc4f03",
+      "representation": "entire_file",
+      "sha256": "06d5e30aa7650525c48a440fb4d173717ba70c03a23b024b2f94153991c7c4c8"
+    },
+    {
+      "file": "state_0023.sql",
+      "source_path": "codex-rs/state/migrations/0023_drop_logs.sql",
+      "source_blob": "dce1ffc20d5e3f913c45e2cbd7c83868ac621e80",
+      "representation": "entire_file",
+      "sha256": "fd2c70f31ea21bd49ca6638e04e87fc31951fb2c50c8baa4e662d6700f8ea402"
+    },
+    {
+      "file": "state_0024.sql",
+      "source_path": "codex-rs/state/migrations/0024_remote_control_enrollments.sql",
+      "source_blob": "970db9ef201072387e87e063ff7e7731342f83e8",
+      "representation": "entire_file",
+      "sha256": "26fa628fb73b652e9604bf0fc16f699e15bc2d052e4f27991125a56c32d1a0dc"
+    },
+    {
+      "file": "state_0025.sql",
+      "source_path": "codex-rs/state/migrations/0025_thread_timestamps_millis.sql",
+      "source_blob": "d29847438d1212b9e1215502aed3bb65e666b7fd",
+      "representation": "entire_file",
+      "sha256": "d95ecd7f4ae8161013c9baf2a4f9759bc67254c4cd7fcdb318b322ccbc588357"
+    },
+    {
+      "file": "state_0026.sql",
+      "source_path": "codex-rs/state/migrations/0026_thread_dynamic_tools_namespace.sql",
+      "source_blob": "56518d559714e7c4853337b98b4a7af117c09b96",
+      "representation": "entire_file",
+      "sha256": "abb44aa8d6faba71b86b2be748de1216231e91d8edb9c99e2d9ad2279d9c9814"
+    },
+    {
+      "file": "state_0027.sql",
+      "source_path": "codex-rs/state/migrations/0027_threads_cwd_sort_indexes.sql",
+      "source_blob": "8b1e5c58ffb854798ec355b171804c0ff8f06a83",
+      "representation": "entire_file",
+      "sha256": "243539752730a106717ea571be8dbe723dbf6c10dd942c8a0e6f0a15f0a8a1ea"
+    },
+    {
+      "file": "state_0028.sql",
+      "source_path": "codex-rs/state/migrations/0028_device_key_bindings.sql",
+      "source_blob": "d7b660bf68191602c31d47e8fe0e1ad6be74fcb8",
+      "representation": "entire_file",
+      "sha256": "889fc55bbb5f6526c22fa7fa0c5c55867bd506036836a852821ffd584bb47053"
+    },
+    {
+      "file": "state_0029.sql",
+      "source_path": "codex-rs/state/migrations/0029_thread_goals.sql",
+      "source_blob": "6c6e86a19921213b27e8155469accc2482852c2f",
+      "representation": "entire_file",
+      "sha256": "80b081ba8f8970e8e8db5929c493038e151569d356aed5d594288fb6327f563a"
+    },
+    {
+      "file": "state_0030.sql",
+      "source_path": "codex-rs/state/migrations/0030_threads_thread_source.sql",
+      "source_blob": "4f11c9a3f86fe687b323bde7bf208da4c4acc15c",
+      "representation": "entire_file",
+      "sha256": "e87de1eac897ae43489bf1d6f00845591594e564df01d1f8c78ca4a51399c95e"
+    },
+    {
+      "file": "state_0031.sql",
+      "source_path": "codex-rs/state/migrations/0031_drop_device_key_bindings.sql",
+      "source_blob": "7b40b11edfbb459ef4a01dc6df3b1c3bbf7c62bc",
+      "representation": "entire_file",
+      "sha256": "9467a2e1791c53de41dc6920b685273c9cafda4ca2458c7207ba777431298e51"
+    },
+    {
+      "file": "state_0032.sql",
+      "source_path": "codex-rs/state/migrations/0032_threads_preview.sql",
+      "source_blob": "0c51af57e59245272f8247647ba6d193c3c4fc1d",
+      "representation": "entire_file",
+      "sha256": "2c9daccb0fad1df0440908e7f0a4b4204d86c4a0a8448501eed97321fb03ae60"
+    },
+    {
+      "file": "state_0033.sql",
+      "source_path": "codex-rs/state/migrations/0033_thread_goal_stopped_statuses.sql",
+      "source_blob": "4e89f7469be37ee3365600e96af786e7abe5cf8a",
+      "representation": "entire_file",
+      "sha256": "3db0d7782887aa5a92434b54cb6df2feae7e4495464bd7bfedcd8b20dccd24ba"
+    },
+    {
+      "file": "state_0034.sql",
+      "source_path": "codex-rs/state/migrations/0034_drop_thread_goals.sql",
+      "source_blob": "8954bd6d5bebabbf35535cbaa0a322d0784c7645",
+      "representation": "entire_file",
+      "sha256": "295da9f93c079981f3179ddadfc39c306c58c03f5d9237e01eb85c94c5068456"
+    },
+    {
+      "file": "state_0035.sql",
+      "source_path": "codex-rs/state/migrations/0035_drop_memory_tables.sql",
+      "source_blob": "49721e3e54fc4c175baf8604544977c6b6a8da20",
+      "representation": "entire_file",
+      "sha256": "17bd1881ee569b4359367bec4340d7a5c7c79abd453a0de5feb813f7f60b6910"
+    },
+    {
+      "file": "state_0036.sql",
+      "source_path": "codex-rs/state/migrations/0036_threads_visible_sort_indexes.sql",
+      "source_blob": "33a83a9d7b8ace6d27c923adc141a1f9e2e37872",
+      "representation": "entire_file",
+      "sha256": "f5bb4040625918f75a03008c1ef077d864b97e839ebc2728a0045aac8c5c676a"
+    },
+    {
+      "file": "state_0037.sql",
+      "source_path": "codex-rs/state/migrations/0037_remote_control_enrollments_enabled.sql",
+      "source_blob": "abb422384ea578892ff9875c356f43f787b752d1",
+      "representation": "entire_file",
+      "sha256": "cbc61642c572386a2763c3c3cc7b8be64bf57f016200289b405ab90d0c21efc0"
+    },
+    {
+      "file": "state_0038.sql",
+      "source_path": "codex-rs/state/migrations/0038_external_agent_config_imports.sql",
+      "source_blob": "74ae0435f83536a17abf24b663d3be9264aebd2c",
+      "representation": "entire_file",
+      "sha256": "737105af23231e0d02cc39da6a04477ff459828cdbc40722100fb45ad272fc1f"
+    },
+    {
+      "file": "state_0039.sql",
+      "source_path": "codex-rs/state/migrations/0039_threads_recency_at.sql",
+      "source_blob": "ccbf79f05fab905ed655f35c215f55a66f3c0f2a",
+      "representation": "entire_file",
+      "sha256": "8fda8be15f6a30782b6646b46105e43f634236cae208d26b827dbe0d4c465b20"
+    },
+    {
+      "file": "state_0040.sql",
+      "source_path": "codex-rs/state/migrations/0040_threads_history_mode.sql",
+      "source_blob": "53729c2ec63c7408b9a2151ac17fb11b38ba1596",
+      "representation": "entire_file",
+      "sha256": "d4d91b7dbc175232773980b1cc5e88ff0668f674d6aa03b47e3d383a540a2e7d"
+    },
+    {
+      "file": "state_0041.sql",
+      "source_path": "codex-rs/state/migrations/0041_threads_name.sql",
+      "source_blob": "72ba802e8d38474d75fe4fa1899f3042af68ede3",
+      "representation": "entire_file",
+      "sha256": "1ff6f52ccbcbf5546a9d2bd6c27980e371ef340504fbbde33fc63a1d803d897f"
+    },
+    {
+      "file": "state_0042.sql",
+      "source_path": "codex-rs/state/migrations/0042_drop_agent_jobs.sql",
+      "source_blob": "921006b1a65b82cce31c73a21e0886d0d20d7088",
+      "representation": "entire_file",
+      "sha256": "4a2e852b3a990cd0729e185a84547209fccb1e6eddba7161946060252ee42481"
+    },
+    {
+      "file": "state_0043.sql",
+      "source_path": "codex-rs/state/migrations/0043_threads_is_pinned.sql",
+      "source_blob": "7902696e041b131c6b45ce6089df77c1c4fb6ac4",
+      "representation": "entire_file",
+      "sha256": "6e906667df2d3e2417a93e4de81d3b5c363cc8dd5db5cbd9902d5604451f0ddf"
+    },
+    {
+      "file": "state_0044.sql",
+      "source_path": "codex-rs/state/migrations/0044_external_agent_config_imports_provider_id.sql",
+      "source_blob": "2fc16008a9dcd4d806173d91aaf1fdde24bb9c73",
+      "representation": "entire_file",
+      "sha256": "47637b79aa95349402898f6ac01b1a60e00cbeb4acf3a941bee2a7d177592e06"
+    },
+    {
+      "file": "state_0045.sql",
+      "source_path": "codex-rs/state/migrations/0045_threads_section.sql",
+      "source_blob": "84fb1c8f51daa39130ddfacb0a57bcecc0f77432",
+      "representation": "entire_file",
+      "sha256": "50a7269c0b0b82d773431dccd22302b9c448fda42cd4a92b67ad050198b9526c"
+    },
+    {
+      "file": "state_0046.sql",
+      "source_path": "codex-rs/state/migrations/0046_threads_section_order.sql",
+      "source_blob": "ad16a06272fb1e7cd893e729afead9c5c27b6735",
+      "representation": "entire_file",
+      "sha256": "71db2dc709d5aab0d62c1320bcb4ad7a77d0fb0a66a2a467d2de4bb5a3ed38ad"
+    },
+    {
+      "file": "state_0047.sql",
+      "source_path": "codex-rs/state/migrations/0047_rollout_migration_state.sql",
+      "source_blob": "db92256c0efd81874faebd7f6a27cf2e1de24c64",
+      "representation": "entire_file",
+      "sha256": "7232f33df9e3dad03d4cab0c794d76c50dba8192c954823d59216764f25ec5eb"
+    },
+    {
+      "file": "state_0048.sql",
+      "source_path": "codex-rs/state/migrations/0048_thread_section_appearance.sql",
+      "source_blob": "691cf480161cc099df5f8577b02153bf29e025d5",
+      "representation": "entire_file",
+      "sha256": "8e2046dffa8a46f5042baec983300af1dc19b01ac7d740a1cedc5d1f91ce99fd"
+    },
+    {
+      "file": "state_0049.sql",
+      "source_path": "codex-rs/state/migrations/0049_projects.sql",
+      "source_blob": "15a3fcc28209762205f0bbfa5e1333f67c562965",
+      "representation": "entire_file",
+      "sha256": "f07d68d3feeefd599c80ee2f1206a69a34ce882777de5f82a03c6ac997c1dcad"
+    },
+    {
+      "file": "state_0050.sql",
+      "source_path": "codex-rs/state/migrations/0050_threads_section_empty_preview_indexes.sql",
+      "source_blob": "5ca988f779addb12463e83af25a2bf417d02406d",
+      "representation": "entire_file",
+      "sha256": "be51e1e22cb7b9f4039cdf23baa95c734f0b7993c0e452e285db10b669402889"
+    },
+    {
+      "file": "state_0051.sql",
+      "source_path": "codex-rs/state/migrations/0051_thread_artifacts.sql",
+      "source_blob": "8114a7db35361a7e6e042f67bb5433cc48927eeb",
+      "representation": "entire_file",
+      "sha256": "efe186d7676d199609260993e577ed59500c96b3c26a181762e1dbc15453bf9e"
+    },
+    {
+      "file": "state_0052.sql",
+      "source_path": "codex-rs/state/migrations/0052_projects_recency.sql",
+      "source_blob": "94f2d84f565f3fae26329b3934ed154a8d4e75f5",
+      "representation": "entire_file",
+      "sha256": "f0355ab2e1ee4eef8ebd521f252bb0755339bf45c47aae2fd692f763d94cf6da"
+    },
+    {
+      "file": "state_0053.sql",
+      "source_path": "codex-rs/state/migrations/0053_threads_originator.sql",
+      "source_blob": "ed52a0d8424f4ba6b43767520d8bf9c2f909b676",
+      "representation": "entire_file",
+      "sha256": "1ef0518a4c03844b0b610e37ee0cadc5729050ed0b45f5bc57d6ed6941d111c7"
+    },
+    {
+      "file": "state_0054.sql",
+      "source_path": "codex-rs/state/migrations/0054_threads_daybreak_enabled.sql",
+      "source_blob": "085e9bb0b94d36fe5db78e30c6d84949d8c7ea53",
+      "representation": "entire_file",
+      "sha256": "9e3f00da9b2e27fb286ed5ba1ab17e44a11d1b0e69a01c0e053fecdeb0df5c11"
+    },
+    {
+      "file": "state_0055.sql",
+      "source_path": "codex-rs/state/migrations/0055_thread_attachments.sql",
+      "source_blob": "7a31d9c7bba4a1162c2fcc3e9bffea20fe3789bf",
+      "representation": "entire_file",
+      "sha256": "f8066b833560b527a546d3d34a746e66a4432e6f3ad940e3d006b141646667f6"
+    },
+    {
+      "file": "state_0056.sql",
+      "source_path": "codex-rs/state/migrations/0056_threads_creator_identity.sql",
+      "source_blob": "2cda174974e15f1b52a0ced9cfd6134f52167740",
+      "representation": "entire_file",
+      "sha256": "f0b94efc6f66e03839ba1a66b52a6b51c5256d37292f14f75c46923e63e115ad"
+    },
+    {
+      "file": "state_0057.sql",
+      "source_path": "codex-rs/state/migrations/0057_cleanup_guardian_thread_metadata.sql",
+      "source_blob": "a627356dc5fd296402bbd1d70ff8033b17601027",
+      "representation": "entire_file",
+      "sha256": "f481ba2e7ba5694f6600452dbd1495c167e28a4336816106918ea3ad4c9672bf"
+    },
+    {
+      "file": "state_0058.sql",
+      "source_path": "codex-rs/state/migrations/0058_threads_archive_sort_indexes.sql",
+      "source_blob": "2d04515064b055ca65f4c4f09d7bf9983d043589",
+      "representation": "entire_file",
+      "sha256": "729a405d0cf4efdf0e64154bf3957eee7a629f8e5c0525655726feb3e070d1f5"
     }
   ],
-  "scope": "Source SQL for seven of eight database files (queue, board, goals, logs, both memory generations, thread-history projections). No primary-state, SQLx bookkeeping, cross-store capture or public-consumer coverage is claimed."
+  "scope": "Source SQL for all eight database files including the current primary schema. SQLx bookkeeping, cross-store capture, canonical history, and complete public-consumer coverage are not claimed."
 }
