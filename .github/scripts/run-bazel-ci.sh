@@ -266,6 +266,17 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUI
 fi
 
 post_config_bazel_args=()
+if [[ "${RUNNER_OS:-}" =~ ^(Linux|macOS)$ && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+  # Hosted Unix runners have limited free disk. The local output tree already
+  # retains build actions; a second disk cache can exhaust the runner on full
+  # test, lint, and release builds.
+  post_config_bazel_args+=(--disk_cache=)
+fi
+if [[ "${RUNNER_OS:-}" == "Windows" && -z "${BUILDBUDDY_API_KEY:-}" && "${bazel_args[0]}" == "test" ]]; then
+  # The unauthenticated local path must retain the ordinary Windows CI test
+  # policy without enabling ci-windows' remote-execution settings.
+  post_config_bazel_args+=(--config=ci-windows-test-policy)
+fi
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_msvc_host_platform -eq 1 ]]; then
   has_host_platform_override=0
   for arg in "${bazel_args[@]}"; do
@@ -420,6 +431,10 @@ fi
 if (( ${#post_config_bazel_args[@]} > 0 )); then
   bazel_run_args+=("${post_config_bazel_args[@]}")
 fi
+if [[ "${RUNNER_OS:-}" =~ ^(Linux|macOS)$ && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+  echo "Disk capacity before local Bazel:"
+  df -h .
+fi
 set +e
 # Work around Bazel 9 remote repo contents cache / overlay materialization
 # failures seen in CI (for example "is not a symlink" or permission errors
@@ -433,6 +448,11 @@ run_bazel_with_startup_args \
   2>&1 | tee "$bazel_console_log"
 bazel_status=${PIPESTATUS[0]}
 set -e
+
+if [[ "${RUNNER_OS:-}" =~ ^(Linux|macOS)$ && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+  echo "Disk capacity after local Bazel:"
+  df -h .
+fi
 
 if [[ ${bazel_status:-0} -ne 0 ]]; then
   if [[ $print_failed_bazel_action_summary -eq 1 ]]; then

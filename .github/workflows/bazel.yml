@@ -476,6 +476,7 @@ jobs:
         if: runner.os == 'Windows'
 
       - name: bazel build verify-release-build targets
+        id: release_build
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         shell: bash
@@ -506,6 +507,9 @@ jobs:
           )
           if [[ "${RUNNER_OS}" == "Windows" ]]; then
             bazel_build_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
+            # The voice runtime receipt reads Bazel's stable workspace status.
+            # Keep the Windows status command explicit for this release build.
+            bazel_build_args+=(--workspace_status_command=./scripts/workspace-status.cmd)
           fi
 
           bazel_target_lines="$(bash ./scripts/list-bazel-release-targets.sh)"
@@ -521,6 +525,33 @@ jobs:
             "${bazel_build_args[@]}" \
             -- \
             "${bazel_targets[@]}"
+
+      - name: Inspect Windows release workspace status
+        if: failure() && steps.release_build.outcome == 'failure' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          bazel_startup_args=()
+          if [[ -n "${BAZEL_OUTPUT_USER_ROOT:-}" ]]; then
+            bazel_startup_args+=("--output_user_root=${BAZEL_OUTPUT_USER_ROOT}")
+          fi
+          if ! execution_root="$(bazelisk "${bazel_startup_args[@]}" info execution_root)"; then
+            echo "Could not locate Bazel's execution root for workspace-status inspection." >&2
+            exit 0
+          fi
+          stable_status="${execution_root}/bazel-out/stable-status.txt"
+          if [[ ! -f "${stable_status}" ]]; then
+            echo "Stable workspace status file is absent: ${stable_status}" >&2
+            exit 0
+          fi
+          awk '
+            $1 == "STABLE_GIT_COMMIT" {
+              count++
+              if ($2 ~ /^[0-9a-f]+$/ && length($2) == 40 && NF == 2) valid++
+            }
+            END {
+              printf "STABLE_GIT_COMMIT entries: %d; valid commit entries: %d\n", count, valid
+            }
+          ' "${stable_status}"
 
       - name: Verify Bazel builds bwrap
         if: runner.os == 'Linux'
