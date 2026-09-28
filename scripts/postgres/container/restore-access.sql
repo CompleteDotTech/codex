@@ -6,13 +6,67 @@ GRANT SELECT ON ALL SEQUENCES IN SCHEMA codex_storage TO codex_backup;
 -- Archives omit ACLs. Restore the protected bootstrap policy in the same
 -- transaction as the schema, before any runtime connection can observe it.
 DO $restore_access$
+DECLARE
+    metadata regclass := to_regclass('codex_storage.codex_schema_meta');
+    history regclass := to_regclass('codex_storage._codex_pg_migrations');
 BEGIN
-    IF to_regclass('codex_storage.codex_schema_meta') IS NOT NULL THEN
+    IF metadata IS NOT NULL THEN
         REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime;
         GRANT SELECT ON codex_storage.codex_schema_meta TO codex_runtime;
     END IF;
-    IF to_regclass('codex_storage._codex_pg_migrations') IS NOT NULL THEN
+    IF history IS NOT NULL THEN
         REVOKE ALL ON codex_storage._codex_pg_migrations FROM codex_runtime;
+    END IF;
+    -- Destination-wide default ACLs can grant access through PUBLIC or another
+    -- role as archive objects are recreated. Refuse this drift transactionally;
+    -- changing the operator's role memberships or global defaults is not repair.
+    IF EXISTS (
+        SELECT 1 FROM pg_roles candidate
+        WHERE (pg_has_role('codex_runtime', candidate.oid, 'USAGE')
+               OR pg_has_role('codex_runtime', candidate.oid, 'SET'))
+          AND (
+            has_schema_privilege(candidate.oid, 'codex_storage', 'CREATE')
+            OR (metadata IS NOT NULL AND (
+                has_table_privilege(candidate.oid, metadata, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(candidate.oid, metadata, 'INSERT,UPDATE,REFERENCES')
+            ))
+            OR (history IS NOT NULL AND (
+                has_table_privilege(candidate.oid, history, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(candidate.oid, history, 'SELECT,INSERT,UPDATE,REFERENCES')
+            ))
+            OR EXISTS (
+                SELECT 1 FROM pg_class sequence
+                WHERE sequence.relnamespace = 'codex_storage'::regnamespace
+                  AND CASE WHEN sequence.relkind = 'S'
+                    THEN has_sequence_privilege(candidate.oid, sequence.oid, 'UPDATE')
+                    ELSE FALSE END
+            )
+          )
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe runtime privileges';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_roles candidate
+        WHERE (candidate.rolname = 'codex_backup'
+               OR pg_has_role('codex_backup', candidate.oid, 'USAGE')
+               OR pg_has_role('codex_backup', candidate.oid, 'SET'))
+          AND (
+            has_schema_privilege(candidate.oid, 'codex_storage', 'CREATE')
+            OR
+            has_table_privilege(candidate.oid, metadata, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+            OR has_any_column_privilege(candidate.oid, metadata, 'INSERT,UPDATE,REFERENCES')
+            OR has_table_privilege(candidate.oid, history, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+            OR has_any_column_privilege(candidate.oid, history, 'INSERT,UPDATE,REFERENCES')
+            OR EXISTS (
+                SELECT 1 FROM pg_class sequence
+                WHERE sequence.relnamespace = 'codex_storage'::regnamespace
+                  AND CASE WHEN sequence.relkind = 'S'
+                    THEN has_sequence_privilege(candidate.oid, sequence.oid, 'USAGE,UPDATE')
+                    ELSE FALSE END
+            )
+          )
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe backup privileges';
     END IF;
 END
 $restore_access$;
