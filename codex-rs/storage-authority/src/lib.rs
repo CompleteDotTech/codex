@@ -45,8 +45,14 @@ pub struct LocalAuthority {
 }
 
 /// A host-supplied reference to protected credential material, never a secret.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct CredentialRef(String);
+
+impl std::fmt::Debug for CredentialRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CredentialRef([redacted])")
+    }
+}
 
 impl CredentialRef {
     pub fn parse(value: String) -> Result<Self, AuthorityError> {
@@ -104,6 +110,15 @@ fn valid_pg_identifier(value: &str) -> bool {
             byte == b'_' || byte.is_ascii_lowercase() || (index > 0 && byte.is_ascii_digit())
         })
 }
+
+mod profile;
+pub use profile::CredentialSource;
+pub use profile::EnvironmentVariableName;
+pub use profile::ProfileError;
+pub use profile::RemotePostgresProfile;
+pub use profile::StorageCandidateProfile;
+pub use profile::TlsSettings;
+pub use profile::TlsVerification;
 
 pub enum AuthorityError {
     Io(io::Error),
