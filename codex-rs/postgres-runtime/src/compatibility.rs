@@ -115,7 +115,9 @@ async fn validate_relation(
     let types: Vec<_> = columns.iter().map(|(_, kind)| *kind).collect();
     let valid: Option<bool> = sqlx::query_scalar(
         "SELECT c.relkind = 'r' AND c.relpersistence = 'p' AND NOT c.relrowsecurity
-           AND NOT c.relispartition AND NOT c.relhassubclass
+           AND NOT c.relispartition AND NOT EXISTS (
+             SELECT 1 FROM pg_inherits WHERE inhparent = c.oid
+           )
            AND c.relowner = 'codex_owner'::regrole AND NOT EXISTS (
              SELECT 1 FROM (
                SELECT * FROM pg_attribute WHERE attrelid = c.oid AND attnum > 0 AND NOT attisdropped
@@ -174,7 +176,7 @@ pub async fn check_codex_storage_compatibility(
         let remaining = deadline
             .saturating_duration_since(Instant::now())
             .as_millis()
-            .saturating_sub(1000);
+            .saturating_sub(3000);
         if remaining == 0 {
             return Err(CompatibilityError::Timeout);
         }

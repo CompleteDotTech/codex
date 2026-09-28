@@ -10,6 +10,43 @@ DECLARE
     metadata regclass := to_regclass('codex_storage.codex_schema_meta');
     history regclass := to_regclass('codex_storage._codex_pg_migrations');
 BEGIN
+    IF (metadata IS NULL) <> (history IS NULL) THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unrecognized protected metadata';
+    END IF;
+    IF metadata IS NOT NULL THEN
+        IF EXISTS (
+            SELECT 1 FROM (VALUES (metadata), (history)) required(relation_oid)
+            LEFT JOIN pg_class relation ON relation.oid = required.relation_oid
+            WHERE relation.relkind <> 'r'
+               OR relation.relowner <> 'codex_owner'::regrole
+               OR relation.relpersistence <> 'p'
+               OR relation.relrowsecurity
+        ) OR NOT EXISTS (
+            SELECT 1 FROM pg_constraint constraint_row
+            WHERE constraint_row.conrelid = metadata
+              AND constraint_row.contype = 'p'
+              AND constraint_row.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = metadata AND attname = 'singleton')]
+        ) OR NOT EXISTS (
+            SELECT 1 FROM pg_constraint constraint_row
+            WHERE constraint_row.conrelid = history
+              AND constraint_row.contype = 'p'
+              AND constraint_row.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = history AND attname = 'version')]
+        ) OR NOT EXISTS (
+            SELECT 1 FROM pg_constraint constraint_row
+            WHERE constraint_row.conrelid = metadata
+              AND constraint_row.contype = 'c'
+              AND pg_get_constraintdef(constraint_row.oid) = 'CHECK (singleton)'
+        ) THEN
+            RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unrecognized protected metadata';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM codex_storage.codex_schema_meta
+            WHERE singleton IS TRUE AND format_version = 1
+              AND min_reader_version = 1 AND min_writer_version = 1
+        ) THEN
+            RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unrecognized protected metadata version';
+        END IF;
+    END IF;
     IF metadata IS NOT NULL THEN
         REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime;
         GRANT SELECT ON codex_storage.codex_schema_meta TO codex_runtime;
@@ -77,6 +114,59 @@ BEGIN
                OR pg_has_role(candidate.oid, 'codex_runtime', 'SET'))
     ) THEN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe backup role escalation';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_roles candidate
+        WHERE candidate.rolname NOT IN ('codex_owner', 'codex_migrator')
+          AND left(candidate.rolname, 3) <> 'pg_'
+          AND NOT candidate.rolsuper
+          AND (
+            pg_has_role(candidate.oid, 'codex_owner', 'USAGE')
+            OR pg_has_role(candidate.oid, 'codex_owner', 'SET')
+            OR has_schema_privilege(candidate.oid, 'codex_storage', 'CREATE')
+            OR (metadata IS NOT NULL AND (
+                has_table_privilege(candidate.oid, metadata, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(candidate.oid, metadata, 'INSERT,UPDATE,REFERENCES')
+            ))
+            OR (history IS NOT NULL AND (
+                has_table_privilege(candidate.oid, history, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(candidate.oid, history, 'INSERT,UPDATE,REFERENCES')
+            ))
+          )
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe foreign role privileges';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_default_acl defaults
+        WHERE defaults.defaclrole = 'codex_owner'::regrole
+          AND defaults.defaclnamespace = 0
+          AND defaults.defaclobjtype = 'f'
+          AND NOT EXISTS (
+              SELECT 1 FROM aclexplode(defaults.defaclacl) acl
+              WHERE acl.grantee <> 'codex_owner'::regrole
+                AND acl.privilege_type = 'EXECUTE'
+          )
+    ) OR EXISTS (
+        SELECT 1 FROM pg_default_acl defaults,
+             LATERAL aclexplode(defaults.defaclacl) acl
+        WHERE defaults.defaclrole = 'codex_owner'::regrole
+          AND defaults.defaclobjtype = 'f'
+          AND defaults.defaclnamespace = 'codex_storage'::regnamespace
+          AND acl.grantee <> 'codex_owner'::regrole
+          AND acl.privilege_type = 'EXECUTE'
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe function defaults';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_default_acl defaults,
+             LATERAL aclexplode(defaults.defaclacl) acl
+        WHERE defaults.defaclrole = 'codex_owner'::regrole
+          AND defaults.defaclobjtype = 'S'
+          AND defaults.defaclnamespace IN (0, 'codex_storage'::regnamespace)
+          AND acl.grantee NOT IN ('codex_owner'::regrole, 'codex_runtime'::regrole)
+          AND acl.privilege_type IN ('USAGE', 'UPDATE')
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe sequence defaults';
     END IF;
 END
 $restore_access$;
