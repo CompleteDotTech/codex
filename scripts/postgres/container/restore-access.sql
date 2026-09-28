@@ -20,6 +20,7 @@ BEGIN
             WHERE relation.relkind <> 'r'
                OR relation.relowner <> 'codex_owner'::regrole
                OR relation.relpersistence <> 'p'
+               OR relation.reloftype <> 0
                OR relation.relrowsecurity
         ) OR EXISTS (
             SELECT 1 FROM pg_inherits inheritance
@@ -36,16 +37,35 @@ BEGIN
             SELECT 1 FROM pg_constraint constraint_row
             WHERE constraint_row.conrelid = metadata
               AND constraint_row.contype = 'p'
+              AND constraint_row.conindid = to_regclass('codex_storage.codex_schema_meta_pkey')
               AND constraint_row.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = metadata AND attname = 'singleton')]
         ) OR NOT EXISTS (
             SELECT 1 FROM pg_constraint constraint_row
             WHERE constraint_row.conrelid = history
               AND constraint_row.contype = 'p'
+              AND constraint_row.conindid = to_regclass('codex_storage._codex_pg_migrations_pkey')
               AND constraint_row.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = history AND attname = 'version')]
-        ) OR NOT EXISTS (
+        ) OR (SELECT count(*) FROM pg_constraint WHERE conrelid = history) <> 1
+          OR (SELECT count(*) FROM pg_constraint WHERE conrelid = metadata) <> 5
+          OR EXISTS (
+            SELECT 1 FROM (VALUES
+                ('codex_schema_meta_format_version_check', 'CHECK ((format_version > 0))'),
+                ('codex_schema_meta_min_reader_version_check', 'CHECK ((min_reader_version > 0))'),
+                ('codex_schema_meta_min_writer_version_check', 'CHECK ((min_writer_version > 0))')
+            ) required(name, definition)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM pg_constraint constraint_row
+                WHERE constraint_row.conrelid = metadata
+                  AND constraint_row.contype = 'c'
+                  AND constraint_row.conname = required.name
+                  AND pg_get_constraintdef(constraint_row.oid) = required.definition
+            )
+        )
+          OR NOT EXISTS (
             SELECT 1 FROM pg_constraint constraint_row
             WHERE constraint_row.conrelid = metadata
               AND constraint_row.contype = 'c'
+              AND constraint_row.conname = 'codex_schema_meta_singleton_check'
               AND pg_get_constraintdef(constraint_row.oid) = 'CHECK (singleton)'
         ) THEN
             RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unrecognized protected metadata';
