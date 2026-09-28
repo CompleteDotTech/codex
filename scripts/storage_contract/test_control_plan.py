@@ -77,6 +77,23 @@ class ControlPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "manifest_digest_mismatch"):
             self.preview()
 
+    def test_changed_plan_bytes_reject_the_original_trusted_digest(self):
+        original = encoded(self.plan)
+        expected_digest = hashlib.sha256(original).hexdigest()
+        self.plan["owner_host_id"] = str(uuid.uuid4())
+        for name, changed in (
+            ("owner_host", encoded(self.plan)),
+            ("whitespace", original + b"\n"),
+        ):
+            with self.subTest(change=name):
+                with self.assertRaisesRegex(ContractError, "^plan_digest_mismatch$"):
+                    preview_plan(
+                        changed,
+                        expected_digest,
+                        encoded(self.inventory),
+                        encoded(self.manifest),
+                    )
+
     def test_initialize_and_attach_preserve_local_history_without_import(self):
         self.plan["source"] = None
         self.plan["manifest_sha256"] = None
