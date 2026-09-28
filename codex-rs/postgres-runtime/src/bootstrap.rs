@@ -4,6 +4,7 @@ use crate::PoolError;
 use crate::PostgresPool;
 use sqlx::Acquire;
 use sqlx::PgConnection;
+use sqlx::migrate::MigrateError;
 use sqlx::migrate::Migrator;
 use std::borrow::Cow;
 use std::fmt;
@@ -41,12 +42,36 @@ fn classify_sqlx(error: &sqlx::Error) -> BootstrapError {
         sqlx::Error::Database(error) if error.code().as_deref() == Some("42501") => {
             BootstrapError::Privilege
         }
+        sqlx::Error::Database(error)
+            if error.code().is_some_and(|code| {
+                code.starts_with("08") || matches!(code.as_ref(), "57P01" | "57P02" | "57P03")
+            }) =>
+        {
+            BootstrapError::Unavailable
+        }
+        sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::Protocol(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::WorkerCrashed
+        | sqlx::Error::BeginFailed => BootstrapError::Unavailable,
+        _ => BootstrapError::Migration,
+    }
+}
+
+fn classify_migration(error: MigrateError) -> BootstrapError {
+    match error {
+        MigrateError::Execute(error) | MigrateError::ExecuteMigration(error, _) => {
+            classify_sqlx(&error)
+        }
         _ => BootstrapError::Migration,
     }
 }
 
 fn classify_namespace_validation(error: sqlx::Error) -> BootstrapError {
     match &error {
+        sqlx::Error::ColumnDecode { .. } => BootstrapError::IncompatibleNamespace,
         sqlx::Error::Database(error)
             if matches!(
                 error.code().as_deref(),
@@ -159,6 +184,22 @@ async fn require_safe_protected_privileges(
             WHERE membership.admin_option
               AND membership.member <> 'codex_migrator'::regrole
         ) OR EXISTS (
+            WITH RECURSIVE runtime_roles(roleid) AS (
+                SELECT 'codex_runtime'::regrole
+                UNION
+                SELECT membership.member
+                FROM pg_auth_members membership
+                JOIN runtime_roles parent ON parent.roleid = membership.roleid
+            )
+            SELECT 1
+            FROM pg_auth_members membership
+            JOIN runtime_roles target ON target.roleid = membership.roleid
+            WHERE membership.admin_option
+              AND (
+                  pg_has_role('codex_backup', membership.member, 'USAGE')
+                  OR pg_has_role('codex_backup', membership.member, 'SET')
+              )
+        ) OR EXISTS (
             SELECT 1 FROM pg_class history,
                  LATERAL aclexplode(coalesce(history.relacl, acldefault('r', history.relowner))) acl
             WHERE history.oid = 'codex_storage._codex_pg_migrations'::regclass
@@ -172,6 +213,38 @@ async fn require_safe_protected_privileges(
               AND acl.privilege_type = 'SELECT'
               AND acl.is_grantable
               AND acl.grantee NOT IN ('codex_owner'::regrole, 'codex_migrator'::regrole)
+        ) OR EXISTS (
+            WITH RECURSIVE protected_relations(oid) AS (
+                VALUES (
+                    'codex_storage.codex_schema_meta'::regclass::oid
+                ), (
+                    'codex_storage._codex_pg_migrations'::regclass::oid
+                )
+            ), dependent_views(oid) AS (
+                SELECT view.oid
+                FROM pg_class view
+                JOIN pg_rewrite rewrite ON rewrite.ev_class = view.oid
+                JOIN pg_depend dependency
+                  ON dependency.classid = 'pg_rewrite'::regclass
+                 AND dependency.objid = rewrite.oid
+                 AND dependency.refclassid = 'pg_class'::regclass
+                JOIN protected_relations protected ON protected.oid = dependency.refobjid
+                WHERE view.relkind = 'v'
+                UNION
+                SELECT view.oid
+                FROM pg_class view
+                JOIN pg_rewrite rewrite ON rewrite.ev_class = view.oid
+                JOIN pg_depend dependency
+                  ON dependency.classid = 'pg_rewrite'::regclass
+                 AND dependency.objid = rewrite.oid
+                 AND dependency.refclassid = 'pg_class'::regclass
+                JOIN dependent_views parent ON parent.oid = dependency.refobjid
+                WHERE view.relkind = 'v'
+            )
+            SELECT 1
+            FROM pg_class view
+            WHERE view.relowner = 'codex_owner'::regrole
+              AND view.oid IN (SELECT oid FROM dependent_views)
         )",
     )
     .fetch_one(connection)
@@ -266,6 +339,11 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
                         'codex_storage.codex_schema_meta'::regclass,
                         'codex_storage._codex_pg_migrations'::regclass
                     )
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_class relation
+                    WHERE relation.relnamespace = 'codex_storage'::regnamespace
+                      AND relation.relname IN ('codex_schema_meta', '_codex_pg_migrations')
+                      AND relation.reloftype <> 0
                 ) AND EXISTS (
                     SELECT 1 FROM pg_constraint cst
                     WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
@@ -280,12 +358,50 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
                       AND cst.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = cst.conrelid AND attname = 'version')]
                 ) AND (SELECT count(*) FROM pg_constraint
                        WHERE conrelid = 'codex_storage._codex_pg_migrations'::regclass) = 1
-                AND EXISTS (
-                    SELECT 1 FROM pg_constraint cst
-                    WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
-                      AND cst.conname = 'codex_schema_meta_singleton_check'
-                      AND cst.contype = 'c'
-                      AND pg_get_constraintdef(cst.oid) = 'CHECK (singleton)'
+                AND (SELECT count(*) FROM pg_attribute
+                     WHERE attrelid = 'codex_storage._codex_pg_migrations'::regclass
+                       AND attnum > 0
+                       AND NOT attisdropped) = 6
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM (VALUES
+                        ('version'::name, 'bigint'::regtype, TRUE, FALSE),
+                        ('description'::name, 'text'::regtype, TRUE, FALSE),
+                        ('installed_on'::name, 'timestamptz'::regtype, TRUE, TRUE),
+                        ('success'::name, 'boolean'::regtype, TRUE, FALSE),
+                        ('checksum'::name, 'bytea'::regtype, TRUE, FALSE),
+                        ('execution_time'::name, 'bigint'::regtype, TRUE, FALSE)
+                    ) AS required(name, type_oid, not_null, has_default)
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM pg_attribute attribute
+                        WHERE attribute.attrelid = 'codex_storage._codex_pg_migrations'::regclass
+                          AND attribute.attnum > 0
+                          AND NOT attribute.attisdropped
+                          AND attribute.attname = required.name
+                          AND attribute.atttypid = required.type_oid
+                          AND attribute.attnotnull = required.not_null
+                          AND attribute.atthasdef = required.has_default
+                    )
+                )
+                AND (SELECT count(*) FROM pg_constraint
+                     WHERE conrelid = 'codex_storage.codex_schema_meta'::regclass) = 5
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM (VALUES
+                        ('codex_schema_meta_pkey'::name, 'p'::\"char\", NULL::text),
+                        ('codex_schema_meta_singleton_check'::name, 'c'::\"char\", 'CHECK (singleton)'),
+                        ('codex_schema_meta_format_version_check'::name, 'c'::\"char\", 'CHECK ((format_version > 0))'),
+                        ('codex_schema_meta_min_reader_version_check'::name, 'c'::\"char\", 'CHECK ((min_reader_version > 0))'),
+                        ('codex_schema_meta_min_writer_version_check'::name, 'c'::\"char\", 'CHECK ((min_writer_version > 0))')
+                    ) AS required(name, contype, definition)
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM pg_constraint cst
+                        WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
+                          AND cst.conname = required.name
+                          AND cst.contype = required.contype
+                          AND (required.definition IS NULL OR pg_get_constraintdef(cst.oid) = required.definition)
+                    )
                 )",
             )
             .fetch_one(&mut *transaction)
@@ -323,7 +439,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         migrator
             .run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
             .await
-            .map_err(|_| BootstrapError::Migration)?;
+            .map_err(classify_migration)?;
         // The fixture's default grants are broad; metadata and history must be immutable to runtime.
         sqlx::query("REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime")
             .execute(&mut *transaction)
@@ -364,3 +480,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
     .await
     .map_err(|_| BootstrapError::Timeout)?
 }
+
+#[cfg(test)]
+#[path = "bootstrap_tests.rs"]
+mod tests;
