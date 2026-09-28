@@ -100,8 +100,8 @@ BEGIN
         ) THEN
             RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unrecognized protected metadata';
         END IF;
-        -- View owners can supply base-table authority without a caller holding
-        -- any ACL on the protected table. Follow nested views across schemas.
+        -- Views and rules can supply base-table authority without a caller
+        -- holding its ACL. Follow every dependent rule relation across schemas.
         IF EXISTS (
             WITH RECURSIVE protected_dependents(relation_oid) AS (
                 SELECT metadata UNION SELECT history
@@ -113,10 +113,9 @@ BEGIN
                 JOIN protected_dependents parent ON parent.relation_oid = dependency.refobjid
             )
             SELECT 1 FROM protected_dependents dependent
-            JOIN pg_class relation ON relation.oid = dependent.relation_oid
-            WHERE relation.relkind = 'v'
+            WHERE dependent.relation_oid NOT IN (metadata, history)
         ) THEN
-            RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsupported protected view dependency';
+            RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsupported protected rewrite dependency';
         END IF;
         IF NOT EXISTS (
             SELECT 1 FROM codex_storage.codex_schema_meta
