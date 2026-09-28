@@ -1,0 +1,18 @@
+--- a/rust/private/toolchain.bzl
++++ b/rust/private/toolchain.bzl
+@@ -574,4 +574,15 @@
+         if value != "none":
+             linker_preference = value
+ 
++    # Probe the MSVC linker for target Rust without changing the linker used
++    # to bootstrap Rust tools in the exec configuration.
++    if (
++        ctx.configuration.is_tool_configuration() and
++        target_os == "windows" and
++        target_abi == "msvc" and
++        linker_preference == "cc" and
++        ctx.attr.linker
++    ):
++        linker_preference = "rust"
++
+     # Validate linker_preference configuration
