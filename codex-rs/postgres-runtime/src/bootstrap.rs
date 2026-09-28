@@ -128,6 +128,25 @@ async fn require_safe_protected_privileges(
                 OR has_table_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
                 OR has_any_column_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,REFERENCES')
               )
+        ) OR EXISTS (
+            SELECT 1 FROM pg_auth_members membership
+            WHERE membership.roleid = 'codex_owner'::regrole
+              AND membership.admin_option
+              AND membership.member <> 'codex_migrator'::regrole
+        ) OR EXISTS (
+            SELECT 1 FROM pg_class history,
+                 LATERAL aclexplode(coalesce(history.relacl, acldefault('r', history.relowner))) acl
+            WHERE history.oid = 'codex_storage._codex_pg_migrations'::regclass
+              AND acl.privilege_type = 'SELECT'
+              AND acl.is_grantable
+              AND acl.grantee NOT IN ('codex_owner'::regrole, 'codex_migrator'::regrole)
+        ) OR EXISTS (
+            SELECT 1 FROM pg_attribute attribute,
+                 LATERAL aclexplode(attribute.attacl) acl
+            WHERE attribute.attrelid = 'codex_storage._codex_pg_migrations'::regclass
+              AND acl.privilege_type = 'SELECT'
+              AND acl.is_grantable
+              AND acl.grantee NOT IN ('codex_owner'::regrole, 'codex_migrator'::regrole)
         )",
     )
     .fetch_one(connection)
@@ -199,6 +218,28 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
                           AND relation.relkind::text = required.kind
                           AND relation.relowner = 'codex_owner'::regrole
                           AND NOT relation.relrowsecurity
+                          AND relation.relpersistence = 'p'
+                    )
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_inherits inheritance
+                    WHERE inheritance.inhrelid IN (
+                        'codex_storage.codex_schema_meta'::regclass,
+                        'codex_storage._codex_pg_migrations'::regclass
+                    ) OR inheritance.inhparent IN (
+                        'codex_storage.codex_schema_meta'::regclass,
+                        'codex_storage._codex_pg_migrations'::regclass
+                    )
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_trigger row_trigger
+                    WHERE row_trigger.tgrelid IN (
+                        'codex_storage.codex_schema_meta'::regclass,
+                        'codex_storage._codex_pg_migrations'::regclass
+                    ) AND NOT row_trigger.tgisinternal
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_rewrite rewrite
+                    WHERE rewrite.ev_class IN (
+                        'codex_storage.codex_schema_meta'::regclass,
+                        'codex_storage._codex_pg_migrations'::regclass
                     )
                 ) AND EXISTS (
                     SELECT 1 FROM pg_constraint cst
