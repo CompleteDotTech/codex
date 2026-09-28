@@ -33,14 +33,23 @@ impl TransactionError {
     /// Map a statement failure before it crosses a logging or API boundary.
     pub fn classify_statement(error: &sqlx::Error) -> Self {
         match error {
-            sqlx::Error::Database(error) => match error.code().as_deref() {
-                Some("40001") => Self::SerializationConflict,
-                Some("40P01") => Self::Deadlock,
-                Some("42501") => Self::Privilege,
-                _ => Self::Rejected,
-            },
+            sqlx::Error::Database(error) => {
+                Self::classify_statement_sqlstate(error.code().as_deref())
+            }
             sqlx::Error::PoolTimedOut => Self::Timeout,
             _ => Self::Unavailable,
+        }
+    }
+
+    fn classify_statement_sqlstate(code: Option<&str>) -> Self {
+        match code {
+            Some("40001") => Self::SerializationConflict,
+            Some("40P01") => Self::Deadlock,
+            Some("42501") => Self::Privilege,
+            Some(code) if code.starts_with("08") || matches!(code, "57P01" | "57P02" | "57P03") => {
+                Self::Unavailable
+            }
+            _ => Self::Rejected,
         }
     }
 

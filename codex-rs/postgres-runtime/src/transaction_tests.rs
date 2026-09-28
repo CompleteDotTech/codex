@@ -41,3 +41,13 @@ fn commit_sqlstates_distinguish_abort_from_lost_response() {
         TransactionError::Rejected
     );
 }
+
+#[test]
+fn interrupted_statement_is_unavailable() {
+    for code in [Some("08006"), Some("57P01"), Some("57P02"), Some("57P03")] {
+        assert_eq!(
+            TransactionError::classify_statement_sqlstate(code),
+            TransactionError::Unavailable
+        );
+    }
+}
