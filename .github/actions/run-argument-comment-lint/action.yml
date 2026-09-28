@@ -51,7 +51,7 @@ runs:
       run: |
         ./.github/scripts/run-argument-comment-lint-bazel.sh \
           --config=argument-comment-lint \
-          --platforms=//:local_windows \
+          --platforms=//:local_windows_msvc \
           --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
           --keep_going \
           --build_metadata=COMMIT_SHA=${GITHUB_SHA}
