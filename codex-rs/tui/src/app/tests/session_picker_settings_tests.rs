@@ -1,5 +1,7 @@
 //! Resume-picker restoration must not overwrite authoritative server settings.
 
+use super::session_lifecycle_requests::HistoryCapabilities;
+use super::session_lifecycle_requests::start_recording_app_server_with_history;
 use super::*;
 use crate::resume_picker::SessionSelection;
 use crate::resume_picker::SessionTarget;
@@ -11,6 +13,7 @@ enum SettingsScenario {
     None,
     Pending,
     StalePending,
+    LegacyWithoutMode,
 }
 
 async fn resume_saved_draft(scenario: SettingsScenario) -> Result<()> {
@@ -23,12 +26,31 @@ async fn resume_saved_draft(scenario: SettingsScenario) -> Result<()> {
         TomlValue::try_from(projects).expect("trust fixture"),
     ));
     app.config.active_project.trust_level = Some(codex_protocol::config_types::TrustLevel::Trusted);
-    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    let history_capabilities = if scenario == SettingsScenario::LegacyWithoutMode {
+        HistoryCapabilities::ResumeWithoutCollaborationMode
+    } else {
+        HistoryCapabilities::Current
+    };
+    let (mut server, _requests, proxy) = start_recording_app_server_with_history(
+        &app.config,
+        history_capabilities,
+        /*blocked_thread_list*/ None,
+        /*failed_thread_name*/ None,
+        crate::app_server_session::ThreadParamsMode::Embedded,
+        LoaderOverrides::default(),
+    )
+    .await?;
     let started = server.start_thread(&app.config).await?;
     let thread_id = started.session.thread_id;
     app.agents_overview
         .blank_sessions
         .insert(thread_id, started);
+
+    if scenario == SettingsScenario::LegacyWithoutMode {
+        let mut plan = app.chat_widget.effective_collaboration_mode();
+        plan.mode = ModeKind::Plan;
+        app.chat_widget.set_effective_collaboration_mode(plan);
+    }
 
     app.chat_widget
         .apply_external_edit("retained resume-picker draft".to_string());
@@ -39,7 +61,10 @@ async fn resume_saved_draft(scenario: SettingsScenario) -> Result<()> {
     input_state.plan_mode_reasoning_effort = Some(ReasoningEffortConfig::Low);
     let original_model = app.chat_widget.current_model().to_string();
     let original_mode = app.chat_widget.effective_collaboration_mode();
-    let (expected_model, expected_mode, expected_effort) = if scenario != SettingsScenario::None {
+    let (expected_model, expected_mode, expected_effort) = if matches!(
+        scenario,
+        SettingsScenario::Pending | SettingsScenario::StalePending
+    ) {
         // A different model makes this a regression rather than a no-op restore.
         assert_ne!(
             original_model, "gpt-5.4",
@@ -138,7 +163,7 @@ async fn resume_saved_draft(scenario: SettingsScenario) -> Result<()> {
             .capture_thread_input_state()
             .expect("restored input")
             .plan_mode_reasoning_effort,
-        None
+        (scenario == SettingsScenario::LegacyWithoutMode).then_some(ReasoningEffortConfig::Low)
     );
     assert_eq!(
         app.chat_widget.composer_text_with_pending(),
@@ -152,8 +177,17 @@ async fn resume_saved_draft(scenario: SettingsScenario) -> Result<()> {
                 /*width*/ 80,
             ))
         );
+    } else if scenario == SettingsScenario::LegacyWithoutMode {
+        insta::assert_snapshot!(
+            "resume_picker_preserves_plan_mode_with_legacy_server",
+            crate::chatwidget::tests::helpers::normalize_snapshot_paths(render_bottom_popup(
+                &app.chat_widget,
+                /*width*/ 80,
+            ))
+        );
     }
     server.shutdown().await?;
+    proxy.await??;
     Ok(())
 }
 
@@ -170,4 +204,9 @@ async fn resume_picker_preserves_draft_without_pending_settings() -> Result<()> 
 #[tokio::test]
 async fn resume_picker_preserves_newer_server_settings_when_draft_is_stale() -> Result<()> {
     resume_saved_draft(SettingsScenario::StalePending).await
+}
+
+#[tokio::test]
+async fn resume_picker_preserves_plan_selection_when_server_omits_mode() -> Result<()> {
+    resume_saved_draft(SettingsScenario::LegacyWithoutMode).await
 }
