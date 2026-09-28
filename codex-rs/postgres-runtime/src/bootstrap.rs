@@ -481,6 +481,14 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
                           AND attribute.atthasdef = required.has_default
                     )
                 )
+                AND EXISTS (
+                    SELECT 1 FROM pg_attribute attribute
+                    JOIN pg_attrdef definition ON definition.adrelid = attribute.attrelid
+                      AND definition.adnum = attribute.attnum
+                    WHERE attribute.attrelid = 'codex_storage._codex_pg_migrations'::regclass
+                      AND attribute.attname = 'installed_on'
+                      AND pg_get_expr(definition.adbin, definition.adrelid) IN ('now()', 'CURRENT_TIMESTAMP')
+                )
                 AND (SELECT count(*) FROM pg_constraint
                      WHERE conrelid = 'codex_storage.codex_schema_meta'::regclass) = 5
                 AND NOT EXISTS (
