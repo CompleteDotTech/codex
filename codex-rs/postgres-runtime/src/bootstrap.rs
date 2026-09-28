@@ -184,9 +184,21 @@ async fn require_safe_protected_privileges(
             WHERE membership.admin_option
               AND membership.member <> 'codex_migrator'::regrole
         ) OR EXISTS (
-            SELECT 1 FROM pg_auth_members membership
-            WHERE membership.member = 'codex_backup'::regrole
-              AND membership.admin_option
+            WITH RECURSIVE runtime_roles(roleid) AS (
+                SELECT 'codex_runtime'::regrole
+                UNION
+                SELECT membership.member
+                FROM pg_auth_members membership
+                JOIN runtime_roles parent ON parent.roleid = membership.roleid
+            )
+            SELECT 1
+            FROM pg_auth_members membership
+            JOIN runtime_roles target ON target.roleid = membership.roleid
+            WHERE membership.admin_option
+              AND (
+                  pg_has_role('codex_backup', membership.member, 'USAGE')
+                  OR pg_has_role('codex_backup', membership.member, 'SET')
+              )
         ) OR EXISTS (
             SELECT 1 FROM pg_class history,
                  LATERAL aclexplode(coalesce(history.relacl, acldefault('r', history.relowner))) acl

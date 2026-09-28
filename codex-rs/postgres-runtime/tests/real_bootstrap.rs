@@ -142,6 +142,20 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
         "REVOKE codex_bootstrap_graph_bridge FROM codex_backup",
     )
     .await;
+    migrator_query(
+        &migrator_a,
+        "GRANT codex_bootstrap_graph_bridge TO codex_backup WITH INHERIT FALSE, SET TRUE",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    migrator_query(
+        &migrator_a,
+        "REVOKE codex_bootstrap_graph_bridge FROM codex_backup",
+    )
+    .await;
 
     owner_query(
         &migrator_a,
