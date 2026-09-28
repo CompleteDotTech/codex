@@ -1,8 +1,10 @@
 """Real protected-metadata restore checks on two caller-owned isolated fixtures."""
 
 import json
+from pathlib import Path
 
 from qualification_checks import checked_backup, command, sql, verify_endpoint
+from restore_archive_cases import qualify_archive_shapes
 from state import ServiceError, publish_json
 
 
@@ -136,14 +138,25 @@ def _qualify_restore_access(source, destination, owned_roles):
     )
     report = {"scope": "protected_metadata_restore_only", "steps": []}
 
-    def reject_and_revert(name, setup, cleanup):
+    def reject_and_revert(name, setup, cleanup, captured=None):
         sql(destination, setup)
         primary_failure = None
         try:
             before = json.loads(sql(destination, snapshot))
+            selected_restore_args = restore_args
+            if captured is not None:
+                captured_backup, captured_archive = captured
+                selected_restore_args = (
+                    "restore",
+                    "--archive",
+                    str(captured_archive),
+                    "--sha256",
+                    captured_backup["sha256"],
+                    "--confirm-empty-destination",
+                )
             command(
                 destination,
-                *restore_args,
+                *selected_restore_args,
                 expected_error="restore_outcome_unconfirmed_inspect_destination",
             )
             if json.loads(sql(destination, snapshot)) != before:
@@ -234,10 +247,43 @@ def _qualify_restore_access(source, destination, owned_roles):
         "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner GRANT UPDATE ON SEQUENCES TO codex_backup",
         "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner REVOKE UPDATE ON SEQUENCES FROM codex_backup",
     )
+    reject_and_revert(
+        "foreign_owner_admin_option",
+        "GRANT codex_owner TO codex_restore_foreign WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
+        "REVOKE codex_owner FROM codex_restore_foreign",
+    )
+    for grantee in ("codex_backup", "codex_restore_foreign"):
+        reject_and_revert(
+            f"{grantee}_history_grant_option",
+            "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
+            f"GRANT SELECT ON TABLES TO {grantee} WITH GRANT OPTION",
+            "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
+            f"REVOKE SELECT ON TABLES FROM {grantee}",
+        )
+    qualify_archive_shapes(source, reject_and_revert)
+    if json.loads(sql(source, protected_rows)) != expected:
+        raise ServiceError("protected_restore_source_changed")
 
     command(destination, *restore_args)
     verify_endpoint(destination)
     sql(destination, f"DROP SEQUENCE IF EXISTS {sequence_name}")
+    # Archive ACLs are omitted by design. Exercise the column-ACL branch
+    # directly against restored metadata, inside sql()'s rolled-back probe.
+    sql(
+        destination,
+        "GRANT SELECT(version) ON codex_storage._codex_pg_migrations "
+        "TO codex_backup WITH GRANT OPTION;\n"
+        + (Path(__file__).parent / "container/restore-access.sql")
+        .read_text(encoding="utf-8")
+        .split("ALTER DEFAULT PRIVILEGES", 1)[0],
+        expected_sqlstate="42501",
+    )
+    report["steps"].append(
+        {
+            "name": "history_column_grant_option",
+            "rejected_and_rolled_back": True,
+        }
+    )
     schema_create_probe = (
         "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE "
         "(pg_has_role('codex_runtime', oid, 'USAGE') "

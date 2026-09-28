@@ -101,6 +101,7 @@ fn classify_bootstrap(error: BootstrapError) -> CompatibilityError {
         BootstrapError::IncompatibleNamespace => CompatibilityError::IncompatibleNamespace,
         BootstrapError::Timeout => CompatibilityError::Timeout,
         BootstrapError::Connection(error) => CompatibilityError::Connection(error),
+        BootstrapError::Unavailable => CompatibilityError::Unavailable,
         BootstrapError::Migration => CompatibilityError::Unavailable,
     }
 }
