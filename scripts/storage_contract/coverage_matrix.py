@@ -243,7 +243,30 @@ MEMORY_EDGES = {
         },
         "state/src/runtime/memories.rs": {
             "claim": "INSERT INTO jobs (",
-            "lease": "UPDATE jobs",
+            "lease_claim": (
+                "ownership_token = excluded.ownership_token,\n"
+                "    started_at = excluded.started_at,\n"
+                "    finished_at = NULL,\n"
+                "    lease_until = excluded.lease_until"
+            ),
+            "lease_claim_guard": (
+                "(jobs.status != 'running' OR jobs.lease_until IS NULL "
+                "OR jobs.lease_until <= excluded.started_at)"
+            ),
+            "lease_start": (
+                "UPDATE jobs\nSET\n    status = 'running',\n"
+                "    worker_id = ?,\n    ownership_token = ?,\n"
+                "    started_at = ?,\n    finished_at = NULL,\n"
+                "    lease_until = ?"
+            ),
+            "lease_heartbeat": (
+                "UPDATE jobs\nSET lease_until = ?\n"
+                "WHERE kind = ? AND job_key = ?\n"
+                "  AND status = 'running' AND ownership_token = ?"
+            ),
+            "lease_start_guard": (
+                "AND (status != 'running' OR lease_until IS NULL OR lease_until <= ?)"
+            ),
             "read": "FROM jobs",
             "delete": "DELETE FROM jobs",
         },
@@ -278,7 +301,11 @@ MEMORY_VERSION_EDGES = {
 
 MEMORY_FILE_EDGES = {
     "memories/write/src/storage.rs": {
-        "raw_summary_write": "tokio::fs::write(raw_memories_file(root), body)",
+        "raw_summary_write": (
+            "body.push_str(memory.raw_memory.trim());\n"
+            '        body.push_str("\\n\\n");\n'
+            "    }\n\n    tokio::fs::write(raw_memories_file(root), body)"
+        ),
         "rollout_summary_write": "tokio::fs::write(path, body)",
     },
     "memories/write/src/phase2.rs": {

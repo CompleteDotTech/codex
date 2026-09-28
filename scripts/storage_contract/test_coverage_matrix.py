@@ -103,9 +103,57 @@ class CoverageMatrixTests(unittest.TestCase):
                 "usage",
             ),
             ("memories.rs", "last_usage = ?\n", "last_usage = NULL\n", "usage"),
+            (
+                "memories.rs",
+                "lease_until = excluded.lease_until,",
+                "lease_until = NULL,",
+                "lease_claim",
+            ),
+            (
+                "memories.rs",
+                "jobs.lease_until <= excluded.started_at",
+                "jobs.lease_until > excluded.started_at",
+                "lease_claim_guard",
+            ),
+            (
+                "memories.rs",
+                "    lease_until = ?,\n    retry_at = NULL,",
+                "    lease_until = NULL,\n    retry_at = NULL,",
+                "lease_start",
+            ),
+            (
+                "memories.rs",
+                "UPDATE jobs\nSET lease_until = ?\nWHERE kind = ? AND job_key = ?",
+                "UPDATE jobs\nSET lease_until = NULL\nWHERE kind = ? AND job_key = ?",
+                "lease_heartbeat",
+            ),
+            (
+                "memories.rs",
+                "AND (status != 'running' OR lease_until IS NULL OR lease_until <= ?)",
+                "AND (status != 'running' OR lease_until IS NULL)",
+                "lease_start_guard",
+            ),
+            (
+                "memories.rs",
+                "UPDATE jobs\nSET lease_until = ?\nWHERE kind = ? AND job_key = ?\n"
+                "  AND status = 'running' AND ownership_token = ?",
+                "UPDATE jobs\nSET lease_until = ?\nWHERE kind = ? AND job_key = ?\n"
+                "  AND status = 'running'",
+                "lease_heartbeat",
+            ),
+            (
+                "storage.rs",
+                "body.push_str(memory.raw_memory.trim());",
+                'body.push_str("No selected memory");',
+                "raw_summary_write",
+            ),
         )
         for filename, old, new, operation in mutations:
-            module = f"state/src/runtime/{filename}"
+            module = (
+                "memories/write/src/storage.rs"
+                if filename == "storage.rs"
+                else f"state/src/runtime/{filename}"
+            )
             source = (root / module).read_text(encoding="utf-8")
             changed = source.replace(old, new, 1)
             self.assertNotEqual(source, changed)
@@ -123,6 +171,10 @@ class CoverageMatrixTests(unittest.TestCase):
 
     def _assert_memory_edges(self, read_source):
         matrix = audit_coverage()
+        for store, tables in matrix["stores"].items():
+            if store not in {"memories_1.sqlite", "memories_v2_1.sqlite"}:
+                for table in tables.values():
+                    self.assertEqual(table["observed_memory_edges"], {})
         for store in ("memories_1.sqlite", "memories_v2_1.sqlite"):
             for table in MEMORY_EDGES:
                 modules = matrix["stores"][store][table]["observed_memory_edges"]
