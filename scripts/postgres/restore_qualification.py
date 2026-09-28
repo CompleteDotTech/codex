@@ -5,6 +5,7 @@ from pathlib import Path
 
 from qualification_checks import checked_backup, command, sql, verify_endpoint
 from qualification_mutations import temporary_sql
+from restore_archive_cases import qualify_archive_shapes
 from state import ServiceError, publish_json
 
 
@@ -129,12 +130,23 @@ def _qualify_restore_access(source, destination, owned_roles):
     )
     report = {"scope": "protected_metadata_restore_only", "steps": []}
 
-    def reject_and_revert(name, setup, cleanup):
+    def reject_and_revert(name, setup, cleanup, captured=None):
         with temporary_sql(destination, setup, cleanup):
             before = json.loads(sql(destination, snapshot))
+            selected_restore_args = restore_args
+            if captured is not None:
+                captured_backup, captured_archive = captured
+                selected_restore_args = (
+                    "restore",
+                    "--archive",
+                    str(captured_archive),
+                    "--sha256",
+                    captured_backup["sha256"],
+                    "--confirm-empty-destination",
+                )
             command(
                 destination,
-                *restore_args,
+                *selected_restore_args,
                 expected_error="restore_outcome_unconfirmed_inspect_destination",
             )
             if json.loads(sql(destination, snapshot)) != before:
@@ -229,6 +241,7 @@ def _qualify_restore_access(source, destination, owned_roles):
             "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
             f"REVOKE SELECT ON TABLES FROM {grantee}",
         )
+    qualify_archive_shapes(source, reject_and_revert)
     if json.loads(sql(source, protected_rows)) != expected:
         raise ServiceError("protected_restore_source_changed")
 
