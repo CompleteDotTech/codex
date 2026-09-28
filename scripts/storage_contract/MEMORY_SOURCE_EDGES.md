@@ -7,6 +7,13 @@ specific module. The stores have distinct rows and leases, even though they
 share SQL definitions. V2 is opened lazily, while an existing V2 file is
 checked at startup. Absence is not an empty V2 database.
 
+Each store reports its own version-selection arm. The V2 anchor includes its
+separate cache, lazy database opener, and construction from that pool. The usage
+anchor covers both the usage-count increment and last-use timestamp update;
+unrelated phase-2 updates cannot satisfy it. Checks exclude the pinned modules'
+top-level test-only suffixes and exercise mutations to these routing and update
+expressions; they are source-fragment checks, not a Rust parser.
+
 | Domain | Observed producer | Observed consumer or boundary |
 | --- | --- | --- |
 | `stage1_outputs` | `MemoryStore` stage-1 success upsert, usage update, retention/delete | Memory selection and phase-2 input preparation; `storage.rs` materializes raw memory and rollout summary files from selected rows |

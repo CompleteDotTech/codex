@@ -8,7 +8,6 @@ from .coverage_matrix import (
     FILES,
     GOAL_EDGES,
     MEMORY_EDGES,
-    MEMORY_FILE_EDGES,
     PRIMARY_PROJECT_EDGES,
     QUEUE_EDGES,
     TABLES,
@@ -71,23 +70,76 @@ class CoverageMatrixTests(unittest.TestCase):
                         self.assertIn(clause, source)
 
     def test_versioned_memory_and_generated_file_edges_match_source(self):
-        matrix = audit_coverage()
         root = Path(__file__).resolve().parents[2] / "codex-rs"
+        self._assert_memory_edges(
+            lambda module: (root / module).read_text(encoding="utf-8")
+        )
+
+    def test_memory_edges_reject_rerouting_and_usage_drift(self):
+        root = Path(__file__).resolve().parents[2] / "codex-rs"
+        mutations = (
+            (
+                "memory_versions.rs",
+                "self.memories.clone()",
+                "self.other_memories.clone()",
+                "version_selection",
+            ),
+            (
+                "memory_versions.rs",
+                ".memories_v2\n",
+                ".other_memories\n",
+                "version_selection",
+            ),
+            (
+                "memory_versions.rs",
+                ".open_memories_v2_db()",
+                ".open_state_db()",
+                "version_selection",
+            ),
+            (
+                "memories.rs",
+                "usage_count = COALESCE(usage_count, 0) + 1,",
+                "usage_count = 0,",
+                "usage",
+            ),
+            ("memories.rs", "last_usage = ?\n", "last_usage = NULL\n", "usage"),
+        )
+        for filename, old, new, operation in mutations:
+            module = f"state/src/runtime/{filename}"
+            source = (root / module).read_text(encoding="utf-8")
+            changed = source.replace(old, new, 1)
+            self.assertNotEqual(source, changed)
+            # Keeping the original in a test-only suffix must not satisfy an edge.
+            changed += f"\n#[cfg(test)]\nmod source_copy {{\n{source}\n}}\n"
+            with self.subTest(module=module, change=old):
+                with self.assertRaisesRegex(AssertionError, f"operation={operation}"):
+                    self._assert_memory_edges(
+                        lambda path: (
+                            changed
+                            if path == module
+                            else (root / path).read_text(encoding="utf-8")
+                        )
+                    )
+
+    def _assert_memory_edges(self, read_source):
+        matrix = audit_coverage()
         for store in ("memories_1.sqlite", "memories_v2_1.sqlite"):
             for table in MEMORY_EDGES:
                 modules = matrix["stores"][store][table]["observed_memory_edges"]
                 for module, operations in modules.items():
-                    source = (root / module).read_text(encoding="utf-8")
+                    # A test-only constructor can precede production methods.
+                    # The pinned modules' test-only suffixes start at column zero.
+                    source = ("\n" + read_source(module)).split("\n#[cfg(test)]", 1)[0]
+                    source = source.replace("\r\n", "\n")
                     for operation, clause in operations.items():
-                        with self.subTest(
-                            store=store, table=table, module=module, operation=operation
-                        ):
-                            self.assertIn(clause, source)
+                        self.assertIn(
+                            clause,
+                            source,
+                            f"store={store}, table={table}, module={module}, operation={operation}",
+                        )
         modules = matrix["files"]["memory_artifact"]["observed_memory_file_edges"]
         for module, operations in modules.items():
-            source = (root / module).read_text(encoding="utf-8")
+            source = ("\n" + read_source(module)).split("\n#[cfg(test)]", 1)[0]
+            source = source.replace("\r\n", "\n")
             for operation, clause in operations.items():
-                with self.subTest(
-                    file="memory_artifact", module=module, operation=operation
-                ):
-                    self.assertIn(clause, source)
+                self.assertIn(clause, source, f"module={module}, operation={operation}")

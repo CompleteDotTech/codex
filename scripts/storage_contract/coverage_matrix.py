@@ -223,11 +223,12 @@ MEMORY_EDGES = {
         "state/src/runtime/memories.rs": {
             "read": "FROM stage1_outputs",
             "write": "INSERT INTO stage1_outputs (",
-            "usage": "UPDATE stage1_outputs",
+            "usage": (
+                "UPDATE stage1_outputs\nSET\n"
+                "    usage_count = COALESCE(usage_count, 0) + 1,\n"
+                "    last_usage = ?\nWHERE thread_id = ?"
+            ),
             "delete": "DELETE FROM stage1_outputs",
-        },
-        "state/src/runtime/memory_versions.rs": {
-            "version_selection": "MemoryVersion::V2 => self",
         },
         "memories/write/src/runtime.rs": {
             "writer_selection": ".memories_for_version(self.version)",
@@ -246,9 +247,6 @@ MEMORY_EDGES = {
             "read": "FROM jobs",
             "delete": "DELETE FROM jobs",
         },
-        "state/src/runtime/memory_versions.rs": {
-            "version_selection": "MemoryVersion::V2 => self",
-        },
     },
     "consolidation_progress": {
         "state/memory_migrations/0002_consolidation_progress.sql": {
@@ -260,9 +258,21 @@ MEMORY_EDGES = {
         "state/src/runtime/memory_readiness.rs": {
             "read": "SELECT max_thread_count FROM consolidation_progress WHERE singleton = 1",
         },
-        "state/src/runtime/memory_versions.rs": {
-            "version_selection": "MemoryVersion::V2 => self",
-        },
+    },
+}
+
+MEMORY_VERSION_EDGES = {
+    "memories_1.sqlite": {
+        "version_selection": "MemoryVersion::V1 => Ok(self.memories.clone()),",
+    },
+    "memories_v2_1.sqlite": {
+        "version_selection": (
+            "MemoryVersion::V2 => self\n"
+            "                .memories_v2\n"
+            "                .get_or_try_init(|| async {\n"
+            "                    let pool = self.sqlite.open_memories_v2_db().await?;\n"
+            "                    Ok(MemoryStore::new(Arc::new(pool), Arc::clone(&self.pool)))"
+        ),
     },
 }
 
@@ -353,8 +363,11 @@ def audit_coverage() -> dict:
                 "observed_goal_edges": GOAL_EDGES.get(table, {})
                 if store == "goals_1.sqlite"
                 else {},
-                "observed_memory_edges": MEMORY_EDGES.get(table, {})
-                if store in {"memories_1.sqlite", "memories_v2_1.sqlite"}
+                "observed_memory_edges": {
+                    **MEMORY_EDGES.get(table, {}),
+                    "state/src/runtime/memory_versions.rs": MEMORY_VERSION_EDGES[store],
+                }
+                if store in MEMORY_VERSION_EDGES
                 else {},
             }
             for table, (issue, source) in entries.items()
