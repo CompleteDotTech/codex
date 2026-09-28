@@ -3,9 +3,13 @@ use crate::ClientCapabilities;
 use crate::CompatibilityError;
 use crate::CompatibilityResult;
 use crate::ConnectionSettings;
+use crate::NamedNamespace;
 use crate::PoolLimits;
 use crate::RequiredAccess;
+use crate::bootstrap_named_namespace;
 use crate::check_codex_storage_compatibility;
+use crate::check_named_namespace_compatibility;
+use crate::named_bootstrap::namespaced_migrations;
 use serde_json::Value;
 use std::path::Path;
 
@@ -163,7 +167,7 @@ async fn real_v1_upgrade_through_graph_and_import_schemas_is_atomic() {
     .fetch_all(&mut *transaction)
     .await
     .expect("read v3 history");
-    assert_eq!(versions, (4, 4, 4));
+    assert_eq!(versions, (5, 5, 5));
     assert!(history_matches(
         &rows,
         BASE_MIGRATOR.migrations.as_ref(),
@@ -179,15 +183,15 @@ async fn real_v1_upgrade_through_graph_and_import_schemas_is_atomic() {
         Err(CompatibilityError::UnsupportedSchema)
     );
     let current = ClientCapabilities {
-        min_schema_format: 4,
-        max_schema_format: 4,
-        reader_version: 4,
-        writer_version: 4,
+        min_schema_format: 5,
+        max_schema_format: 5,
+        reader_version: 5,
+        writer_version: 5,
     };
     assert_eq!(
         check_codex_storage_compatibility(&first, current, RequiredAccess::ReadWrite).await,
         Ok(CompatibilityResult {
-            schema_format: 4,
+            schema_format: 5,
             activation_permitted: false,
         })
     );
@@ -329,11 +333,11 @@ async fn real_v2_upgrade_to_import_schema_is_atomic_and_role_scoped() {
     .fetch_all(&mut *inspection)
     .await
     .expect("read v3 history");
-    assert_eq!(versions, (4, 4, 4));
+    assert_eq!(versions, (5, 5, 5));
     assert!(history_matches(
         &history,
         BASE_MIGRATOR.migrations.as_ref(),
-        4
+        5
     ));
     inspection.rollback().await.expect("finish v3 inspection");
     drop(observer);
@@ -342,15 +346,15 @@ async fn real_v2_upgrade_to_import_schema_is_atomic_and_role_scoped() {
         Err(CompatibilityError::UnsupportedSchema)
     );
     let current = ClientCapabilities {
-        min_schema_format: 4,
-        max_schema_format: 4,
-        reader_version: 4,
-        writer_version: 4,
+        min_schema_format: 5,
+        max_schema_format: 5,
+        reader_version: 5,
+        writer_version: 5,
     };
     assert_eq!(
         check_codex_storage_compatibility(&first, current, RequiredAccess::ReadWrite).await,
         Ok(CompatibilityResult {
-            schema_format: 4,
+            schema_format: 5,
             activation_permitted: false
         })
     );
@@ -464,15 +468,15 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
     );
     assert_eq!((a, b), (Ok(()), Ok(())));
     let current = ClientCapabilities {
-        min_schema_format: 4,
-        max_schema_format: 4,
-        reader_version: 4,
-        writer_version: 4,
+        min_schema_format: 5,
+        max_schema_format: 5,
+        reader_version: 5,
+        writer_version: 5,
     };
     assert_eq!(
         check_codex_storage_compatibility(&first, current, RequiredAccess::ReadWrite).await,
         Ok(CompatibilityResult {
-            schema_format: 4,
+            schema_format: 5,
             activation_permitted: false,
         })
     );
@@ -542,3 +546,195 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
         Some("42501")
     );
 }
+
+#[tokio::test]
+async fn real_v4_upgrade_to_section_catalog_rejects_orphans_and_preserves_join() {
+    let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_SECTION_UPGRADE_STATE") else {
+        return;
+    };
+    let state = Path::new(&state);
+    let first = PostgresPool::connect(settings(state, "migrator"))
+        .await
+        .expect("first migrator pool");
+    let second = PostgresPool::connect(settings(state, "migrator"))
+        .await
+        .expect("second migrator pool");
+    let runtime = PostgresPool::connect(settings(state, "runtime"))
+        .await
+        .expect("runtime pool");
+    let v4 = Migrator {
+        migrations: Cow::Borrowed(&BASE_MIGRATOR.migrations[..4]),
+        table_name: Cow::Borrowed(MIGRATIONS_TABLE),
+        locking: false,
+        ignore_missing: false,
+        ..Migrator::DEFAULT
+    };
+    let mut connection = first.acquire().await.expect("acquire migrator");
+    let mut transaction = connection.begin().await.expect("begin v4 fixture");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner");
+    v4.run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
+        .await
+        .expect("materialize exact v4 migration prefix");
+    transaction.commit().await.expect("commit v4 fixture");
+    drop(connection);
+    let old = ClientCapabilities {
+        min_schema_format: 4,
+        max_schema_format: 4,
+        reader_version: 4,
+        writer_version: 4,
+    };
+    assert_eq!(
+        check_codex_storage_compatibility(&first, old, RequiredAccess::ReadWrite).await,
+        Ok(CompatibilityResult {
+            schema_format: 4,
+            activation_permitted: false,
+        })
+    );
+
+    let orphan_id = "00000000-0000-0000-0000-000000000124";
+    let mut runtime_connection = runtime.acquire().await.expect("runtime connection");
+    sqlx::query("INSERT INTO codex_storage.threads (id, origin_rollout_path, created_at_ms, updated_at_ms, recency_at_ms, source, history_mode, model_provider, origin_cwd, cli_version, title, sandbox_policy, approval_mode, thread_section_id) VALUES ($1::uuid, 'origin', 1, 1, 1, 'cli', 'legacy', 'provider', 'cwd', '1', 'title', 'sandbox', 'approval', 'orphan')")
+        .bind(orphan_id)
+        .execute(&mut *runtime_connection)
+        .await
+        .expect("insert v4 orphan fixture");
+    drop(runtime_connection);
+    assert_eq!(
+        bootstrap_codex_storage(&first).await,
+        Err(BootstrapError::Migration)
+    );
+    let mut owner = first.acquire().await.expect("inspect orphan rejection");
+    let mut inspection = owner.begin().await.expect("begin orphan inspection");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *inspection)
+        .await
+        .expect("assume owner for inspection");
+    let state: (i32, i64, bool) = sqlx::query_as("SELECT (SELECT format_version FROM codex_storage.codex_schema_meta), (SELECT COUNT(*) FROM codex_storage._codex_pg_migrations), to_regclass('codex_storage.thread_sections') IS NOT NULL")
+        .fetch_one(&mut *inspection).await.expect("failed FK left v4 intact");
+    assert_eq!(state, (4, 4, false));
+    sqlx::query("DELETE FROM codex_storage.threads WHERE id = $1::uuid")
+        .bind(orphan_id)
+        .execute(&mut *inspection)
+        .await
+        .expect("remove isolated orphan");
+    inspection.commit().await.expect("commit orphan cleanup");
+    drop(owner);
+
+    let mut connection = first.acquire().await.expect("acquire interrupted migrator");
+    let mut transaction = connection.begin().await.expect("begin interrupted upgrade");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for upgrade");
+    let all = Migrator {
+        migrations: Cow::Borrowed(BASE_MIGRATOR.migrations.as_ref()),
+        table_name: Cow::Borrowed(MIGRATIONS_TABLE),
+        locking: false,
+        ignore_missing: false,
+        ..Migrator::DEFAULT
+    };
+    all.run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
+        .await
+        .expect("run v5 inside interrupted transaction");
+    transaction.rollback().await.expect("roll back v5 upgrade");
+    drop(connection);
+    let mut owner = first.acquire().await.expect("inspect rollback");
+    let mut inspection = owner.begin().await.expect("begin rollback inspection");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *inspection)
+        .await
+        .expect("assume owner for rollback inspection");
+    let state: (i32, i64, bool) = sqlx::query_as("SELECT (SELECT format_version FROM codex_storage.codex_schema_meta), (SELECT COUNT(*) FROM codex_storage._codex_pg_migrations), to_regclass('codex_storage.thread_sections') IS NOT NULL")
+        .fetch_one(&mut *inspection).await.expect("rolled-back v4 intact");
+    assert_eq!(state, (4, 4, false));
+    inspection.rollback().await.expect("finish inspection");
+    drop(owner);
+
+    let (a, b) = tokio::join!(
+        bootstrap_codex_storage(&first),
+        bootstrap_codex_storage(&second)
+    );
+    assert_eq!((a, b), (Ok(()), Ok(())));
+    let current = ClientCapabilities {
+        min_schema_format: 5,
+        max_schema_format: 5,
+        reader_version: 5,
+        writer_version: 5,
+    };
+    assert_eq!(
+        check_codex_storage_compatibility(&first, current, RequiredAccess::ReadWrite).await,
+        Ok(CompatibilityResult {
+            schema_format: 5,
+            activation_permitted: false,
+        })
+    );
+    assert_eq!(
+        check_codex_storage_compatibility(&first, old, RequiredAccess::ReadWrite).await,
+        Err(CompatibilityError::UnsupportedSchema)
+    );
+    let mut connection = runtime.acquire().await.expect("runtime connection");
+    let pinned: (String, String, Option<String>) = sqlx::query_as(
+        "SELECT id, name, appearance FROM codex_storage.thread_sections WHERE name = 'Pinned'",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .expect("read pinned section");
+    assert_eq!(
+        pinned,
+        (
+            "01984de2-8f74-7c91-a3b2-5c5e937cf318".to_string(),
+            "Pinned".to_string(),
+            None
+        )
+    );
+    let section_id = "01984de2-8f74-7c91-a3b2-5c5e937cf319";
+    let appearance = r#"{"icon":"folder","color":"purple"}"#;
+    sqlx::query("INSERT INTO codex_storage.thread_sections (id, name, appearance) VALUES ($1, 'Pinned', $2)")
+        .bind(section_id).bind(appearance).execute(&mut *connection).await.expect("duplicate names are allowed");
+    let thread_id = "00000000-0000-0000-0000-000000000125";
+    sqlx::query("INSERT INTO codex_storage.threads (id, origin_rollout_path, created_at_ms, updated_at_ms, recency_at_ms, source, history_mode, model_provider, origin_cwd, cli_version, title, sandbox_policy, approval_mode, thread_section_id, section_position, section_entered_at_ms) VALUES ($1::uuid, 'origin', 1, 1, 1, 'cli', 'legacy', 'provider', 'cwd', '1', 'title', 'sandbox', 'approval', $2, 1000000, 1234)")
+        .bind(thread_id).bind(section_id).execute(&mut *connection).await.expect("insert sectioned thread");
+    let joined: (String, String, Option<String>, i64, i64) = sqlx::query_as("SELECT s.id, s.name, s.appearance, t.section_position, t.section_entered_at_ms FROM codex_storage.threads t JOIN codex_storage.thread_sections s ON s.id = t.thread_section_id WHERE t.id = $1::uuid")
+        .bind(thread_id).fetch_one(&mut *connection).await.expect("read complete section metadata");
+    assert_eq!(
+        joined,
+        (
+            section_id.to_string(),
+            "Pinned".to_string(),
+            Some(appearance.to_string()),
+            1_000_000,
+            1234
+        )
+    );
+    let denied = sqlx::query(
+        "UPDATE codex_storage.threads SET thread_section_id = 'missing' WHERE id = $1::uuid",
+    )
+    .bind(thread_id)
+    .execute(&mut *connection)
+    .await
+    .expect_err("orphan section rejected");
+    assert_eq!(
+        denied
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("23503")
+    );
+    let denied = sqlx::query("CREATE TABLE codex_storage.forbidden_section_probe(id BIGINT)")
+        .execute(&mut *connection)
+        .await
+        .expect_err("runtime cannot create section objects");
+    assert_eq!(
+        denied
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("42501")
+    );
+}
+
+#[path = "bootstrap_named_upgrade_tests.rs"]
+mod named_upgrade;
