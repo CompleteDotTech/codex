@@ -85,6 +85,8 @@ jobs:
       - name: Test PostgreSQL connection pool against real server
         working-directory: codex-rs
         run: just test -p codex-postgres-runtime
+      - name: Verify archive cleanup after uncertain source mutations
+        run: python -m unittest discover -s scripts/postgres/tests -p test_restore_archive_cleanup_live.py -v
       - name: Qualify transactional restore guard
         shell: bash
         run: |
