@@ -36,6 +36,7 @@ async fn resume_saved_draft(scenario: SettingsScenario) -> Result<()> {
         .chat_widget
         .capture_thread_input_state()
         .expect("saved draft");
+    input_state.plan_mode_reasoning_effort = Some(ReasoningEffortConfig::Low);
     let original_model = app.chat_widget.current_model().to_string();
     let original_mode = app.chat_widget.effective_collaboration_mode();
     let (expected_model, expected_mode, expected_effort) = if scenario != SettingsScenario::None {
@@ -133,13 +134,23 @@ async fn resume_saved_draft(scenario: SettingsScenario) -> Result<()> {
     );
     assert_eq!(app.chat_widget.current_reasoning_effort(), expected_effort);
     assert_eq!(
+        app.chat_widget
+            .capture_thread_input_state()
+            .expect("restored input")
+            .plan_mode_reasoning_effort,
+        None
+    );
+    assert_eq!(
         app.chat_widget.composer_text_with_pending(),
         "retained resume-picker draft"
     );
     if scenario == SettingsScenario::Pending {
         insta::assert_snapshot!(
             "resume_picker_preserves_server_settings_and_draft",
-            render_bottom_popup(&app.chat_widget, /*width*/ 80)
+            crate::chatwidget::tests::helpers::normalize_snapshot_paths(render_bottom_popup(
+                &app.chat_widget,
+                /*width*/ 80,
+            ))
         );
     }
     server.shutdown().await?;
