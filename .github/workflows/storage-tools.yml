@@ -81,6 +81,7 @@ jobs:
 
           state = Path(os.environ["CODEX_TEST_POSTGRES_STATE"])
           sql(state, Path("scripts/postgres/container/real-bootstrap-test-roles.sql").read_text())
+          PY
       - name: Test PostgreSQL connection pool against real server
         working-directory: codex-rs
         run: just test -p codex-postgres-runtime
