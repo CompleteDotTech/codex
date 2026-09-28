@@ -17,6 +17,8 @@ def _cleanup_roles(destination):
         "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'codex_restore_bridge') "
         "THEN REVOKE codex_restore_bridge FROM codex_backup; "
         "REVOKE codex_runtime FROM codex_restore_bridge; DROP ROLE codex_restore_bridge; END IF; "
+        "IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'codex_restore_foreign') "
+        "THEN DROP ROLE codex_restore_foreign; END IF; "
         "END $$",
     )
 
@@ -86,7 +88,7 @@ def _qualify_restore_access(source, destination, owned_roles):
         sql(
             destination,
             "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname "
-            "IN ('codex_restore_inherited', 'codex_restore_assumable', 'codex_restore_bridge'))",
+            "IN ('codex_restore_inherited', 'codex_restore_assumable', 'codex_restore_bridge', 'codex_restore_foreign'))",
         )
         != "f"
     ):
@@ -94,6 +96,7 @@ def _qualify_restore_access(source, destination, owned_roles):
     sql(
         destination,
         "BEGIN; CREATE ROLE codex_restore_inherited; CREATE ROLE codex_restore_assumable; "
+        "CREATE ROLE codex_restore_foreign; "
         "GRANT codex_restore_inherited TO codex_runtime WITH INHERIT TRUE, SET FALSE; "
         "GRANT codex_restore_assumable TO codex_runtime WITH INHERIT FALSE, SET TRUE; "
         "GRANT codex_restore_inherited TO codex_backup WITH INHERIT TRUE, SET FALSE; "
@@ -166,6 +169,7 @@ def _qualify_restore_access(source, destination, owned_roles):
         ("backup_history_write", "codex_backup", "UPDATE"),
         ("backup_inherited_metadata_write", "codex_restore_inherited", "UPDATE"),
         ("backup_set_role_metadata_write", "codex_restore_assumable", "UPDATE"),
+        ("foreign_metadata_write", "codex_restore_foreign", "UPDATE"),
     ):
         # Global ACLs survive the guard's DROP SCHEMA and affect restored tables.
         reject_and_revert(
@@ -220,6 +224,16 @@ def _qualify_restore_access(source, destination, owned_roles):
         "REVOKE codex_runtime FROM codex_restore_bridge; "
         "DROP ROLE codex_restore_bridge; COMMIT",
     )
+    reject_and_revert(
+        "public_function_execute_default",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner GRANT EXECUTE ON FUNCTIONS TO PUBLIC",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC",
+    )
+    reject_and_revert(
+        "backup_global_sequence_update_default",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner GRANT UPDATE ON SEQUENCES TO codex_backup",
+        "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner REVOKE UPDATE ON SEQUENCES FROM codex_backup",
+    )
 
     command(destination, *restore_args)
     verify_endpoint(destination)
@@ -231,13 +245,22 @@ def _qualify_restore_access(source, destination, owned_roles):
         "AND has_schema_privilege(oid, 'codex_storage', 'CREATE'))"
     )
     for grantee in ("PUBLIC", "codex_restore_inherited", "codex_restore_assumable"):
-        sql(
-            destination,
-            f"GRANT CREATE ON SCHEMA codex_storage TO {grantee}",
-        )
-        if sql(destination, schema_create_probe) != "t":
-            raise ServiceError("schema_create_effective_privilege_not_observed")
-        sql(destination, f"REVOKE CREATE ON SCHEMA codex_storage FROM {grantee}")
+        sql(destination, f"GRANT CREATE ON SCHEMA codex_storage TO {grantee}")
+        primary_failure = None
+        try:
+            if sql(destination, schema_create_probe) != "t":
+                raise ServiceError("schema_create_effective_privilege_not_observed")
+        except Exception as error:
+            primary_failure = error
+            raise
+        finally:
+            try:
+                sql(
+                    destination, f"REVOKE CREATE ON SCHEMA codex_storage FROM {grantee}"
+                )
+            except Exception:
+                if primary_failure is None:
+                    raise
     if json.loads(sql(destination, protected_rows)) != expected:
         raise ServiceError("protected_restore_content_mismatch")
     if (
