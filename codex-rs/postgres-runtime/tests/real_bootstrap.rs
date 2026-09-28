@@ -55,6 +55,14 @@ async fn owner_query(pool: &PostgresPool, sql: &'static str) {
         .expect("commit owner fixture SQL");
 }
 
+async fn migrator_query(pool: &PostgresPool, sql: &'static str) {
+    let mut connection = pool.acquire().await.expect("acquire migrator connection");
+    sqlx::raw_sql(sql)
+        .execute(&mut *connection)
+        .await
+        .expect("execute migrator fixture SQL");
+}
+
 async fn reject_namespace_objects(pool: &PostgresPool) {
     for (create, drop) in [
         (
@@ -100,6 +108,26 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     let backup = PostgresPool::connect(settings(state, "backup"))
         .await
         .expect("backup pool");
+
+    migrator_query(
+        &migrator_a,
+        "REVOKE codex_bootstrap_graph_bridge FROM codex_bootstrap_graph_principal",
+    )
+    .await;
+    migrator_query(
+        &migrator_a,
+        "GRANT codex_bootstrap_graph_bridge TO codex_bootstrap_graph_principal WITH INHERIT FALSE, SET FALSE, ADMIN TRUE",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    migrator_query(
+        &migrator_a,
+        "REVOKE codex_bootstrap_graph_bridge FROM codex_bootstrap_graph_principal",
+    )
+    .await;
 
     owner_query(
         &migrator_a,
