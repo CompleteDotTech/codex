@@ -238,6 +238,31 @@ fn oversized_intent_is_rejected_before_publication() -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn encoded_native_path_cannot_exceed_receipt_limit() -> io::Result<()> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout")?;
+    let mut intent = prepare_move_intent(&source, &destination)?;
+    let intent_path = rollout_move_intent_path(&destination);
+    std::fs::remove_file(&intent_path)?;
+    intent.source = std::ffi::OsString::from_vec(vec![0xff; 2048]).into();
+
+    let error = write_rollout_move_intent(&intent_path, &intent)
+        .expect_err("encoded receipt too large for recovery must not be published");
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert!(!intent_path.exists());
+    Ok(())
+}
+
 #[test]
 fn retry_completes_a_published_staged_move() -> std::io::Result<()> {
     let home = tempfile::tempdir()?;

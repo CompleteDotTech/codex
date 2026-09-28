@@ -168,6 +168,69 @@ async fn replay_finishes_partially_moved_archive_rollouts() -> Result<(), Box<dy
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn non_utf8_home_survives_archive_and_unarchive_replay()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let outer = tempfile::tempdir()?;
+    let home = outer
+        .path()
+        .join(std::ffi::OsString::from_vec(b"codex-\xff".to_vec()));
+    fs::create_dir(&home)?;
+    let store = LocalThreadStore::new(test_config(&home), /*state_db*/ None);
+    let uuid = Uuid::from_u128(532);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_session_file(&home, "2025-01-03T20-00-03", uuid)?;
+    let archive = home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let destination = archive.join(source.file_name().expect("rollout filename"));
+    let journal = home
+        .join("rollout_move_transactions")
+        .join(format!("{thread_id}.json"));
+
+    let pending = begin_move(
+        &home,
+        thread_id,
+        MoveDirection::Archive,
+        &destination,
+        &[(source.clone(), destination.clone())],
+    )?;
+    assert!(fs::read_to_string(&journal)?.contains("unixHex"));
+    pending.move_all(&home)?;
+    let mut sidecar = destination.as_os_str().to_owned();
+    sidecar.push(".codex-move-intent");
+    assert!(fs::read_to_string(sidecar)?.contains("unixHex"));
+    drop(pending);
+
+    assert_eq!(
+        replay_pending_move(&store, thread_id).await?,
+        Some(MoveDirection::Archive)
+    );
+    assert!(!source.exists());
+    assert!(destination.exists());
+    assert!(!journal.exists());
+
+    let pending = begin_move(
+        &home,
+        thread_id,
+        MoveDirection::Unarchive,
+        &source,
+        &[(destination.clone(), source.clone())],
+    )?;
+    pending.move_all(&home)?;
+    drop(pending);
+    assert_eq!(
+        replay_pending_move(&store, thread_id).await?,
+        Some(MoveDirection::Unarchive)
+    );
+    assert!(source.exists());
+    assert!(!destination.exists());
+    assert!(!journal.exists());
+    Ok(())
+}
+
 #[tokio::test]
 async fn replay_rejects_replaced_source_before_any_partial_move()
 -> Result<(), Box<dyn std::error::Error>> {

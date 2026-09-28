@@ -14,6 +14,7 @@ mod revert_thread;
 mod rollout_migration;
 mod rollout_move_file;
 mod rollout_move_identity;
+mod rollout_move_path_json;
 mod rollout_move_transaction;
 // This lands before the reader PRs that consume the shared lineage resolver.
 #[allow(dead_code)]

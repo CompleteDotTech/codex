@@ -271,15 +271,19 @@ fn sync_parent_directory(path: &Path) -> io::Result<()> {
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 struct RolloutMoveIntent {
+    #[serde(with = "super::rollout_move_path_json")]
     source: PathBuf,
+    #[serde(with = "super::rollout_move_path_json")]
     destination: PathBuf,
     source_len: u64,
     source_modified: SystemTime,
     source_id: RolloutFileIdentity,
     source_digest: [u8; 32],
+    #[serde(with = "super::rollout_move_path_json")]
     stage_path: PathBuf,
     stage_id: RolloutFileIdentity,
     stage_digest: [u8; 32],
+    #[serde(with = "super::rollout_move_path_json")]
     quarantine_path: PathBuf,
 }
 
@@ -367,12 +371,15 @@ fn write_rollout_move_intent(path: &Path, intent: &RolloutMoveIntent) -> io::Res
 }
 
 fn read_rollout_move_intent(path: &Path) -> io::Result<RolloutMoveIntent> {
-    let mut file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path)?;
     if file.metadata()?.len() > 4096 {
         return Err(io::Error::other("rollout move intent is too large"));
     }
     let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
+    file.take(4097).read_to_string(&mut contents)?;
+    if contents.len() > 4096 {
+        return Err(io::Error::other("rollout move intent is too large"));
+    }
     if !contents.ends_with('\n') {
         return Err(io::Error::other("rollout move intent is incomplete"));
     }

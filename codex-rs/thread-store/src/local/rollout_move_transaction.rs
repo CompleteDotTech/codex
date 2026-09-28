@@ -35,7 +35,9 @@ pub(super) enum MoveDirection {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct MovePair {
+    #[serde(with = "super::rollout_move_path_json")]
     source: PathBuf,
+    #[serde(with = "super::rollout_move_path_json")]
     destination: PathBuf,
     source_id: RolloutFileIdentity,
     source_digest: [u8; 32],
@@ -45,6 +47,7 @@ struct MovePair {
 struct MoveTransaction {
     thread_id: ThreadId,
     direction: MoveDirection,
+    #[serde(with = "super::rollout_move_path_json")]
     selected_destination: PathBuf,
     moves: Vec<MovePair>,
 }
@@ -527,7 +530,7 @@ fn load_move(codex_home: &Path, thread_id: ThreadId) -> io::Result<Option<(Pendi
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
     }
-    let mut file = match std::fs::File::open(&path) {
+    let file = match std::fs::File::open(&path) {
         Ok(file) => file,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
@@ -536,7 +539,11 @@ fn load_move(codex_home: &Path, thread_id: ThreadId) -> io::Result<Option<(Pendi
         return Err(io::Error::other("pending rollout move is too large"));
     }
     let mut contents = String::new();
-    file.read_to_string(&mut contents)?;
+    file.take(MAX_MOVE_JOURNAL_BYTES as u64 + 1)
+        .read_to_string(&mut contents)?;
+    if contents.len() > MAX_MOVE_JOURNAL_BYTES {
+        return Err(io::Error::other("pending rollout move is too large"));
+    }
     if !contents.ends_with('\n') {
         return Err(io::Error::other("pending rollout move is incomplete"));
     }
