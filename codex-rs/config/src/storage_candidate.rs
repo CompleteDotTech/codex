@@ -50,15 +50,15 @@ pub(crate) fn validate_storage_candidate_value(value: &TomlValue) -> io::Result<
 impl ConfigLayerStack {
     /// Returns the highest-precedence validated candidate from a trusted layer.
     /// This proposal has no effect on the active SQLite backend.
-    pub fn storage_candidate(&self) -> Option<StorageCandidateProfile> {
-        self.layers_high_to_low().find_map(|layer| {
-            layer.config.get(STORAGE_CANDIDATE_KEY).map(|candidate| {
-                candidate
-                    .clone()
-                    .try_into()
-                    .expect("storage candidate validated when the layer was loaded")
+    pub fn storage_candidate(&self) -> io::Result<Option<StorageCandidateProfile>> {
+        self.layers_high_to_low()
+            .find_map(|layer| layer.config.get(STORAGE_CANDIDATE_KEY))
+            .map(|candidate| {
+                candidate.clone().try_into().map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid storage candidate")
+                })
             })
-        })
+            .transpose()
     }
 }
 

@@ -37,12 +37,15 @@ fn trusted_precedence_selects_complete_candidate_without_activating_it() {
     ])
     .unwrap();
     assert_eq!(
-        user_stack.storage_candidate(),
+        user_stack.storage_candidate().unwrap(),
         Some(StorageCandidateProfile::LocalSqlite)
     );
     let effective: crate::config_toml::ConfigToml =
         user_stack.effective_config().try_into().unwrap();
-    assert_eq!(effective.storage_candidate, user_stack.storage_candidate());
+    assert_eq!(
+        effective.storage_candidate,
+        user_stack.storage_candidate().unwrap()
+    );
     assert_eq!(effective.sqlite_home, None);
 
     let managed = stack(vec![
@@ -57,7 +60,7 @@ fn trusted_precedence_selects_complete_candidate_without_activating_it() {
     ])
     .unwrap();
     assert!(matches!(
-        managed.storage_candidate(),
+        managed.storage_candidate().unwrap(),
         Some(StorageCandidateProfile::RemotePostgres(_))
     ));
 }
