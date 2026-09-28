@@ -172,6 +172,42 @@ async fn require_safe_protected_privileges(
                 OR has_any_column_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,REFERENCES')
               )
         ) OR EXISTS (
+            SELECT 1
+            FROM pg_proc routine
+            JOIN pg_namespace routine_namespace ON routine_namespace.oid = routine.pronamespace
+            JOIN pg_roles routine_owner ON routine_owner.oid = routine.proowner
+            WHERE routine.prosecdef
+              AND routine.prokind IN ('f', 'p')
+              AND routine_namespace.nspname <> 'information_schema'
+              AND left(routine_namespace.nspname, 3) <> 'pg_'
+              AND (
+                (
+                  has_schema_privilege('codex_runtime', routine_namespace.oid, 'USAGE')
+                  AND has_function_privilege('codex_runtime', routine.oid, 'EXECUTE')
+                  AND (
+                    pg_has_role(routine_owner.oid, 'codex_owner', 'USAGE')
+                    OR pg_has_role(routine_owner.oid, 'codex_owner', 'SET')
+                    OR has_schema_privilege(routine_owner.oid, 'codex_storage', 'CREATE')
+                    OR has_table_privilege(routine_owner.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                    OR has_any_column_privilege(routine_owner.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,REFERENCES')
+                    OR has_table_privilege(routine_owner.oid, 'codex_storage._codex_pg_migrations', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                    OR has_any_column_privilege(routine_owner.oid, 'codex_storage._codex_pg_migrations', 'SELECT,INSERT,UPDATE,REFERENCES')
+                  )
+                ) OR (
+                  has_schema_privilege('codex_backup', routine_namespace.oid, 'USAGE')
+                  AND has_function_privilege('codex_backup', routine.oid, 'EXECUTE')
+                  AND (
+                    pg_has_role(routine_owner.oid, 'codex_owner', 'USAGE')
+                    OR pg_has_role(routine_owner.oid, 'codex_owner', 'SET')
+                    OR has_schema_privilege(routine_owner.oid, 'codex_storage', 'CREATE')
+                    OR has_table_privilege(routine_owner.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                    OR has_any_column_privilege(routine_owner.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,REFERENCES')
+                    OR has_table_privilege(routine_owner.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                    OR has_any_column_privilege(routine_owner.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,REFERENCES')
+                  )
+                )
+              )
+        ) OR EXISTS (
             WITH RECURSIVE owner_roles(roleid) AS (
                 SELECT 'codex_owner'::regrole
                 UNION
@@ -190,6 +226,9 @@ async fn require_safe_protected_privileges(
                 SELECT membership.member
                 FROM pg_auth_members membership
                 JOIN runtime_roles parent ON parent.roleid = membership.roleid
+                WHERE membership.inherit_option
+                   OR membership.set_option
+                   OR membership.admin_option
             )
             SELECT 1
             FROM pg_auth_members membership
@@ -214,14 +253,38 @@ async fn require_safe_protected_privileges(
               AND acl.is_grantable
               AND acl.grantee NOT IN ('codex_owner'::regrole, 'codex_migrator'::regrole)
         ) OR EXISTS (
-            WITH RECURSIVE protected_relations(oid) AS (
+            WITH RECURSIVE protected_relations(oid, depends_metadata, depends_history) AS (
                 VALUES (
-                    'codex_storage.codex_schema_meta'::regclass::oid
+                    'codex_storage.codex_schema_meta'::regclass::oid,
+                    TRUE,
+                    FALSE
                 ), (
-                    'codex_storage._codex_pg_migrations'::regclass::oid
+                    'codex_storage._codex_pg_migrations'::regclass::oid,
+                    FALSE,
+                    TRUE
                 )
-            ), dependent_relations(oid) AS (
+            ), protected_owner_access(roleid, metadata_write, history_read, history_write) AS (
+                SELECT role.oid,
+                       (
+                           pg_has_role(role.oid, 'codex_owner', 'USAGE')
+                           OR pg_has_role(role.oid, 'codex_owner', 'SET')
+                           OR has_schema_privilege(role.oid, 'codex_storage', 'CREATE')
+                           OR has_table_privilege(role.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                           OR has_any_column_privilege(role.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,REFERENCES')
+                       ),
+                       (
+                           has_table_privilege(role.oid, 'codex_storage._codex_pg_migrations', 'SELECT')
+                           OR has_any_column_privilege(role.oid, 'codex_storage._codex_pg_migrations', 'SELECT')
+                       ),
+                       (
+                           has_table_privilege(role.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                           OR has_any_column_privilege(role.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,REFERENCES')
+                       )
+                FROM pg_roles role
+            ), dependent_relations(oid, depends_metadata, depends_history) AS (
                 SELECT relation.oid
+                     , protected.depends_metadata
+                     , protected.depends_history
                 FROM pg_class relation
                 JOIN pg_rewrite rewrite ON rewrite.ev_class = relation.oid
                 JOIN pg_depend dependency
@@ -232,6 +295,8 @@ async fn require_safe_protected_privileges(
                 WHERE relation.oid NOT IN (SELECT oid FROM protected_relations)
                 UNION
                 SELECT relation.oid
+                     , parent.depends_metadata
+                     , parent.depends_history
                 FROM pg_class relation
                 JOIN pg_rewrite rewrite ON rewrite.ev_class = relation.oid
                 JOIN pg_depend dependency
@@ -242,7 +307,41 @@ async fn require_safe_protected_privileges(
                 WHERE relation.oid NOT IN (SELECT oid FROM protected_relations)
             )
             SELECT 1
-            FROM dependent_relations
+            FROM dependent_relations dependent
+            JOIN pg_class relation ON relation.oid = dependent.oid
+            JOIN protected_owner_access owner_access ON owner_access.roleid = relation.relowner
+            WHERE NOT (
+                relation.relkind = 'v'
+                AND coalesce(relation.reloptions, ARRAY[]::text[]) @> ARRAY['security_invoker=true']
+            )
+              AND (
+                (
+                    (
+                        has_table_privilege('codex_runtime', relation.oid, 'SELECT')
+                        OR has_any_column_privilege('codex_runtime', relation.oid, 'SELECT')
+                    )
+                    AND dependent.depends_history
+                    AND owner_access.history_read
+                ) OR (
+                    (
+                        has_table_privilege('codex_runtime', relation.oid, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                        OR has_any_column_privilege('codex_runtime', relation.oid, 'INSERT,UPDATE,REFERENCES')
+                    )
+                    AND (
+                        (dependent.depends_metadata AND owner_access.metadata_write)
+                        OR (dependent.depends_history AND owner_access.history_write)
+                    )
+                ) OR (
+                    (
+                        has_table_privilege('codex_backup', relation.oid, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                        OR has_any_column_privilege('codex_backup', relation.oid, 'INSERT,UPDATE,REFERENCES')
+                    )
+                    AND (
+                        (dependent.depends_metadata AND owner_access.metadata_write)
+                        OR (dependent.depends_history AND owner_access.history_write)
+                    )
+                )
+              )
         )",
     )
     .fetch_one(connection)
