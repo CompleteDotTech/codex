@@ -104,9 +104,9 @@ jobs:
           python scripts/postgres/manage.py --state "$state" init --project "codex-pg-upgrade-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 56082
           python scripts/postgres/manage.py --state "$state" pin
           python scripts/postgres/manage.py --state "$state" up
-      - name: Test PostgreSQL v1 to v2 transactional upgrade
+      - name: Test PostgreSQL v1 through v3 transactional upgrade
         working-directory: codex-rs
-        run: just test -p codex-postgres-runtime real_v1_upgrade_to_graph_schema_is_atomic_and_role_scoped
+        run: just test -p codex-postgres-runtime real_v1_upgrade_through_graph_and_import_schemas_is_atomic
       - name: Stop upgrade fixture and retain receipts
         if: always()
         shell: bash
@@ -114,6 +114,24 @@ jobs:
           if [[ -n "${CODEX_TEST_POSTGRES_UPGRADE_STATE:-}" && -f "$CODEX_TEST_POSTGRES_UPGRADE_STATE/receipt.json" ]]; then
             python scripts/postgres/manage.py --state "$CODEX_TEST_POSTGRES_UPGRADE_STATE" down
           fi
+      - name: Start isolated v2 to v3 upgrade fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/codex-pg-import-upgrade-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'CODEX_TEST_POSTGRES_IMPORT_UPGRADE_STATE=%s\n' "$state" >> "$GITHUB_ENV"
+          python scripts/postgres/manage.py --state "$state" init --project "codex-pg-import-upgrade-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 56084
+          python scripts/postgres/manage.py --state "$state" pin
+          python scripts/postgres/manage.py --state "$state" up
+      - name: Test PostgreSQL v2 to v3 transactional upgrade
+        working-directory: codex-rs
+        run: just test -p codex-postgres-runtime real_v2_upgrade_to_import_schema_is_atomic_and_role_scoped
+      - name: Stop import upgrade fixture and retain receipts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${CODEX_TEST_POSTGRES_IMPORT_UPGRADE_STATE:-}" && -f "$CODEX_TEST_POSTGRES_IMPORT_UPGRADE_STATE/receipt.json" ]]; then
+            python scripts/postgres/manage.py --state "$CODEX_TEST_POSTGRES_IMPORT_UPGRADE_STATE" down
 
   offline:
     name: Offline tests (${{ matrix.os }}, Python ${{ matrix.python }})

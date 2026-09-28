@@ -162,13 +162,13 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
 
     let capabilities = ClientCapabilities {
-        min_schema_format: 2,
-        max_schema_format: 2,
-        reader_version: 2,
-        writer_version: 2,
+        min_schema_format: 3,
+        max_schema_format: 3,
+        reader_version: 3,
+        writer_version: 3,
     };
     let compatible = Ok(CompatibilityResult {
-        schema_format: 2,
+        schema_format: 3,
         activation_permitted: false,
     });
     assert_eq!(
@@ -183,7 +183,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
 
     owner_query(
         &migrator_a,
-        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 3",
+        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 4",
     )
     .await;
     assert_eq!(
@@ -198,7 +198,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
     owner_query(
         &migrator_a,
-        "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 3",
+        "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 4",
     )
     .await;
     assert_eq!(
@@ -208,7 +208,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
     owner_query(
         &migrator_a,
-        "UPDATE codex_storage.codex_schema_meta SET format_version = 3, min_reader_version = 2, min_writer_version = 2",
+        "UPDATE codex_storage.codex_schema_meta SET format_version = 4, min_reader_version = 3, min_writer_version = 3",
     )
     .await;
     assert_eq!(
@@ -218,7 +218,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
     owner_query(
         &migrator_a,
-        "UPDATE codex_storage.codex_schema_meta SET format_version = 2",
+        "UPDATE codex_storage.codex_schema_meta SET format_version = 3",
     )
     .await;
 

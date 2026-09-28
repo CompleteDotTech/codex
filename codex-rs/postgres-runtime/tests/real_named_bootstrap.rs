@@ -118,7 +118,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     .fetch_one(&mut *transaction)
     .await
     .expect("read named metadata and history");
-    assert_eq!((format, history), (2, 2));
+    assert_eq!((format, history), (3, 3));
     transaction
         .rollback()
         .await
@@ -130,7 +130,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
             .fetch_one(&mut *runtime_connection)
             .await
             .expect("runtime reads named metadata");
-    assert_eq!(visible, 2);
+    assert_eq!(visible, 3);
     let denied = sqlx::query("SELECT version FROM codex_storage_isolation._codex_pg_migrations")
         .execute(&mut *runtime_connection)
         .await
@@ -145,13 +145,13 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     drop(runtime_connection);
 
     let capabilities = ClientCapabilities {
-        min_schema_format: 2,
-        max_schema_format: 2,
-        reader_version: 2,
-        writer_version: 2,
+        min_schema_format: 3,
+        max_schema_format: 3,
+        reader_version: 3,
+        writer_version: 3,
     };
     let compatible = Ok(CompatibilityResult {
-        schema_format: 2,
+        schema_format: 3,
         activation_permitted: false,
     });
     assert_eq!(
@@ -189,7 +189,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
 
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET min_writer_version = 3",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET min_writer_version = 4",
     )
     .await;
     assert_eq!(
@@ -214,7 +214,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     );
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET min_reader_version = 3",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET min_reader_version = 4",
     )
     .await;
     assert_eq!(
@@ -229,7 +229,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     );
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 3, min_reader_version = 2, min_writer_version = 2",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 4, min_reader_version = 3, min_writer_version = 3",
     )
     .await;
     assert_eq!(
@@ -244,7 +244,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     );
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 2",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 3",
     )
     .await;
 
