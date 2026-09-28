@@ -30,6 +30,9 @@ def qualify_archive_shapes(source, reject):
             "OR to_regtype('codex_storage.restore_shape_type') IS NOT NULL "
             "OR EXISTS (SELECT 1 FROM pg_constraint WHERE "
             "connamespace = 'codex_storage'::regnamespace AND conname IN ('restore_shape_extra', 'restore_shape_probe')) "
+            "OR EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid IN "
+            "('codex_storage.codex_schema_meta'::regclass, 'codex_storage._codex_pg_migrations'::regclass) "
+            "AND attname='restore_shape_extra' AND NOT attisdropped) "
             "OR to_regprocedure('codex_storage.restore_shape_trigger()') IS NOT NULL",
         )
         != "f"
@@ -126,6 +129,37 @@ def qualify_archive_shapes(source, reject):
         ) as captured:
             reject(f"incompatible_{field}", "SELECT 1", "SELECT 1", captured)
 
+    for name, setup, cleanup in (
+        (
+            "metadata_bigint_column",
+            "ALTER TABLE codex_storage.codex_schema_meta ALTER COLUMN format_version TYPE bigint",
+            "ALTER TABLE codex_storage.codex_schema_meta ALTER COLUMN format_version TYPE integer",
+        ),
+        (
+            "history_required_column",
+            "ALTER TABLE codex_storage._codex_pg_migrations ADD COLUMN restore_shape_extra integer NOT NULL DEFAULT 1; "
+            "ALTER TABLE codex_storage._codex_pg_migrations ALTER COLUMN restore_shape_extra DROP DEFAULT",
+            "ALTER TABLE codex_storage._codex_pg_migrations DROP COLUMN restore_shape_extra",
+        ),
+        (
+            "history_incorrect_default",
+            "ALTER TABLE codex_storage._codex_pg_migrations ALTER COLUMN installed_on SET DEFAULT '2000-01-01'::timestamptz",
+            "ALTER TABLE codex_storage._codex_pg_migrations ALTER COLUMN installed_on SET DEFAULT now()",
+        ),
+        (
+            "metadata_nullable_version",
+            "ALTER TABLE codex_storage.codex_schema_meta ALTER COLUMN format_version DROP NOT NULL",
+            "ALTER TABLE codex_storage.codex_schema_meta ALTER COLUMN format_version SET NOT NULL",
+        ),
+        (
+            "protected_writable_view",
+            "CREATE VIEW codex_storage.restore_shape_probe AS SELECT * FROM codex_storage.codex_schema_meta",
+            "DROP VIEW codex_storage.restore_shape_probe",
+        ),
+    ):
+        with mutated_archive(source, setup, cleanup) as captured:
+            reject(name, "SELECT 1", "SELECT 1", captured)
+
     with mutated_archive(
         source,
         "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_singleton_check",
@@ -153,6 +187,14 @@ def qualify_archive_shapes(source, reject):
         "ALTER TABLE codex_restore_shape._codex_pg_migrations SET SCHEMA codex_storage; "
         "DROP SCHEMA codex_restore_shape",
     ) as captured:
+        reject(
+            "ordinary_table_backup_admin_write",
+            "GRANT codex_restore_foreign TO codex_backup WITH ADMIN TRUE, INHERIT FALSE, SET FALSE; "
+            "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner GRANT UPDATE ON TABLES TO codex_restore_foreign",
+            "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner REVOKE UPDATE ON TABLES FROM codex_restore_foreign; "
+            "REVOKE codex_restore_foreign FROM codex_backup",
+            captured,
+        )
         for grantee in (
             "PUBLIC",
             "codex_backup",
@@ -168,3 +210,4 @@ def qualify_archive_shapes(source, reject):
                     f"REVOKE {privilege} ON TABLES FROM {grantee}",
                     captured,
                 )
+    return captured

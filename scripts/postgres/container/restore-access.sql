@@ -14,6 +14,36 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unrecognized protected metadata';
     END IF;
     IF metadata IS NOT NULL THEN
+        IF (SELECT count(*) FROM pg_attribute WHERE attrelid = metadata AND attnum > 0 AND NOT attisdropped) <> 4
+          OR (SELECT count(*) FROM pg_attribute WHERE attrelid = history AND attnum > 0 AND NOT attisdropped) <> 6
+          OR EXISTS (
+            SELECT 1 FROM (VALUES
+                (metadata, 'singleton', 'boolean'::regtype, 'true'),
+                (metadata, 'format_version', 'integer'::regtype, NULL),
+                (metadata, 'min_reader_version', 'integer'::regtype, NULL),
+                (metadata, 'min_writer_version', 'integer'::regtype, NULL),
+                (history, 'version', 'bigint'::regtype, NULL),
+                (history, 'description', 'text'::regtype, NULL),
+                (history, 'installed_on', 'timestamptz'::regtype, 'now()'),
+                (history, 'success', 'boolean'::regtype, NULL),
+                (history, 'checksum', 'bytea'::regtype, NULL),
+                (history, 'execution_time', 'bigint'::regtype, NULL)
+            ) required(relation_oid, name, type_oid, expression)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM pg_attribute attribute
+                LEFT JOIN pg_attrdef definition ON definition.adrelid = attribute.attrelid
+                  AND definition.adnum = attribute.attnum
+                WHERE attribute.attrelid = required.relation_oid
+                  AND attribute.attnum > 0 AND NOT attribute.attisdropped
+                  AND attribute.attname = required.name
+                  AND attribute.atttypid = required.type_oid
+                  AND attribute.attnotnull
+                  AND attribute.attidentity = '' AND attribute.attgenerated = ''
+                  AND pg_get_expr(definition.adbin, definition.adrelid) IS NOT DISTINCT FROM required.expression
+            )
+        ) THEN
+            RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unrecognized protected columns';
+        END IF;
         IF EXISTS (
             SELECT 1 FROM (VALUES (metadata), (history)) required(relation_oid)
             LEFT JOIN pg_class relation ON relation.oid = required.relation_oid
@@ -69,6 +99,24 @@ BEGIN
               AND pg_get_constraintdef(constraint_row.oid) = 'CHECK (singleton)'
         ) THEN
             RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unrecognized protected metadata';
+        END IF;
+        -- View owners can supply base-table authority without a caller holding
+        -- any ACL on the protected table. Follow nested views across schemas.
+        IF EXISTS (
+            WITH RECURSIVE protected_dependents(relation_oid) AS (
+                SELECT metadata UNION SELECT history
+                UNION
+                SELECT rewrite.ev_class FROM pg_rewrite rewrite
+                JOIN pg_depend dependency ON dependency.classid = 'pg_rewrite'::regclass
+                  AND dependency.objid = rewrite.oid
+                  AND dependency.refclassid = 'pg_class'::regclass
+                JOIN protected_dependents parent ON parent.relation_oid = dependency.refobjid
+            )
+            SELECT 1 FROM protected_dependents dependent
+            JOIN pg_class relation ON relation.oid = dependent.relation_oid
+            WHERE relation.relkind = 'v'
+        ) THEN
+            RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsupported protected view dependency';
         END IF;
         IF NOT EXISTS (
             SELECT 1 FROM codex_storage.codex_schema_meta
@@ -149,6 +197,16 @@ BEGIN
                OR pg_has_role(candidate.oid, 'codex_runtime', 'SET'))
     ) THEN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe backup role escalation';
+    END IF;
+    -- Backup remains read-only for ordinary application archives too. Refuse
+    -- role administration even when the target is outside the runtime graph.
+    IF EXISTS (
+        SELECT 1 FROM pg_auth_members membership
+        WHERE membership.admin_option
+          AND (pg_has_role('codex_backup', membership.member, 'USAGE')
+               OR pg_has_role('codex_backup', membership.member, 'SET'))
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe backup role administration';
     END IF;
     IF EXISTS (
         SELECT 1 FROM pg_roles candidate
