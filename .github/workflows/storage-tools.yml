@@ -94,12 +94,35 @@ jobs:
           python scripts/postgres/manage.py --state "$state" init --project "codex-pg-focused-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 16481
           python scripts/postgres/manage.py --state "$state" pin
           CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE="$state" python -m unittest discover -s scripts/postgres/tests -p test_restore_access_live.py -v
+      - name: Qualify restore ACLs and fixture cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/codex-pg-rust-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'CODEX_TEST_POSTGRES_RESTORE_STATE=%s\n' "$state" >> "$GITHUB_ENV"
+          python scripts/postgres/manage.py --state "$state" init --project "codex-pg-rust-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 16482
+          python scripts/postgres/manage.py --state "$state" pin
+          python scripts/postgres/manage.py --state "$state" up
+          CODEX_TEST_POSTGRES_RESTORE_STATE="$state" python -m unittest discover -s scripts/postgres/tests -p test_restore_qualification_cleanup_live.py -v
+          RESTORE_STATE="$state" python - <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "scripts/postgres")
+          from qualification_checks import sql
+          from restore_qualification import qualify_restore_access
+          qualify_restore_access(Path(os.environ["CODEX_TEST_POSTGRES_STATE"]), Path(os.environ["RESTORE_STATE"]))
+          sql(Path(os.environ["RESTORE_STATE"]), Path("scripts/postgres/container/real-bootstrap-test-roles.sql").read_text())
+          PY
+      - name: Verify restored metadata with the real Rust bootstrap
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_STATE="$CODEX_TEST_POSTGRES_RESTORE_STATE" just test -p codex-postgres-runtime real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent
       - name: Stop fixture and retain receipts
         if: always()
         shell: bash
         run: |
           cleanup_status=0
-          for state in "${CODEX_TEST_POSTGRES_STATE:-}" "${CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE:-}"; do
+          for state in "${CODEX_TEST_POSTGRES_STATE:-}" "${CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE:-}" "${CODEX_TEST_POSTGRES_RESTORE_STATE:-}"; do
             if [[ -n "$state" && -f "$state/receipt.json" ]]; then
               python scripts/postgres/manage.py --state "$state" down || cleanup_status=1
             fi
