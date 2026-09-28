@@ -4216,6 +4216,7 @@ dependencies = [
  "rustls",
  "serde_json",
  "sqlx",
+ "sqlx-macros",
  "tempfile",
  "tokio",
 ]

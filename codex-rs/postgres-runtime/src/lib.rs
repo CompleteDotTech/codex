@@ -21,6 +21,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::timeout;
 
+mod bootstrap;
+pub use bootstrap::BootstrapError;
+pub use bootstrap::bootstrap_codex_storage;
+
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_CONNECTIONS: u32 = 32;
 

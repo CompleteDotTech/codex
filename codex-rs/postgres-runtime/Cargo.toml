@@ -13,6 +13,7 @@ workspace = true
 [dependencies]
 rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
 sqlx = { workspace = true }
+sqlx-macros = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
