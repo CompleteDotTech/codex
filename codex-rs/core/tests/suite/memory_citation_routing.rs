@@ -114,7 +114,7 @@ async fn assistant_memory_citation_updates_only_injected_store_usage() -> Result
             config.memories.use_memories = false;
             config.memories.version = MemoryVersion::V1;
         });
-    let test = builder.build(&server).await?;
+    let test = builder.build_with_auto_env(&server).await?;
     let backend_store = backend.memories_for_version(MemoryVersion::V1).await?;
     let local_store = local.memories_for_version(MemoryVersion::V1).await?;
     assert_eq!(selected_thread(&backend_store).await?, newer);
