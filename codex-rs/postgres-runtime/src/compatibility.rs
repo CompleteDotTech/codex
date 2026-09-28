@@ -206,6 +206,25 @@ pub async fn check_codex_storage_compatibility(
             ("version", "int8"), ("description", "text"), ("installed_on", "timestamptz"),
             ("success", "bool"), ("checksum", "bytea"), ("execution_time", "int8"),
         ], CompatibilityError::IncompatibleHistory).await?;
+        let valid_checks: bool = sqlx::query_scalar(
+            "WITH expected(name, definition) AS (VALUES
+                ('codex_schema_meta_singleton_check', 'CHECK (singleton)'),
+                ('codex_schema_meta_format_version_check', 'CHECK ((format_version > 0))'),
+                ('codex_schema_meta_min_reader_version_check', 'CHECK ((min_reader_version > 0))'),
+                ('codex_schema_meta_min_writer_version_check', 'CHECK ((min_writer_version > 0))'))
+             SELECT (SELECT count(*) FROM pg_constraint WHERE conrelid = 'codex_storage.codex_schema_meta'::regclass) = 5
+                AND (SELECT pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d JOIN pg_attribute a
+                     ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = 'codex_storage.codex_schema_meta'::regclass AND a.attname = 'singleton') = 'true'
+                AND NOT EXISTS (SELECT 1 FROM expected WHERE NOT EXISTS (
+                    SELECT 1 FROM pg_constraint c WHERE c.conrelid = 'codex_storage.codex_schema_meta'::regclass
+                      AND c.conname = expected.name AND pg_get_constraintdef(c.oid) = expected.definition))",
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| classify_schema(&error, CompatibilityError::MissingMetadata))?;
+        if !valid_checks {
+            return Err(CompatibilityError::MissingMetadata);
+        }
         require_safe_protected_privileges(&mut transaction)
             .await
             .map_err(classify_bootstrap)?;
