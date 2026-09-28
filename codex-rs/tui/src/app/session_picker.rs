@@ -103,8 +103,15 @@ impl App {
                 }
                 if switching_threads
                     && self.current_displayed_thread_id() == Some(thread_id)
-                    && let Some(input_state) = self.agents_overview.input_states.remove(&thread_id)
+                    && let Some(mut input_state) =
+                        self.agents_overview.input_states.remove(&thread_id)
                 {
+                    // The resumed server session is newer than the cached draft and notification.
+                    if let Some(current) = self.chat_widget.capture_thread_input_state() {
+                        input_state.current_collaboration_mode = current.current_collaboration_mode;
+                        input_state.active_collaboration_mask = current.active_collaboration_mask;
+                        input_state.plan_mode_reasoning_effort = current.plan_mode_reasoning_effort;
+                    }
                     let preserve_in_flight_turn =
                         self.active_turn_id_for_thread(thread_id).await.is_some();
                     self.chat_widget.restore_thread_input_state(

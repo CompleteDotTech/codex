@@ -147,9 +147,9 @@ pub(crate) struct ThreadInputState {
     pub(crate) recovered_queue: bool,
     pub(super) user_turn_pending_start: bool,
     pub(super) submit_pending_steers_after_interrupt: bool,
-    pub(super) current_collaboration_mode: CollaborationMode,
-    pub(super) active_collaboration_mask: Option<CollaborationModeMask>,
-    pub(super) plan_mode_reasoning_effort: Option<ReasoningEffortConfig>,
+    pub(crate) current_collaboration_mode: CollaborationMode,
+    pub(crate) active_collaboration_mask: Option<CollaborationModeMask>,
+    pub(crate) plan_mode_reasoning_effort: Option<ReasoningEffortConfig>,
     pub(super) task_running: bool,
     pub(super) agent_turn_running: bool,
 }
