@@ -137,7 +137,7 @@ alias(
         ":platform_aarch64_unknown_linux_musl": ":v8_150_4_0_aarch64_unknown_linux_musl_release_base",
         "@rules_rs//rs/platforms/config:x86_64-apple-darwin": ":v8_150_4_0_x86_64_apple_darwin_bazel",
         "@rules_rs//rs/platforms/config:x86_64-pc-windows-gnullvm": ":v8_150_4_0_x86_64_pc_windows_gnullvm",
-        "@rules_rs//rs/platforms/config:x86_64-pc-windows-msvc": ":v8_150_4_0_x86_64_pc_windows_msvc",
+        "@rules_rs//rs/platforms/config:x86_64-pc-windows-msvc": ":v8_150_4_0_x86_64_pc_windows_msvc_bazel",
         "@rules_rs//rs/platforms/config:x86_64-unknown-linux-gnu": ":v8_150_4_0_x86_64_unknown_linux_gnu_bazel",
         ":platform_x86_64_unknown_linux_musl": ":v8_150_4_0_x86_64_unknown_linux_musl_release",
         "//conditions:default": ":v8_150_4_0_x86_64_unknown_linux_gnu_bazel",
@@ -360,6 +360,12 @@ cc_static_library(
         ":rusty_v8_custom_libcxx_runtime",
         ":v8_150_4_0_binding",
     ],
+)
+
+cc_static_library(
+    name = "v8_150_4_0_x86_64_pc_windows_msvc_bazel",
+    features = V8_STATIC_LIBRARY_FEATURES,
+    deps = [":v8_150_4_0_binding"],
 )
 
 cc_static_library(

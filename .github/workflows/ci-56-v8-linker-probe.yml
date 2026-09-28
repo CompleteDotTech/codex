@@ -25,7 +25,7 @@ jobs:
 
       - uses: ./.github/actions/prepare-voice-windows-bazel
 
-      - name: Test V8 consumer with the shared dynamic CRT
+      - name: Test V8 consumer with Bazel-built MSVC V8 archive
         shell: bash
         run: |
           set -euo pipefail
@@ -36,9 +36,10 @@ jobs:
             -- \
             test \
             --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+            --//:rusty_v8_from_source=True \
             --@rules_rust//rust/settings:toolchain_linker_preference=cc \
             --subcommands=pretty_print \
             --test_output=errors \
-            --build_metadata=TAG_ci56_linker_probe=cc_dynamic_crt_without_forced_ucrt \
+            --build_metadata=TAG_ci56_linker_probe=bazel_source_msvc_v8 \
             -- \
             //codex-rs/code-mode-runtime:code-mode-runtime-array_sort-test
