@@ -348,36 +348,39 @@ pub(super) async fn replay_pending_move(
             }
         }
         let selected = pending.transaction.selected_destination.as_path();
-        if direction == MoveDirection::Unarchive {
-            touch_modified_time(selected).map_err(|err| ThreadStoreError::Internal {
-                message: format!("failed to touch restored rollout: {err}"),
-            })?;
-        }
-        if let Some(ctx) = store.state_db().await {
+        let state_db = store.state_db().await;
+        let already_updated = if let Some(ctx) = state_db.as_ref() {
             let metadata =
                 ctx.get_thread(thread_id)
                     .await
                     .map_err(|err| ThreadStoreError::Internal {
                         message: format!("failed to read rollout metadata during replay: {err}"),
                     })?;
-            let already_updated = metadata.as_ref().is_some_and(|metadata| {
+            metadata.as_ref().is_some_and(|metadata| {
                 metadata.rollout_path == selected
                     && match direction {
                         MoveDirection::Archive => metadata.archived_at.is_some(),
                         MoveDirection::Unarchive => metadata.archived_at.is_none(),
                     }
-            });
-            if !already_updated {
-                match direction {
-                    MoveDirection::Archive => {
-                        ctx.mark_archived(thread_id, selected, Utc::now()).await
-                    }
-                    MoveDirection::Unarchive => ctx.mark_unarchived(thread_id, selected).await,
-                }
-                .map_err(|err| ThreadStoreError::Internal {
-                    message: format!("failed to replay rollout metadata: {err}"),
-                })?;
+            })
+        } else {
+            false
+        };
+        if direction == MoveDirection::Unarchive && !already_updated {
+            touch_modified_time(selected).map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to touch restored rollout: {err}"),
+            })?;
+        }
+        if let Some(ctx) = state_db
+            && !already_updated
+        {
+            match direction {
+                MoveDirection::Archive => ctx.mark_archived(thread_id, selected, Utc::now()).await,
+                MoveDirection::Unarchive => ctx.mark_unarchived(thread_id, selected).await,
             }
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to replay rollout metadata: {err}"),
+            })?;
         }
         pending
             .complete()

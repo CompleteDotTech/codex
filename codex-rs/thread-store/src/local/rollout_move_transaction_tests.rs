@@ -1,6 +1,9 @@
 use std::fs;
+use std::fs::FileTimes;
 use std::io::Write;
 use std::sync::Arc;
+use std::time::Duration;
+use std::time::UNIX_EPOCH;
 
 use chrono::Utc;
 use codex_protocol::ThreadId;
@@ -379,9 +382,7 @@ async fn committed_archive_cleanup_preserves_sqlite_row() -> Result<(), Box<dyn 
     replay_pending_move(&store, thread_id).await?;
 
     let after = runtime.get_thread(thread_id).await?.expect("SQLite row");
-    assert_eq!(after.rollout_path, before.rollout_path);
-    assert_eq!(after.archived_at, before.archived_at);
-    assert_eq!(after.updated_at, before.updated_at);
+    assert_eq!(after, before);
     assert_eq!(replay_pending_move(&store, thread_id).await?, None);
     assert!(
         !destination
@@ -437,6 +438,65 @@ async fn replay_after_sqlite_commit_preserves_updated_at() -> Result<(), Box<dyn
 
     let after = runtime.get_thread(thread_id).await?.expect("SQLite row");
     assert_eq!(after, before);
+    assert_eq!(replay_pending_move(&store, thread_id).await?, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn replay_after_unarchive_commit_preserves_rollout_mtime()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let config = test_config(home.path());
+    let uuid = Uuid::from_u128(523);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_archived_session_file(home.path(), "2025-01-03T13-00-01", uuid)?;
+    let runtime = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await?;
+    let mut metadata = codex_state::ThreadMetadataBuilder::new(
+        thread_id,
+        source.clone(),
+        Utc::now(),
+        SessionSource::Cli,
+    )
+    .build(config.default_model_provider_id.as_str());
+    metadata.archived_at = Some(metadata.updated_at);
+    runtime.upsert_thread(&metadata).await?;
+    let store = LocalThreadStore::new(config, Some(runtime.clone()));
+    let destination_directory = home.path().join("sessions/2025/01/03");
+    fs::create_dir_all(&destination_directory)?;
+    let destination = destination_directory.join(source.file_name().expect("filename"));
+    let pending = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Unarchive,
+        &destination,
+        &[(source.clone(), destination.clone())],
+    )?;
+    move_rollout_noclobber_retained(&source, &destination, home.path())?;
+    runtime.mark_unarchived(thread_id, &destination).await?;
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&destination)?
+        .set_times(
+            FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(1_000_000_000)),
+        )?;
+    let before_mtime = fs::metadata(&destination)?.modified()?;
+    let before = runtime.get_thread(thread_id).await?.expect("SQLite row");
+    drop(pending); // Simulate exit after SQLite commit but before journal cleanup.
+
+    assert_eq!(
+        replay_pending_move(&store, thread_id).await?,
+        Some(MoveDirection::Unarchive)
+    );
+
+    assert_eq!(fs::metadata(&destination)?.modified()?, before_mtime);
+    assert_eq!(
+        runtime.get_thread(thread_id).await?.expect("SQLite row"),
+        before
+    );
     assert_eq!(replay_pending_move(&store, thread_id).await?, None);
     Ok(())
 }
