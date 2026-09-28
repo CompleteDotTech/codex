@@ -593,3 +593,119 @@ async fn unarchive_replays_destination_only_before_archived_lookup()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn archive_collision_preserves_normal_reads_without_a_journal()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let uuid = Uuid::from_u128(520);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_session_file(home.path(), "2025-01-03T17-00-00", uuid)?;
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let destination = archive.join(source.file_name().expect("filename"));
+    fs::write(&destination, b"unrelated destination")?;
+
+    assert!(
+        store
+            .archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .is_err()
+    );
+    let thread = store
+        .read_thread(ReadThreadParams {
+            thread_id,
+            include_archived: false,
+            include_history: false,
+        })
+        .await?;
+
+    assert_eq!(thread.rollout_path, Some(source.clone()));
+    assert!(source.exists());
+    assert_eq!(fs::read(destination)?, b"unrelated destination");
+    assert!(
+        !home
+            .path()
+            .join("rollout_move_transactions")
+            .join(format!("{thread_id}.json"))
+            .exists()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn collision_after_journal_publication_abandons_unmoved_intent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let uuid = Uuid::from_u128(521);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_session_file(home.path(), "2025-01-03T17-00-01", uuid)?;
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let destination = archive.join(source.file_name().expect("filename"));
+    let pending = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Archive,
+        &destination,
+        &[(source.clone(), destination.clone())],
+    )?;
+    fs::write(&destination, b"unrelated destination")?;
+    drop(pending);
+
+    let thread = store
+        .read_thread(ReadThreadParams {
+            thread_id,
+            include_archived: false,
+            include_history: false,
+        })
+        .await?;
+
+    assert_eq!(thread.rollout_path, Some(source.clone()));
+    assert!(source.exists());
+    assert_eq!(fs::read(destination)?, b"unrelated destination");
+    assert_eq!(replay_pending_move(&store, thread_id).await?, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn unarchive_collision_leaves_archived_source_readable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let uuid = Uuid::from_u128(522);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_archived_session_file(home.path(), "2025-01-03T17-00-02", uuid)?;
+    let active = home.path().join("sessions/2025/01/03");
+    fs::create_dir_all(&active)?;
+    let destination = active.join(source.file_name().expect("filename"));
+    fs::write(&destination, b"unrelated destination")?;
+
+    assert!(
+        store
+            .unarchive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .is_err()
+    );
+    let thread = store
+        .read_thread_by_rollout_path(
+            source.clone(),
+            /*include_archived*/ true,
+            /*include_history*/ false,
+        )
+        .await?;
+
+    assert_eq!(thread.rollout_path, Some(source.clone()));
+    assert!(source.exists());
+    assert_eq!(fs::read(destination)?, b"unrelated destination");
+    assert!(
+        !home
+            .path()
+            .join("rollout_move_transactions")
+            .join(format!("{thread_id}.json"))
+            .exists()
+    );
+    Ok(())
+}

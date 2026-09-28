@@ -16,6 +16,7 @@ use serde::Serialize;
 use super::LocalThreadStore;
 use super::rollout_move_file::clear_rollout_move_intent;
 use super::rollout_move_file::move_rollout_noclobber_retained;
+use super::rollout_move_file::published_rollout_move_owned;
 use super::rollout_move_file::touch_modified_time;
 use super::rollout_move_file::verify_published_rollout_move;
 use crate::ThreadStoreError;
@@ -82,6 +83,13 @@ pub(super) fn begin_move(
     }
     for pair in &transaction.moves {
         validate_move_pair(codex_home, pair)?;
+        // Reject a known collision before publishing the journal. A failed archive must not
+        // leave an intent that blocks ordinary reads of an intact source.
+        match std::fs::symlink_metadata(&pair.destination) {
+            Ok(_) => return Err(io::Error::from(io::ErrorKind::AlreadyExists)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
+        }
         if pair.source.exists() && !pair.destination.exists() {
             // A prior committed transaction can leave a sidecar if cleanup was interrupted
             // after its transaction file was removed. No destination was published here.
@@ -122,6 +130,18 @@ impl PendingMove {
         // SQLite may already reflect the move if the process exits here. Replay checks
         // the row and skips an idempotent write before removing this journal.
         self.cleanup()
+    }
+
+    fn abandon_unmoved(self) -> io::Result<()> {
+        std::fs::remove_file(&self.path)?;
+        #[cfg(unix)]
+        std::fs::File::open(
+            self.path
+                .parent()
+                .ok_or_else(|| io::Error::other("missing journal parent"))?,
+        )?
+        .sync_all()?;
+        Ok(())
     }
 
     fn cleanup(self) -> io::Result<()> {
@@ -177,6 +197,45 @@ pub(super) async fn replay_pending_move(
         validate_move_pair(home, pair).map_err(|err| ThreadStoreError::Internal {
             message: format!("pending rollout move path is invalid: {err}"),
         })?;
+    }
+    if !committed
+        && pending.transaction.moves.iter().all(|pair| {
+            std::fs::symlink_metadata(&pair.source).is_ok_and(|m| m.file_type().is_file())
+        })
+    {
+        let mut owned_destination = false;
+        let mut collided_destination = false;
+        for pair in &pending.transaction.moves {
+            match std::fs::symlink_metadata(&pair.destination) {
+                Ok(_) => {
+                    if published_rollout_move_owned(&pair.source, &pair.destination).map_err(
+                        |err| ThreadStoreError::Internal {
+                            message: format!(
+                                "failed to inspect pending rollout publication: {err}"
+                            ),
+                        },
+                    )? {
+                        owned_destination = true;
+                    } else {
+                        collided_destination = true;
+                    }
+                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(ThreadStoreError::Internal {
+                        message: format!("failed to inspect pending rollout destination: {err}"),
+                    });
+                }
+            }
+        }
+        if collided_destination && !owned_destination {
+            pending
+                .abandon_unmoved()
+                .map_err(|err| ThreadStoreError::Internal {
+                    message: format!("failed to abandon unstarted rollout move: {err}"),
+                })?;
+            return Ok(None);
+        }
     }
     if !committed {
         // Validate every recorded file before mutating any. The journal may have been damaged

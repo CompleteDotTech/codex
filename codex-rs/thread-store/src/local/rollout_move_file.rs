@@ -425,6 +425,43 @@ pub(super) fn verify_published_rollout_move(
     finish_quarantined_source(&intent)
 }
 
+/// Check ownership without requiring source unlink, for an interrupted publication.
+pub(super) fn published_rollout_move_owned(source: &Path, destination: &Path) -> io::Result<bool> {
+    let source_parent = std::fs::canonicalize(
+        source
+            .parent()
+            .ok_or_else(|| io::Error::other("rollout source has no parent"))?,
+    )?;
+    let destination_parent = std::fs::canonicalize(
+        destination
+            .parent()
+            .ok_or_else(|| io::Error::other("rollout destination has no parent"))?,
+    )?;
+    let source_name = source
+        .file_name()
+        .ok_or_else(|| io::Error::other("rollout source has no filename"))?;
+    let destination_name = destination
+        .file_name()
+        .ok_or_else(|| io::Error::other("rollout destination has no filename"))?;
+    let destination = destination_parent.join(destination_name);
+    let intent = match read_rollout_move_intent(&rollout_move_intent_path(&destination)) {
+        Ok(intent) => intent,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    if intent.source != source_parent.join(source_name) || intent.destination != destination {
+        return Ok(false);
+    }
+    match std::fs::symlink_metadata(&destination) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(rollout_file_identity(&destination)?
+            == intent.stage_id
+            && rollout_file_digest(&destination)? == intent.stage_digest),
+        Ok(_) => Ok(false),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
 #[cfg(test)]
 #[path = "rollout_move_file_tests.rs"]
 mod tests;
