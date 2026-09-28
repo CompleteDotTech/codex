@@ -46,26 +46,73 @@ pub(super) fn move_rollout_noclobber_retained_bound(
     expected_source_id: RolloutFileIdentity,
     expected_source_digest: [u8; 32],
 ) -> io::Result<()> {
-    let verify_source = || {
-        if rollout_file_identity(source)? != expected_source_id
-            || rollout_file_digest(source)? != expected_source_digest
-        {
-            return Err(io::Error::other(
-                "rollout source differs from journaled revision",
-            ));
-        }
-        Ok(())
+    let binding = SourceBinding::Journaled {
+        identity: expected_source_id,
+        digest: expected_source_digest,
     };
-    verify_source()?;
-    // Verify again after staging and publication, before the source is quarantined. A
-    // replacement during copy remains available and cannot be mistaken for the journaled file.
-    move_rollout_with_before_quarantine(source, destination, codex_home, verify_source)
+    binding.verify(source)?;
+    move_rollout_with_hooks(
+        source,
+        destination,
+        codex_home,
+        binding,
+        || Ok(()),
+        || binding.verify(source),
+    )
 }
 
+#[cfg(test)]
 fn move_rollout_with_before_quarantine(
     source: &Path,
     destination: &Path,
     codex_home: &Path,
+    before_quarantine: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    move_rollout_with_hooks(
+        source,
+        destination,
+        codex_home,
+        SourceBinding::Unbound,
+        || Ok(()),
+        before_quarantine,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum SourceBinding {
+    #[cfg(test)]
+    Unbound,
+    Journaled {
+        identity: RolloutFileIdentity,
+        digest: [u8; 32],
+    },
+}
+
+impl SourceBinding {
+    fn verify(self, source: &Path) -> io::Result<()> {
+        match self {
+            #[cfg(test)]
+            Self::Unbound => Ok(()),
+            Self::Journaled { identity, digest } => {
+                if rollout_file_identity(source)? != identity
+                    || rollout_file_digest(source)? != digest
+                {
+                    return Err(io::Error::other(
+                        "rollout source differs from journaled revision",
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+fn move_rollout_with_hooks(
+    source: &Path,
+    destination: &Path,
+    codex_home: &Path,
+    binding: SourceBinding,
+    before_staging: impl FnOnce() -> io::Result<()>,
     before_quarantine: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
     let canonical_sessions =
@@ -96,6 +143,8 @@ fn move_rollout_with_before_quarantine(
     let source_metadata = std::fs::metadata(source)?;
     let source_id = rollout_file_identity(source)?;
     let source_digest = rollout_file_digest(source)?;
+    binding.verify(source)?;
+    before_staging()?;
     let intent = match std::fs::symlink_metadata(&intent_path) {
         Ok(metadata) => {
             if !metadata.file_type().is_file() {
@@ -148,6 +197,7 @@ fn move_rollout_with_before_quarantine(
                     "rollout source changed while preparing move",
                 ));
             }
+            binding.verify(source)?;
             let (stage_file, stage_path) = stage.keep().map_err(|err| err.error)?;
             drop(stage_file);
             sync_parent_directory(&stage_path)?;
@@ -204,6 +254,7 @@ fn move_rollout_with_before_quarantine(
             }
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            binding.verify(source)?;
             if rollout_file_identity(&intent.stage_path)? != intent.stage_id
                 || rollout_file_digest(&intent.stage_path)? != intent.stage_digest
             {

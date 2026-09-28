@@ -188,6 +188,46 @@ fn live_move_rejects_replacement_after_journal_creation() -> Result<(), Box<dyn 
     Ok(())
 }
 
+#[test]
+fn live_move_prevalidates_later_source_before_publishing_first()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let uuid = Uuid::from_u128(528);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let first = write_session_file(home.path(), "2025-01-03T19-00-03", uuid)?;
+    let second = write_session_file(home.path(), "2025-01-03T19-00-04", uuid)?;
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let first_destination = archive.join(first.file_name().expect("first filename"));
+    let second_destination = archive.join(second.file_name().expect("second filename"));
+    let pending = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Archive,
+        &first_destination,
+        &[
+            (first.clone(), first_destination.clone()),
+            (second.clone(), second_destination.clone()),
+        ],
+    )?;
+    let original_second = second.with_extension("original");
+    fs::rename(&second, &original_second)?;
+    fs::copy(&original_second, &second)?;
+
+    assert!(pending.move_all(home.path()).is_err());
+    assert!(first.exists());
+    assert!(second.exists());
+    assert!(!first_destination.exists());
+    assert!(!second_destination.exists());
+    assert!(
+        home.path()
+            .join("rollout_move_transactions")
+            .join(format!("{thread_id}.json"))
+            .exists()
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn replay_finishes_destination_only_unarchive() -> Result<(), Box<dyn std::error::Error>> {
     let home = tempfile::tempdir()?;

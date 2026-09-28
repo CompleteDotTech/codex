@@ -2,6 +2,84 @@ use pretty_assertions::assert_eq;
 
 use super::*;
 
+#[test]
+fn bound_move_rejects_same_bytes_replacement_during_staging() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let original = sessions.join("original.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"original contents")?;
+    let binding = SourceBinding::Journaled {
+        identity: rollout_file_identity(&source)?,
+        digest: rollout_file_digest(&source)?,
+    };
+
+    let error = move_rollout_with_hooks(
+        &source,
+        &destination,
+        home.path(),
+        binding,
+        || {
+            std::fs::rename(&source, &original)?;
+            std::fs::copy(&original, &source)?;
+            Ok(())
+        },
+        || Ok(()),
+    )
+    .expect_err("replacement must be rejected before publication");
+
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(std::fs::read(&source)?, std::fs::read(&original)?);
+    assert!(!destination.exists());
+    assert!(!rollout_move_intent_path(&destination).exists());
+    Ok(())
+}
+
+#[test]
+fn bound_move_rejects_same_inode_digest_change_during_staging() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"original contents")?;
+    let modified = std::fs::metadata(&source)?.modified()?;
+    let identity = rollout_file_identity(&source)?;
+    let binding = SourceBinding::Journaled {
+        identity,
+        digest: rollout_file_digest(&source)?,
+    };
+
+    let error = move_rollout_with_hooks(
+        &source,
+        &destination,
+        home.path(),
+        binding,
+        || {
+            std::fs::write(&source, b"modified contents")?;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&source)?
+                .set_times(FileTimes::new().set_modified(modified))
+        },
+        || Ok(()),
+    )
+    .expect_err("content change must be rejected before publication");
+
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(rollout_file_identity(&source)?, identity);
+    assert_eq!(std::fs::read(&source)?, b"modified contents");
+    assert!(!destination.exists());
+    assert!(!rollout_move_intent_path(&destination).exists());
+    Ok(())
+}
+
 fn prepare_move_intent(source: &Path, destination: &Path) -> io::Result<RolloutMoveIntent> {
     let parent = destination
         .parent()

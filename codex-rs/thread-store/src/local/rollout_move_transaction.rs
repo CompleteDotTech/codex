@@ -137,6 +137,10 @@ pub(super) fn begin_move(
 
 impl PendingMove {
     pub(super) fn move_all(&self, codex_home: &Path) -> io::Result<()> {
+        // A later replacement must not leave an earlier file published and quarantined.
+        for pair in &self.transaction.moves {
+            verify_planned_source(pair)?;
+        }
         for pair in &self.transaction.moves {
             move_rollout_noclobber_retained_bound(
                 &pair.source,
