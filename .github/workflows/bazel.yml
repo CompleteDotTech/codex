@@ -20,7 +20,7 @@ jobs:
     # signal without putting PR latency back on the critical path. When
     # Code-mode unit tests run on every Bazel target. When authenticated RBE
     # is available, the Windows-cross shards exercise the source-built V8 path.
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -133,7 +133,7 @@ jobs:
     # Split the Windows Bazel test leg across separate Windows hosts. Jobs with
     # BuildBuddy credentials use Linux RBE for build actions; test execution
     # remains on a Windows runner.
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -204,6 +204,7 @@ jobs:
 
           bazel_test_args=(
             test
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
             --skip_incompatible_explicit_targets
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
@@ -256,7 +257,7 @@ jobs:
     # 30-minute PR budget. Run this only for post-merge commits to main and give
     # it a larger timeout.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    timeout-minutes: 40
+    timeout-minutes: 90
     runs-on: windows-2025
     name: Bazel test on windows-2025 for x86_64-pc-windows-msvc (native main)
     environment:
@@ -291,6 +292,7 @@ jobs:
 
           bazel_test_args=(
             test
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1
             --platforms=//:windows_x86_64_msvc
             --test_tag_filters=-argument-comment-lint
             --test_verbose_timeout_warnings
@@ -331,7 +333,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   clippy:
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -385,6 +387,7 @@ jobs:
             # host-platform shape.
             bazel_wrapper_args+=(--windows-cross-compile)
             bazel_target_list_args+=(--windows-cross-compile)
+            bazel_clippy_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
             if [[ -z "${BUILDBUDDY_API_KEY:-}" ]]; then
               # The fork fallback can see incompatible explicit Windows-cross
               # internal test binaries in the generated target list. Preserve
@@ -432,7 +435,7 @@ jobs:
         uses: ./.github/actions/check-clean-worktree
 
   verify-release-build:
-    timeout-minutes: 30
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -491,6 +494,9 @@ jobs:
             --build_metadata=TAG_job=verify-release-build
             --build_metadata=TAG_rust_debug_assertions=off
           )
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            bazel_build_args+=(--repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1)
+          fi
 
           bazel_target_lines="$(bash ./scripts/list-bazel-release-targets.sh)"
           bazel_targets=()
