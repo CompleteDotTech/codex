@@ -120,7 +120,9 @@ async fn require_safe_protected_privileges(
               AND left(candidate.rolname, 3) <> 'pg_'
               AND NOT candidate.rolsuper
               AND (
-                has_schema_privilege(candidate.oid, 'codex_storage', 'CREATE')
+                pg_has_role(candidate.oid, 'codex_owner', 'USAGE')
+                OR pg_has_role(candidate.oid, 'codex_owner', 'SET')
+                OR has_schema_privilege(candidate.oid, 'codex_storage', 'CREATE')
                 OR has_table_privilege(candidate.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
                 OR has_any_column_privilege(candidate.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,REFERENCES')
                 OR has_table_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
