@@ -19,6 +19,8 @@ always includes `"activation_permitted": false`.
 - `coverage_matrix.py`: checked partial inventory of the eight pinned SQLite
   schemas and canonical file classes. `audit_coverage()` rejects missing or extra
   fixture tables and reports unresolved forward/reverse treatment explicitly.
+- `control_plan.py`: a separate, offline operation-plan validator and exclusion
+  preview for initialize, local migration, and attachment; see `CONTROL_PLAN.md`.
 - `test_*.py`: synthetic bundle tests and disposable SQLite/process-boundary tests.
 
 No third-party Python packages are required. Source syntax targets the enclosing
