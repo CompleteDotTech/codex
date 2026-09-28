@@ -214,7 +214,7 @@ pub async fn check_codex_storage_compatibility(
                 ('codex_schema_meta_min_writer_version_check', 'CHECK ((min_writer_version > 0))'))
              SELECT (SELECT count(*) FROM pg_constraint WHERE conrelid = 'codex_storage.codex_schema_meta'::regclass) = 5
                 AND (SELECT pg_get_expr(d.adbin, d.adrelid) FROM pg_attrdef d JOIN pg_attribute a
-                     ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = 'codex_storage.codex_schema_meta'::regclass AND a.attname = 'singleton') = 'true'
+                     ON a.attrelid = d.adrelid AND a.attnum = d.adnum WHERE d.adrelid = 'codex_storage.codex_schema_meta'::regclass AND a.attname = 'singleton') IS NOT DISTINCT FROM 'true'
                 AND NOT EXISTS (SELECT 1 FROM expected WHERE NOT EXISTS (
                     SELECT 1 FROM pg_constraint c WHERE c.conrelid = 'codex_storage.codex_schema_meta'::regclass
                       AND c.conname = expected.name AND pg_get_constraintdef(c.oid) = expected.definition))",
