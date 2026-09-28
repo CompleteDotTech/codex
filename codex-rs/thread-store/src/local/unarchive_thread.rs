@@ -340,7 +340,7 @@ mod tests {
             .unarchive_thread(ArchiveThreadParams { thread_id })
             .await
             .expect_err("occupied destination must prevent unarchive");
-        assert!(matches!(error, ThreadStoreError::Internal { .. }));
+        assert!(matches!(error, ThreadStoreError::Conflict { .. }));
         assert_eq!(
             std::fs::read(source).expect("source retained"),
             source_bytes

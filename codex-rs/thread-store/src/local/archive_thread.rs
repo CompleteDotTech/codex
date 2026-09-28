@@ -47,8 +47,13 @@ pub(super) async fn archive_threads(
         &thread_ids,
     )
     .await
-    .map_err(|err| ThreadStoreError::Internal {
-        message: format!("failed to scan thread rollout files: {err}"),
+    .map_err(|err| match err.kind() {
+        std::io::ErrorKind::AlreadyExists => ThreadStoreError::Conflict {
+            message: err.to_string(),
+        },
+        _ => ThreadStoreError::Internal {
+            message: format!("failed to scan thread rollout files: {err}"),
+        },
     })?;
 
     let parent_thread_id = thread_ids[0];
