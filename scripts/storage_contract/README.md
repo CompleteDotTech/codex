@@ -90,6 +90,11 @@ and eight file classes to implementation issues and direct source anchors. Its
 migration decision. Producer/consumer closure and forward/reverse treatment are
 explicitly unresolved. The file-class list has no independent completeness
 check. A successful matrix audit never permits activation.
+For the project/thread primary-state family, the matrix also records selected
+direct read/write SQL clauses in `threads.rs` and `projects.rs`. The source test
+checks those exact clauses still exist in production modules; it does not parse
+SQL, enumerate every caller, or prove cross-host path handling. The transitive
+producer/consumer audit stays partial.
 `CANONICAL_HISTORY_SOURCES.md` separately pins a partial source-level map of
 rollout, fork, archive, compression, and attachment call sites. It does not
 qualify a coherent capture or second-host replay.

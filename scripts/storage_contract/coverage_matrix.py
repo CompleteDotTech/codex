@@ -98,6 +98,74 @@ FILES = {
     "memory_artifact": (6, "memories/write/src/storage.rs"),
 }
 
+# Observed production SQL clauses in one primary-state family. These are
+# examples of direct operations, not an exhaustive list of call sites.
+# In particular, a thread's project binding is written by projects.rs as well
+# as the thread implementation, so a table's owning module is insufficient.
+PRIMARY_PROJECT_EDGES = {
+    "threads": {
+        "state/src/runtime/threads.rs": {
+            "read": "FROM threads",
+            "write": "UPDATE threads",
+        },
+        "state/src/runtime/projects.rs": {
+            "read": "SELECT project_id FROM threads",
+            "write": "UPDATE threads SET project_id",
+        },
+    },
+    "projects": {
+        "state/src/runtime/projects.rs": {
+            "read": "FROM projects",
+            "write": "INSERT INTO projects",
+        },
+    },
+    "project_roots": {
+        "state/src/runtime/projects.rs": {
+            "read": "FROM project_roots",
+            "write": "INSERT INTO project_roots",
+        },
+    },
+    "project_idempotency_keys": {
+        "state/src/runtime/projects.rs": {
+            "read": "FROM project_idempotency_keys",
+            "write": "INSERT INTO project_idempotency_keys",
+        },
+    },
+    "thread_sections": {
+        "state/src/runtime/threads.rs": {
+            "read": "FROM thread_sections",
+            "write": "INSERT INTO thread_sections",
+        },
+        "state/src/runtime/thread_sections.rs": {
+            "write": "UPDATE thread_sections",
+        },
+        "state/src/runtime/thread_section_order.rs": {
+            "read": "FROM thread_sections",
+        },
+        "state/src/runtime/memories.rs": {
+            "read": "FROM thread_sections",
+        },
+    },
+    "thread_attachments": {
+        "state/src/runtime/thread_attachments.rs": {
+            "read": "FROM thread_attachments",
+            "write": "INSERT INTO thread_attachments",
+        },
+    },
+    "thread_dynamic_tools": {
+        "state/src/runtime/threads.rs": {
+            "read": "FROM thread_dynamic_tools",
+            "write": "INSERT INTO thread_dynamic_tools",
+        },
+    },
+    "thread_spawn_edges": {
+        "state/src/runtime/threads.rs": {
+            "read": "FROM thread_spawn_edges",
+            "write": "INSERT INTO thread_spawn_edges",
+        },
+    },
+}
+
 
 def audit_coverage() -> dict:
     """Match every pinned fixture table and expose unfinished decisions."""
@@ -117,6 +185,9 @@ def audit_coverage() -> dict:
                 "fixture_treatment": policy["tables"][table],
                 "producer_consumer_audit": "partial",
                 "forward_reverse_decision": "unresolved",
+                "observed_direct_sql": PRIMARY_PROJECT_EDGES.get(table, {})
+                if store == "state_5.sqlite"
+                else {},
             }
             for table, (issue, source) in entries.items()
         }
