@@ -37,7 +37,7 @@ use codex_protocol::protocol::ThreadSource;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
 use codex_rollout_trace::InferenceTraceContext;
-use codex_state::MemoryStore;
+use codex_state::RuntimeMemoryStore;
 use codex_terminal_detection::user_agent;
 use futures::StreamExt;
 use std::path::Path;
@@ -243,11 +243,11 @@ impl MemoryStartupContext {
         );
     }
 
-    pub(crate) async fn memory_store(&self) -> Option<MemoryStore> {
+    pub(crate) async fn memory_store(&self) -> Option<Arc<dyn RuntimeMemoryStore>> {
         match self
             .thread
             .state_db()?
-            .memories_for_version(self.version)
+            .memory_store_for_version(self.version)
             .await
         {
             Ok(store) => Some(store),

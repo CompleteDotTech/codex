@@ -88,6 +88,7 @@ pub use runtime::RuntimeMemoryStore;
 pub use runtime::SqliteIntegrityCheck;
 pub use runtime::SqliteQueueStore;
 pub use runtime::ThreadFilterOptions;
+pub use runtime::VersionedMemoryStores;
 pub use runtime::backup_runtime_db_for_fresh_start;
 pub use runtime::is_sqlite_corruption_error;
 pub use runtime::open_thread_history_db;
