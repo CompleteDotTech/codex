@@ -907,9 +907,7 @@ impl App {
                                     | ServerNotification::ThreadDeleted(_)))
                     })
                 {
-                    self.agents_overview
-                        .blank_sessions
-                        .insert(thread_id, started.clone());
+                    self.retain_blank_session(app_server, started.clone()).await;
                 }
                 // A full usage read can finish before thread/start. Apply its cached fallback
                 // after attachment but before the initial prompt or queued draft is submitted.
@@ -1030,9 +1028,7 @@ impl App {
                 if !self.config.ephemeral
                     && !matches!(self.app_server_target, AppServerTarget::Embedded)
                 {
-                    self.agents_overview
-                        .blank_sessions
-                        .insert(thread_id, started.clone());
+                    self.retain_blank_session(app_server, started.clone()).await;
                 }
                 if let Err(err) = self
                     .replace_chat_widget_with_app_server_thread(

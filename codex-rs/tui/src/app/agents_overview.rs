@@ -27,8 +27,10 @@ use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_protocol::protocol::SubAgentSource;
+use std::collections::VecDeque;
 
 pub(crate) const AGENTS_OVERVIEW_VIEW_ID: &str = "agents-overview";
+const MAX_RETAINED_BLANK_SESSIONS: usize = 8;
 
 #[derive(Default)]
 pub(super) struct AgentsOverviewState {
@@ -57,6 +59,7 @@ pub(super) struct AgentsOverviewState {
     pub(super) selected_permission_profiles: HashMap<ThreadId, String>,
     /// Keep new tasks subscribed and reusable until a first turn makes them resumable.
     pub(super) blank_sessions: HashMap<ThreadId, crate::app_server_session::AppServerStartedThread>,
+    pub(super) blank_session_order: VecDeque<ThreadId>,
     pub(super) input_states: HashMap<ThreadId, ThreadInputState>,
     pub(super) new_session_draft: Option<Box<StartupDraftPump>>,
     pub(super) dispatched_requests: HashMap<ThreadId, Vec<ServerRequest>>,
@@ -71,6 +74,56 @@ impl Drop for AgentsOverviewState {
 }
 
 impl App {
+    pub(super) async fn retain_blank_session(
+        &mut self,
+        app_server: &mut AppServerSession,
+        started: crate::app_server_session::AppServerStartedThread,
+    ) {
+        let thread_id = started.session.thread_id;
+        self.agents_overview
+            .blank_session_order
+            .retain(|id| self.agents_overview.blank_sessions.contains_key(id));
+        if self
+            .agents_overview
+            .blank_sessions
+            .insert(thread_id, started)
+            .is_none()
+        {
+            self.agents_overview
+                .blank_session_order
+                .push_back(thread_id);
+        }
+        let current = self.current_displayed_thread_id();
+        while self.agents_overview.blank_sessions.len() > MAX_RETAINED_BLANK_SESSIONS {
+            let Some(index) = self
+                .agents_overview
+                .blank_session_order
+                .iter()
+                .position(|id| {
+                    *id != thread_id
+                        && Some(*id) != current
+                        && self
+                            .agents_overview
+                            .blank_sessions
+                            .get(id)
+                            .is_some_and(|blank| blank.persisted_on_start)
+                })
+            else {
+                break;
+            };
+            let Some(evicted) = self.agents_overview.blank_session_order.remove(index) else {
+                break;
+            };
+            self.agents_overview.blank_sessions.remove(&evicted);
+            if let Err(error) = app_server.thread_unsubscribe(evicted).await {
+                tracing::warn!(%evicted, %error, "failed to unsubscribe superseded blank session");
+            }
+            self.abort_thread_event_listener(evicted);
+            self.thread_event_channels.remove(&evicted);
+            self.pending_server_profiles.remove(&evicted);
+        }
+    }
+
     pub(super) fn open_agents_overview(&mut self, app_server: &AppServerSession) {
         if matches!(self.app_server_target, AppServerTarget::Embedded) {
             let workload_identity_selected = codex_login::is_workload_identity_selected();

@@ -256,6 +256,24 @@ pub(crate) async fn request_thread_start_with_history_fallback(
                 request_id = RequestId::String(format!("legacy-thread-start-{}", Uuid::new_v4()));
             }
             Err(TypedRequestError::Server { source, .. })
+                if params.persist_on_start
+                    && matches!(
+                        source.code,
+                        JSONRPC_INVALID_REQUEST | JSONRPC_INVALID_PARAMS
+                    )
+                    && source
+                        .message
+                        .to_ascii_lowercase()
+                        .contains("persistonstart") =>
+            {
+                tracing::warn!(
+                    error = %source.message,
+                    "app server does not support persisting empty threads on start"
+                );
+                params.persist_on_start = false;
+                request_id = RequestId::String(format!("legacy-thread-start-{}", Uuid::new_v4()));
+            }
+            Err(TypedRequestError::Server { source, .. })
                 if params.dynamic_tools.is_some()
                     && matches!(
                         source.code,
@@ -368,6 +386,7 @@ pub(crate) struct AppServerStartedThread {
     pub(crate) turns: Vec<Turn>,
     pub(crate) blocks_direct_input: bool,
     pub(crate) task_tools_available: bool,
+    pub(crate) persisted_on_start: bool,
 }
 
 pub(crate) fn is_active_writer_error(err: &color_eyre::eyre::Report) -> bool {
@@ -767,6 +786,7 @@ impl AppServerSession {
             remote_cwd_override.or(self.remote_cwd_override.as_deref()),
             session_start_source,
         );
+        params.persist_on_start = !config.ephemeral;
         if let Some(selected_profile) = selected_profile {
             params.runtime_workspace_roots = None;
             params.permissions = Some(selected_profile.profile_id.clone());
@@ -1683,6 +1703,7 @@ pub(crate) async fn start_thread_with_request_handle(
         remote_cwd_override.as_deref(),
         /*session_start_source*/ None,
     );
+    params.persist_on_start = !config.ephemeral;
     thread_tool_transport.configure(&mut params);
     let (response, _history_support, task_tools_available) =
         request_thread_start_with_history_fallback(&request_handle, request_id, params)
@@ -2201,6 +2222,7 @@ async fn started_thread_from_start_response(
         turns: response.thread.turns,
         blocks_direct_input,
         task_tools_available: false,
+        persisted_on_start: response.persisted_on_start,
     })
 }
 
@@ -2224,6 +2246,7 @@ async fn started_thread_from_resume_response(
         turns: response.thread.turns,
         blocks_direct_input,
         task_tools_available: false,
+        persisted_on_start: false,
     })
 }
 
@@ -2247,6 +2270,7 @@ async fn started_thread_from_fork_response(
         turns: response.thread.turns,
         blocks_direct_input,
         task_tools_available: false,
+        persisted_on_start: false,
     })
 }
 
