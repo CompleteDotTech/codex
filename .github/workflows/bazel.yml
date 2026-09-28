@@ -569,6 +569,9 @@ jobs:
         run: |
           bazel_clippy_args=(
             --config=clippy
+            # Run the Clippy aspect without also linking every test binary.
+            # The default output group exhausted the Linux runner's disk.
+            --output_groups=clippy_checks
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
             --build_metadata=TAG_job=clippy
           )
