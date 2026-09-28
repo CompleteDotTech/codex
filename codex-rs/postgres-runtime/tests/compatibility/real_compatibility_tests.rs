@@ -49,6 +49,24 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
         .await,
         Err(CompatibilityError::UnsupportedSchema),
     );
+    owner_query(
+        migrator,
+        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 2",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(migrator, capabilities, RequiredAccess::ReadOnly).await,
+        compatible,
+    );
+    assert_eq!(
+        check_codex_storage_compatibility(migrator, capabilities, RequiredAccess::ReadWrite).await,
+        Err(CompatibilityError::WriterTooOld),
+    );
+    owner_query(
+        migrator,
+        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 1",
+    )
+    .await;
     for (damage, repair, error) in [
         (
             "ALTER TABLE codex_storage.codex_schema_meta ALTER COLUMN format_version TYPE BIGINT",
@@ -215,6 +233,36 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
             compatible
         );
     }
+    let mut timeout_connection = query_pool
+        .acquire()
+        .await
+        .expect("timeout query connection");
+    sqlx::raw_sql("SET lock_timeout = 0; SET statement_timeout = 0")
+        .execute(&mut *timeout_connection)
+        .await
+        .expect("disable shorter fixture timeouts");
+    drop(timeout_connection);
+    let mut blocker = migrator.acquire().await.expect("timeout lock connection");
+    let mut transaction = blocker.begin().await.expect("begin timeout lock");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for timeout lock");
+    sqlx::query("LOCK TABLE codex_storage.codex_schema_meta IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut *transaction)
+        .await
+        .expect("hold timeout lock");
+    assert_eq!(
+        check_codex_storage_compatibility(&query_pool, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::Timeout),
+    );
+    transaction.rollback().await.expect("release timeout lock");
+    assert_eq!(
+        check_codex_storage_compatibility(&query_pool, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        compatible,
+    );
     query_pool
         .close()
         .await
