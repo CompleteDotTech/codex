@@ -15,15 +15,29 @@ fn prepare_move_intent(source: &Path, destination: &Path) -> io::Result<RolloutM
     let stage_digest = rollout_file_digest(stage.path())?;
     let (_file, stage_path) = stage.keep().map_err(|err| err.error)?;
     let source_metadata = std::fs::metadata(source)?;
+    let quarantine_dir = tempfile::Builder::new()
+        .prefix(".codex-rollout-quarantine-")
+        .tempdir_in(
+            source
+                .parent()
+                .ok_or_else(|| io::Error::other("no source parent"))?,
+        )?
+        .keep();
     let intent = RolloutMoveIntent {
         source: std::fs::canonicalize(source)?,
         destination: destination.to_path_buf(),
         source_len: source_metadata.len(),
         source_modified: source_metadata.modified()?,
         source_id: rollout_file_identity(source)?,
+        source_digest: rollout_file_digest(source)?,
         stage_path,
         stage_id,
         stage_digest,
+        quarantine_path: quarantine_dir.join(
+            source
+                .file_name()
+                .ok_or_else(|| io::Error::other("no source filename"))?,
+        ),
     };
     write_rollout_move_intent(&rollout_move_intent_path(destination), &intent)?;
     Ok(intent)
@@ -181,6 +195,93 @@ fn published_receipt_verifies_destination_after_source_unlink() -> std::io::Resu
 
     std::fs::rename(&destination, archived.join("original.jsonl"))?;
     std::fs::write(&destination, b"replacement")?;
+    assert!(verify_published_rollout_move(&source, &destination, home.path()).is_err());
+    Ok(())
+}
+
+#[test]
+fn retry_finishes_source_quarantined_before_process_exit() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout contents")?;
+    let intent = prepare_move_intent(&source, &destination)?;
+    tempfile::TempPath::try_from_path(&intent.stage_path)?.persist_noclobber(&destination)?;
+    std::fs::rename(&source, &intent.quarantine_path)?;
+
+    verify_published_rollout_move(&source, &destination, home.path())?;
+
+    assert!(!source.exists());
+    assert!(!intent.quarantine_path.exists());
+    assert!(!quarantine_directory(&intent)?.exists());
+    assert_eq!(std::fs::read(destination)?, b"rollout contents");
+    Ok(())
+}
+
+#[test]
+fn same_length_same_mtime_rewrite_before_quarantine_is_preserved() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"original contents")?;
+    let modified = std::fs::metadata(&source)?.modified()?;
+
+    let error = move_rollout_with_before_quarantine(&source, &destination, home.path(), || {
+        std::fs::write(&source, b"modified contents")?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&source)?
+            .set_times(FileTimes::new().set_modified(modified))
+    })
+    .expect_err("source rewrite must fail after publication");
+
+    let intent = read_rollout_move_intent(&rollout_move_intent_path(&destination))?;
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(std::fs::read(&destination)?, b"original contents");
+    assert_eq!(
+        std::fs::read(&intent.quarantine_path)?,
+        b"modified contents"
+    );
+    assert!(!source.exists());
+    assert!(verify_published_rollout_move(&source, &destination, home.path()).is_err());
+    Ok(())
+}
+
+#[test]
+fn pathname_replacement_before_quarantine_is_preserved() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let original = sessions.join("preserved-original.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"original contents")?;
+
+    let error = move_rollout_with_before_quarantine(&source, &destination, home.path(), || {
+        std::fs::rename(&source, &original)?;
+        std::fs::write(&source, b"replacement contents")
+    })
+    .expect_err("replacement pathname must fail after publication");
+
+    let intent = read_rollout_move_intent(&rollout_move_intent_path(&destination))?;
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(std::fs::read(&original)?, b"original contents");
+    assert_eq!(std::fs::read(&destination)?, b"original contents");
+    assert_eq!(
+        std::fs::read(&intent.quarantine_path)?,
+        b"replacement contents"
+    );
+    assert!(!source.exists());
     assert!(verify_published_rollout_move(&source, &destination, home.path()).is_err());
     Ok(())
 }

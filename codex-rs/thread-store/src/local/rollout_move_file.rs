@@ -35,6 +35,15 @@ pub(super) fn move_rollout_noclobber_retained(
     destination: &Path,
     codex_home: &Path,
 ) -> std::io::Result<()> {
+    move_rollout_with_before_quarantine(source, destination, codex_home, || Ok(()))
+}
+
+fn move_rollout_with_before_quarantine(
+    source: &Path,
+    destination: &Path,
+    codex_home: &Path,
+    before_quarantine: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
     let canonical_sessions =
         std::fs::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
     let canonical_archived =
@@ -62,6 +71,7 @@ pub(super) fn move_rollout_noclobber_retained(
     let intent_path = rollout_move_intent_path(&canonical_destination);
     let source_metadata = std::fs::metadata(source)?;
     let source_id = rollout_file_identity(source)?;
+    let source_digest = rollout_file_digest(source)?;
     let intent = match std::fs::symlink_metadata(&intent_path) {
         Ok(metadata) => {
             if !metadata.file_type().is_file() {
@@ -73,6 +83,7 @@ pub(super) fn move_rollout_noclobber_retained(
                 || intent.source_len != source_metadata.len()
                 || intent.source_modified != source_metadata.modified()?
                 || intent.source_id != source_id
+                || intent.source_digest != source_digest
             {
                 return Err(io::Error::other("rollout move has a conflicting intent"));
             }
@@ -108,21 +119,43 @@ pub(super) fn move_rollout_noclobber_retained(
             let stage_path = stage.path().to_path_buf();
             let stage_id = rollout_file_identity(&stage_path)?;
             let stage_digest = rollout_file_digest(&stage_path)?;
+            if stage_digest != source_digest {
+                return Err(io::Error::other(
+                    "rollout source changed while preparing move",
+                ));
+            }
             let (stage_file, stage_path) = stage.keep().map_err(|err| err.error)?;
             drop(stage_file);
             sync_parent_directory(&stage_path)?;
+            let quarantine_dir = tempfile::Builder::new()
+                .prefix(".codex-rollout-quarantine-")
+                .tempdir_in(
+                    canonical_source
+                        .parent()
+                        .ok_or_else(|| io::Error::other("rollout source has no parent"))?,
+                )?
+                .keep();
+            sync_parent_directory(&quarantine_dir)?;
+            let quarantine_path = quarantine_dir.join(
+                canonical_source
+                    .file_name()
+                    .ok_or_else(|| io::Error::other("rollout source has no filename"))?,
+            );
             let intent = RolloutMoveIntent {
                 source: canonical_source,
                 destination: canonical_destination.clone(),
                 source_len: source_metadata.len(),
                 source_modified: source_metadata.modified()?,
                 source_id,
+                source_digest,
                 stage_path,
                 stage_id,
                 stage_digest,
+                quarantine_path,
             };
             if let Err(err) = write_rollout_move_intent(&intent_path, &intent) {
                 let _ = std::fs::remove_file(&intent.stage_path);
+                let _ = std::fs::remove_dir(quarantine_dir);
                 return Err(err);
             }
             intent
@@ -137,6 +170,7 @@ pub(super) fn move_rollout_noclobber_retained(
     {
         return Err(io::Error::other("rollout move has an invalid stage path"));
     }
+    quarantine_directory(&intent)?;
     match std::fs::symlink_metadata(&canonical_destination) {
         Ok(_) => {
             if rollout_file_identity(&canonical_destination)? != intent.stage_id
@@ -168,8 +202,18 @@ pub(super) fn move_rollout_noclobber_retained(
         Err(err) => return Err(err),
     }
     sync_parent_directory(&canonical_destination)?;
-    std::fs::remove_file(source)?;
+    if rollout_file_identity(source)? != intent.source_id
+        || rollout_file_digest(source)? != intent.source_digest
+    {
+        return Err(io::Error::other("rollout source changed before quarantine"));
+    }
+    before_quarantine()?;
+    // Rename into our own same-directory quarantine before deciding what to delete. A
+    // replacement at the source pathname can then be detected without deleting it.
+    std::fs::rename(source, &intent.quarantine_path)?;
     sync_parent_directory(source)?;
+    sync_parent_directory(&intent.quarantine_path)?;
+    finish_quarantined_source(&intent)?;
     Ok(())
 }
 
@@ -192,9 +236,60 @@ struct RolloutMoveIntent {
     source_len: u64,
     source_modified: SystemTime,
     source_id: RolloutFileIdentity,
+    source_digest: [u8; 32],
     stage_path: PathBuf,
     stage_id: RolloutFileIdentity,
     stage_digest: [u8; 32],
+    quarantine_path: PathBuf,
+}
+
+fn quarantine_directory(intent: &RolloutMoveIntent) -> io::Result<&Path> {
+    let directory = intent
+        .quarantine_path
+        .parent()
+        .ok_or_else(|| io::Error::other("rollout quarantine has no parent"))?;
+    if directory.parent() != intent.source.parent()
+        || intent.quarantine_path.file_name() != intent.source.file_name()
+        || !directory.file_name().is_some_and(|name| {
+            name.to_string_lossy()
+                .starts_with(".codex-rollout-quarantine-")
+        })
+    {
+        return Err(io::Error::other(
+            "rollout move has an invalid quarantine path",
+        ));
+    }
+    Ok(directory)
+}
+
+fn finish_quarantined_source(intent: &RolloutMoveIntent) -> io::Result<()> {
+    let directory = quarantine_directory(intent)?;
+    match std::fs::symlink_metadata(&intent.quarantine_path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file()
+                || rollout_file_identity(&intent.quarantine_path)? != intent.source_id
+                || rollout_file_digest(&intent.quarantine_path)? != intent.source_digest
+            {
+                return Err(io::Error::other(
+                    "quarantined rollout source identity or contents changed",
+                ));
+            }
+            if std::fs::symlink_metadata(&intent.source).is_ok() {
+                return Err(io::Error::other(
+                    "rollout source pathname was replaced during move",
+                ));
+            }
+            std::fs::remove_file(&intent.quarantine_path)?;
+            sync_parent_directory(&intent.quarantine_path)?;
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    match std::fs::remove_dir(directory) {
+        Ok(()) => sync_parent_directory(directory),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err),
+    }
 }
 
 fn rollout_move_intent_path(destination: &Path) -> PathBuf {
@@ -251,6 +346,7 @@ pub(super) fn clear_rollout_move_intent(destination: &Path) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("rollout destination has no filename"))?;
     let intent_path = rollout_move_intent_path(&parent.join(name));
     let intent = read_rollout_move_intent(&intent_path)?;
+    quarantine_directory(&intent)?;
     if intent.stage_path.parent() != Some(parent.as_path())
         || !intent
             .stage_path
@@ -259,6 +355,7 @@ pub(super) fn clear_rollout_move_intent(destination: &Path) -> io::Result<()> {
     {
         return Err(io::Error::other("rollout move has an invalid stage path"));
     }
+    finish_quarantined_source(&intent)?;
     match std::fs::symlink_metadata(&intent.stage_path) {
         Ok(_) => {
             if rollout_file_identity(&intent.stage_path)? != intent.stage_id
@@ -325,7 +422,7 @@ pub(super) fn verify_published_rollout_move(
             "rollout move published identity does not match",
         ));
     }
-    Ok(())
+    finish_quarantined_source(&intent)
 }
 
 #[cfg(test)]
