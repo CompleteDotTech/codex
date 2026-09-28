@@ -183,6 +183,9 @@ impl App {
                 };
             if let Err(error) = result {
                 let _ = app_server.thread_unsubscribe(thread_id).await;
+                if started.persisted_on_start {
+                    let _ = app_server.thread_archive(thread_id).await;
+                }
                 self.agents_overview_retained_worktree_error(checkout, error);
                 return Ok(AppRunControl::Continue);
             }
@@ -194,13 +197,16 @@ impl App {
             tui,
             app_server,
             thread_id,
-            Some((config, started)),
+            Some((config, started.clone())),
             startup_draft,
         ))
         .await?;
         if self.current_displayed_thread_id() != Some(thread_id) {
             self.agents_overview.blank_sessions.remove(&thread_id);
             let _ = app_server.thread_unsubscribe(thread_id).await;
+            if started.persisted_on_start {
+                let _ = app_server.thread_archive(thread_id).await;
+            }
             if let Some((_, checkout)) = &managed_worktree {
                 self.agents_overview_retained_worktree_error(
                     checkout,

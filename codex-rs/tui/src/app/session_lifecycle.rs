@@ -837,6 +837,9 @@ impl App {
                         "failed to unsubscribe stale startup thread: {err}"
                     );
                 }
+                if started.persisted_on_start {
+                    let _ = app_server.thread_archive(thread_id).await;
+                }
                 self.discard_thread_local_state(thread_id).await;
             }
             return Ok(());
