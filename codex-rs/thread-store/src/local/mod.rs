@@ -309,6 +309,12 @@ impl LocalThreadStore {
         include_archived: bool,
         include_history: bool,
     ) -> ThreadStoreResult<StoredThread> {
+        let _read_guard =
+            if let Some(thread_id) = helpers::thread_id_from_rollout_path(&rollout_path) {
+                Some(self.prepare_thread_read(thread_id).await?)
+            } else {
+                None
+            };
         read_thread::read_thread_by_rollout_path(
             self,
             rollout_path,
@@ -463,8 +469,7 @@ impl LocalThreadStore {
         &self,
         params: ReadThreadByRolloutPathParams,
     ) -> ThreadStoreResult<StoredThread> {
-        read_thread::read_thread_by_rollout_path(
-            self,
+        self.read_thread_by_rollout_path(
             params.rollout_path,
             params.include_archived,
             params.include_history,

@@ -317,18 +317,16 @@ pub(super) fn git_info_from_parts(
     })
 }
 
-fn thread_id_from_rollout_path(path: &Path) -> Option<ThreadId> {
+pub(super) fn thread_id_from_rollout_path(path: &Path) -> Option<ThreadId> {
+    codex_rollout::rollout_id_from_path(path)?;
     let file_name = path.file_name()?.to_str()?;
     let file_name = file_name.strip_suffix(".zst").unwrap_or(file_name);
-    let stem = file_name.strip_suffix(".jsonl")?;
-    if stem.len() < 37 {
-        return None;
-    }
-    let uuid_start = stem.len().saturating_sub(36);
-    if !stem[..uuid_start].ends_with('-') {
-        return None;
-    }
-    ThreadId::from_string(&stem[uuid_start..]).ok()
+    let ids = file_name
+        .strip_suffix(".jsonl")?
+        .strip_prefix("rollout-")?
+        .get(20..)?;
+    let thread_id = ids.split_once('_').map_or(ids, |(thread_id, _)| thread_id);
+    ThreadId::from_string(thread_id).ok()
 }
 
 #[cfg(test)]

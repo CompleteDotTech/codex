@@ -20,7 +20,7 @@ pub(super) async fn prepare(
         thread_id,
         boundary,
     } = params;
-    let source_reservation = store.live_writer_locks.reserve_lifecycle(thread_id).await;
+    let source_reservation = store.prepare_thread_read(thread_id).await?;
     // Keep the source reserved until persistence and lineage materialization finish, even if the
     // caller cancels fork preparation.
     let lineage_store = store.clone();
