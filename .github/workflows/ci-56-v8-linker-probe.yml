@@ -1,0 +1,44 @@
+name: CI 56 V8 linker probe
+
+on:
+  push:
+    branches:
+      - ci/56-v8-linker-probe
+
+permissions:
+  contents: read
+
+jobs:
+  windows-v8-linker:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Prepare Bazel CI
+        uses: ./.github/actions/prepare-bazel-ci
+        with:
+          target: x86_64-pc-windows-gnullvm
+          cache-scope: ci-56-v8-linker-probe
+
+      - uses: ./.github/actions/prepare-voice-windows-bazel
+
+      - name: Test V8 consumer with MSVC C++ linker preference
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./.github/scripts/run-bazel-ci.sh \
+            --print-failed-action-summary \
+            --print-failed-test-logs \
+            --windows-cross-compile \
+            -- \
+            test \
+            --repo_env=BAZEL_MSVC_RUNTIME_VISUAL_STUDIO_EULA=1 \
+            --@rules_rust//rust/settings:toolchain_linker_preference=cc \
+            --subcommands=pretty_print \
+            --test_output=errors \
+            --build_metadata=TAG_ci56_linker_probe=cc \
+            -- \
+            //codex-rs/code-mode-runtime:code-mode-runtime-array_sort-test
