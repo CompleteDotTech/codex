@@ -4,8 +4,11 @@ use crate::PoolError;
 use crate::PostgresPool;
 use crate::bootstrap::BASE_MIGRATOR;
 use crate::bootstrap::BOOTSTRAP_TIMEOUT;
+use crate::bootstrap::BootstrapError;
 use crate::bootstrap::LOCK_CLASS;
 use crate::bootstrap::LOCK_RESOURCE;
+use crate::bootstrap::namespace_has_unexpected_objects;
+use crate::bootstrap::require_safe_protected_privileges;
 use sqlx::Acquire;
 use sqlx::Postgres;
 use sqlx::Row;
@@ -84,6 +87,16 @@ fn classify_schema(error: &sqlx::Error, incompatible: CompatibilityError) -> Com
     }
 }
 
+fn classify_bootstrap(error: BootstrapError) -> CompatibilityError {
+    match error {
+        BootstrapError::Privilege => CompatibilityError::Privilege,
+        BootstrapError::IncompatibleNamespace => CompatibilityError::IncompatibleNamespace,
+        BootstrapError::Timeout => CompatibilityError::Timeout,
+        BootstrapError::Connection(error) => CompatibilityError::Connection(error),
+        BootstrapError::Migration => CompatibilityError::Unavailable,
+    }
+}
+
 async fn validate_relation(
     transaction: &mut Transaction<'_, Postgres>,
     relation: &str,
@@ -94,7 +107,8 @@ async fn validate_relation(
     let types: Vec<_> = columns.iter().map(|(_, kind)| *kind).collect();
     let valid: Option<bool> = sqlx::query_scalar(
         "SELECT c.relkind = 'r' AND c.relpersistence = 'p' AND NOT c.relrowsecurity
-           AND NOT c.relispartition AND NOT EXISTS (
+           AND NOT c.relispartition AND NOT c.relhassubclass
+           AND c.relowner = 'codex_owner'::regrole AND NOT EXISTS (
              SELECT 1 FROM (
                SELECT * FROM pg_attribute WHERE attrelid = c.oid AND attnum > 0 AND NOT attisdropped
              ) a FULL JOIN unnest($2::text[], $3::text[]) expected(name, type_name)
@@ -147,6 +161,14 @@ pub async fn check_codex_storage_compatibility(
             .execute(&mut *transaction)
             .await
             .map_err(|error| classify(&error))?;
+        sqlx::query("SET LOCAL statement_timeout = '29s'")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify(&error))?;
+        sqlx::query("SET LOCAL lock_timeout = '29s'")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify(&error))?;
         sqlx::query("SET LOCAL ROLE codex_owner")
             .execute(&mut *transaction)
             .await
@@ -168,12 +190,10 @@ pub async fn check_codex_storage_compatibility(
             return Err(CompatibilityError::IncompatibleNamespace);
         }
 
-        let unexpected_objects: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'codex_storage'::regnamespace AND typtype <> 'b' AND typrelid = 0)",
-        )
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|error| classify(&error))?;
+        let unexpected_objects = namespace_has_unexpected_objects(
+            &mut transaction,
+            &["_codex_pg_migrations", "_codex_pg_migrations_pkey", "codex_schema_meta", "codex_schema_meta_pkey"],
+        ).await.map_err(classify_bootstrap)?;
         if unexpected_objects {
             return Err(CompatibilityError::IncompatibleNamespace);
         }
@@ -186,9 +206,12 @@ pub async fn check_codex_storage_compatibility(
             ("version", "int8"), ("description", "text"), ("installed_on", "timestamptz"),
             ("success", "bool"), ("checksum", "bytea"), ("execution_time", "int8"),
         ], CompatibilityError::IncompatibleHistory).await?;
+        require_safe_protected_privileges(&mut transaction)
+            .await
+            .map_err(classify_bootstrap)?;
 
         let metadata = sqlx::query(
-            "SELECT singleton, format_version, min_reader_version, min_writer_version FROM codex_storage.codex_schema_meta LIMIT 2",
+            "SELECT singleton, format_version, min_reader_version, min_writer_version FROM ONLY codex_storage.codex_schema_meta LIMIT 2",
         )
         .fetch_all(&mut *transaction)
         .await
@@ -202,6 +225,9 @@ pub async fn check_codex_storage_compatibility(
         let schema_format: i32 = metadata.try_get("format_version").map_err(|_| CompatibilityError::MissingMetadata)?;
         let min_reader: i32 = metadata.try_get("min_reader_version").map_err(|_| CompatibilityError::MissingMetadata)?;
         let min_writer: i32 = metadata.try_get("min_writer_version").map_err(|_| CompatibilityError::MissingMetadata)?;
+        if min_reader <= 0 || min_writer <= 0 {
+            return Err(CompatibilityError::MissingMetadata);
+        }
 
         let versions: Vec<_> = BASE_MIGRATOR.migrations.iter().map(|migration| migration.version).collect();
         let checksums: Vec<_> = BASE_MIGRATOR.migrations.iter().map(|migration| migration.checksum.as_ref()).collect();
@@ -209,7 +235,7 @@ pub async fn check_codex_storage_compatibility(
         // a client allocation. One extra row is sufficient to reject extra history.
         let history = sqlx::query(
             "SELECT history.version, history.success, COALESCE(history.checksum = expected.checksum, FALSE) AS checksum_matches
-             FROM codex_storage._codex_pg_migrations history
+             FROM ONLY codex_storage._codex_pg_migrations history
              LEFT JOIN unnest($1::bigint[], $2::bytea[]) expected(version, checksum) ON history.version = expected.version
              ORDER BY history.version LIMIT $3",
         )

@@ -44,7 +44,7 @@ fn classify_sqlx(error: &sqlx::Error) -> BootstrapError {
     }
 }
 
-async fn namespace_has_unexpected_objects(
+pub(crate) async fn namespace_has_unexpected_objects(
     connection: &mut PgConnection,
     permitted_relations: &[&str],
 ) -> Result<bool, BootstrapError> {
@@ -79,7 +79,7 @@ async fn namespace_has_unexpected_objects(
     .map_err(|error| classify_sqlx(&error))
 }
 
-async fn require_safe_protected_privileges(
+pub(crate) async fn require_safe_protected_privileges(
     connection: &mut PgConnection,
 ) -> Result<(), BootstrapError> {
     // Check effective access, including column ACLs, PUBLIC, inherited roles,

@@ -51,6 +51,21 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
             CompatibilityError::MissingMetadata,
         ),
         (
+            "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_min_reader_version_check; UPDATE codex_storage.codex_schema_meta SET min_reader_version = 0",
+            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 1; ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0)",
+            CompatibilityError::MissingMetadata,
+        ),
+        (
+            "GRANT UPDATE ON codex_storage.codex_schema_meta TO codex_runtime",
+            "REVOKE UPDATE ON codex_storage.codex_schema_meta FROM codex_runtime",
+            CompatibilityError::Privilege,
+        ),
+        (
+            "CREATE COLLATION codex_storage.unexpected_collation (provider = libc, locale = 'C')",
+            "DROP COLLATION codex_storage.unexpected_collation",
+            CompatibilityError::IncompatibleNamespace,
+        ),
+        (
             "DROP TABLE codex_storage.codex_schema_meta; CREATE VIEW codex_storage.codex_schema_meta AS SELECT TRUE AS singleton, 1 AS format_version, 1 AS min_reader_version, 1 AS min_writer_version",
             concat!(
                 "DROP VIEW codex_storage.codex_schema_meta;",
