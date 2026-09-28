@@ -8,9 +8,11 @@ use codex_postgres_runtime::ConnectionSettings;
 use codex_postgres_runtime::PoolLimits;
 use codex_postgres_runtime::PostgresPool;
 use codex_postgres_runtime::bootstrap_codex_storage;
+use pretty_assertions::assert_eq;
 use serde_json::Value;
 use sqlx::Acquire;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
@@ -53,6 +55,31 @@ async fn owner_query(pool: &PostgresPool, sql: &'static str) {
         .expect("commit owner fixture SQL");
 }
 
+async fn reject_namespace_objects(pool: &PostgresPool) {
+    for (create, drop) in [
+        (
+            "CREATE COLLATION codex_storage.occupied_collation FROM pg_catalog.\"C\"",
+            "DROP COLLATION IF EXISTS codex_storage.occupied_collation",
+        ),
+        (
+            "CREATE OPERATOR codex_storage.=== (FUNCTION = pg_catalog.int4eq, LEFTARG = integer, RIGHTARG = integer)",
+            "DROP OPERATOR IF EXISTS codex_storage.=== (integer, integer)",
+        ),
+        (
+            "CREATE TEXT SEARCH CONFIGURATION codex_storage.occupied_search (COPY = pg_catalog.simple)",
+            "DROP TEXT SEARCH CONFIGURATION IF EXISTS codex_storage.occupied_search",
+        ),
+    ] {
+        owner_query(pool, drop).await;
+        owner_query(pool, create).await;
+        assert_eq!(
+            bootstrap_codex_storage(pool).await,
+            Err(BootstrapError::IncompatibleNamespace)
+        );
+        owner_query(pool, drop).await;
+    }
+}
+
 #[tokio::test]
 async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_STATE") else {
@@ -62,9 +89,11 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     let migrator_a = PostgresPool::connect(settings(state, "migrator"))
         .await
         .expect("first migrator pool");
-    let migrator_b = PostgresPool::connect(settings(state, "migrator"))
-        .await
-        .expect("second migrator pool");
+    let migrator_b = Arc::new(
+        PostgresPool::connect(settings(state, "migrator"))
+            .await
+            .expect("second migrator pool"),
+    );
     let runtime = PostgresPool::connect(settings(state, "runtime"))
         .await
         .expect("runtime pool");
@@ -79,6 +108,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
         "DROP TYPE IF EXISTS codex_storage.occupied_type",
     )
     .await;
+    reject_namespace_objects(&migrator_a).await;
     owner_query(
         &migrator_a,
         "CREATE TABLE codex_storage.occupied_probe(id BIGINT)",
@@ -114,6 +144,75 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     assert_eq!(first, Ok(()));
     assert_eq!(second, Ok(()));
     assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    reject_namespace_objects(&migrator_a).await;
+
+    // Match the actual restore transaction's lock, not the implementation's
+    // constant, and observe bootstrap waiting before allowing it to continue.
+    let mut restore_connection = migrator_a.acquire().await.expect("restore connection");
+    let mut restore = restore_connection
+        .begin()
+        .await
+        .expect("restore transaction");
+    sqlx::query("SELECT pg_advisory_xact_lock(1414676819, 1)")
+        .execute(&mut *restore)
+        .await
+        .expect("hold restore schema lock");
+    let bootstrap = tokio::spawn({
+        let pool = Arc::clone(&migrator_b);
+        async move { bootstrap_codex_storage(&pool).await }
+    });
+    let mut observer = migrator_a.acquire().await.expect("lock observer");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let waiting: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = 1414676819 AND objid = 1 AND objsubid = 2 AND NOT granted)")
+                .fetch_one(&mut *observer).await.expect("observe bootstrap lock wait");
+            if waiting { break; }
+            assert!(!bootstrap.is_finished(), "bootstrap bypassed restore lock");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.expect("bootstrap waits for restore");
+    restore.rollback().await.expect("release restore lock");
+    assert_eq!(bootstrap.await.expect("bootstrap task"), Ok(()));
+    drop(observer);
+    drop(restore_connection);
+
+    for (grant, revoke, privilege_query) in [
+        (
+            "GRANT UPDATE (format_version) ON codex_storage.codex_schema_meta TO codex_runtime",
+            "REVOKE UPDATE (format_version) ON codex_storage.codex_schema_meta FROM codex_runtime",
+            "SELECT has_column_privilege('codex_runtime', 'codex_storage.codex_schema_meta', 'format_version', 'UPDATE')",
+        ),
+        (
+            "GRANT UPDATE ON codex_storage.codex_schema_meta TO PUBLIC",
+            "REVOKE UPDATE ON codex_storage.codex_schema_meta FROM PUBLIC",
+            "SELECT has_table_privilege('codex_runtime', 'codex_storage.codex_schema_meta', 'UPDATE')",
+        ),
+        (
+            "GRANT SELECT (version) ON codex_storage._codex_pg_migrations TO codex_runtime",
+            "REVOKE SELECT (version) ON codex_storage._codex_pg_migrations FROM codex_runtime",
+            "SELECT has_column_privilege('codex_runtime', 'codex_storage._codex_pg_migrations', 'version', 'SELECT')",
+        ),
+        (
+            "GRANT SELECT ON codex_storage._codex_pg_migrations TO PUBLIC",
+            "REVOKE SELECT ON codex_storage._codex_pg_migrations FROM PUBLIC",
+            "SELECT has_table_privilege('codex_runtime', 'codex_storage._codex_pg_migrations', 'SELECT')",
+        ),
+    ] {
+        owner_query(&migrator_a, grant).await;
+        assert_eq!(
+            bootstrap_codex_storage(&migrator_a).await,
+            Err(BootstrapError::Privilege)
+        );
+        let mut connection = runtime.acquire().await.expect("privilege observer");
+        let preserved: bool = sqlx::query_scalar(privilege_query)
+            .fetch_one(&mut *connection)
+            .await
+            .expect("refusal retains original grants");
+        assert!(preserved);
+        drop(connection);
+        owner_query(&migrator_a, revoke).await;
+        assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    }
 
     owner_query(
         &migrator_a,
