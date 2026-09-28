@@ -235,6 +235,7 @@ BEGIN
             SELECT membership.member
             FROM pg_auth_members membership
             JOIN owner_roles parent ON parent.roleid = membership.roleid
+            WHERE membership.inherit_option OR membership.set_option OR membership.admin_option
         )
         SELECT 1 FROM pg_auth_members membership
         JOIN owner_roles parent ON parent.roleid = membership.roleid
@@ -242,6 +243,56 @@ BEGIN
           AND membership.member <> 'codex_migrator'::regrole
     ) THEN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe owner role administration';
+    END IF;
+    -- String and dynamic routine bodies need not record table dependencies.
+    -- Refuse executable definer authority capable of crossing the store policy.
+    IF EXISTS (
+        WITH callers AS (
+            SELECT candidate.oid, audience.roleid
+            FROM pg_roles candidate
+            CROSS JOIN (VALUES ('codex_runtime'::regrole), ('codex_backup'::regrole)) audience(roleid)
+            WHERE pg_has_role(audience.roleid, candidate.oid, 'USAGE')
+               OR pg_has_role(audience.roleid, candidate.oid, 'SET')
+        )
+        SELECT 1 FROM pg_proc routine
+        JOIN callers caller ON has_function_privilege(caller.oid, routine.oid, 'EXECUTE')
+        WHERE routine.prosecdef
+          AND routine.pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace)
+          AND has_schema_privilege(caller.oid, routine.pronamespace, 'USAGE')
+          AND (
+            has_schema_privilege(routine.proowner, 'codex_storage', 'CREATE')
+            OR (metadata IS NOT NULL AND (
+                has_table_privilege(routine.proowner, metadata, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(routine.proowner, metadata, 'INSERT,UPDATE,REFERENCES')
+            ))
+            OR (history IS NOT NULL AND (
+                has_table_privilege(routine.proowner, history, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(routine.proowner, history, 'INSERT,UPDATE,REFERENCES')
+                OR (caller.roleid = 'codex_runtime'::regrole AND (
+                    has_table_privilege(routine.proowner, history, 'SELECT')
+                    OR has_any_column_privilege(routine.proowner, history, 'SELECT')
+                ))
+            ))
+            OR (caller.roleid = 'codex_backup'::regrole AND EXISTS (
+                SELECT 1 FROM pg_class relation
+                WHERE relation.relnamespace = 'codex_storage'::regnamespace
+                  AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+                  AND (
+                    has_table_privilege(routine.proowner, relation.oid, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                    OR has_any_column_privilege(routine.proowner, relation.oid, 'INSERT,UPDATE,REFERENCES')
+                  )
+            ))
+            OR EXISTS (
+                SELECT 1 FROM pg_class sequence
+                WHERE sequence.relnamespace = 'codex_storage'::regnamespace
+                  AND CASE WHEN sequence.relkind = 'S' THEN has_sequence_privilege(
+                    routine.proowner, sequence.oid,
+                    CASE WHEN caller.roleid = 'codex_backup'::regrole THEN 'USAGE,UPDATE' ELSE 'UPDATE' END
+                  ) ELSE FALSE END
+            )
+          )
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe security definer routine';
     END IF;
     IF EXISTS (
         SELECT 1 FROM pg_class relation,
