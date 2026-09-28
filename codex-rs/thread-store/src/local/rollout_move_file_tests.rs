@@ -2,6 +2,39 @@ use pretty_assertions::assert_eq;
 
 use super::*;
 
+pub(in crate::local) fn move_rollout_noclobber(
+    source: &Path,
+    destination: &Path,
+    codex_home: &Path,
+) -> io::Result<()> {
+    move_rollout_noclobber_retained(source, destination, codex_home)?;
+    clear_rollout_move_intent(destination)
+}
+
+pub(in crate::local) fn move_rollout_noclobber_retained(
+    source: &Path,
+    destination: &Path,
+    codex_home: &Path,
+) -> io::Result<()> {
+    move_rollout_with_before_quarantine(source, destination, codex_home, || Ok(()))
+}
+
+fn move_rollout_with_before_quarantine(
+    source: &Path,
+    destination: &Path,
+    codex_home: &Path,
+    before_quarantine: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    move_rollout_with_hooks(
+        source,
+        destination,
+        codex_home,
+        SourceBinding::Unbound,
+        || Ok(()),
+        before_quarantine,
+    )
+}
+
 #[test]
 fn bound_move_rejects_same_bytes_replacement_during_staging() -> io::Result<()> {
     let home = tempfile::tempdir()?;
@@ -111,14 +144,98 @@ fn prepare_move_intent(source: &Path, destination: &Path) -> io::Result<RolloutM
         stage_path,
         stage_id,
         stage_digest,
-        quarantine_path: quarantine_dir.join(
-            source
-                .file_name()
-                .ok_or_else(|| io::Error::other("no source filename"))?,
-        ),
+        quarantine_path: quarantine_dir.join("quarantined-source"),
     };
     write_rollout_move_intent(&rollout_move_intent_path(destination), &intent)?;
     Ok(intent)
+}
+
+#[test]
+fn staging_preserves_source_permissions() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout")?;
+    let mut permissions = std::fs::metadata(&source)?.permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&source, permissions)?;
+
+    move_rollout_noclobber(&source, &destination, home.path())?;
+    assert!(std::fs::metadata(&destination)?.permissions().readonly());
+    #[cfg(windows)]
+    {
+        let mut permissions = std::fs::metadata(&destination)?.permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&destination, permissions)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn staging_preserves_source_mode() -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout")?;
+    std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o640))?;
+
+    move_rollout_noclobber(&source, &destination, home.path())?;
+    assert_eq!(
+        std::fs::metadata(&destination)?.permissions().mode() & 0o777,
+        0o640
+    );
+    Ok(())
+}
+
+#[test]
+fn quarantine_name_cannot_be_discovered_as_a_rollout() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source =
+        sessions.join("rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl");
+    let destination = archived.join(source.file_name().expect("rollout filename"));
+    std::fs::write(&source, b"rollout")?;
+    let intent = prepare_move_intent(&source, &destination)?;
+    assert_eq!(
+        codex_rollout::rollout_id_from_path(&intent.quarantine_path),
+        None
+    );
+    Ok(())
+}
+
+#[test]
+fn oversized_intent_is_rejected_before_publication() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout")?;
+    let mut intent = prepare_move_intent(&source, &destination)?;
+    let intent_path = rollout_move_intent_path(&destination);
+    std::fs::remove_file(&intent_path)?;
+    intent.source = intent.source.join("x".repeat(4096));
+    let error = write_rollout_move_intent(&intent_path, &intent)
+        .expect_err("receipt too large for recovery must not be published");
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert!(!intent_path.exists());
+    Ok(())
 }
 
 #[test]

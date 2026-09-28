@@ -27,7 +27,7 @@ use crate::RevertThreadParams;
 use crate::ThreadPersistenceMetadata;
 use crate::ThreadStore;
 use crate::local::LocalThreadStore;
-use crate::local::rollout_move_file::move_rollout_noclobber_retained;
+use crate::local::rollout_move_file::tests::move_rollout_noclobber_retained;
 use crate::local::test_support::test_config;
 use crate::local::test_support::write_archived_session_file;
 use crate::local::test_support::write_session_file;

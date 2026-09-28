@@ -20,25 +20,6 @@ pub(super) fn touch_modified_time(path: &Path) -> std::io::Result<()> {
     OpenOptions::new().append(true).open(path)?.set_times(times)
 }
 
-#[cfg(test)]
-pub(super) fn move_rollout_noclobber(
-    source: &Path,
-    destination: &Path,
-    codex_home: &Path,
-) -> std::io::Result<()> {
-    move_rollout_noclobber_retained(source, destination, codex_home)?;
-    clear_rollout_move_intent(destination)
-}
-
-#[cfg(test)]
-pub(super) fn move_rollout_noclobber_retained(
-    source: &Path,
-    destination: &Path,
-    codex_home: &Path,
-) -> std::io::Result<()> {
-    move_rollout_with_before_quarantine(source, destination, codex_home, || Ok(()))
-}
-
 pub(super) fn move_rollout_noclobber_retained_bound(
     source: &Path,
     destination: &Path,
@@ -58,23 +39,6 @@ pub(super) fn move_rollout_noclobber_retained_bound(
         binding,
         || Ok(()),
         || binding.verify(source),
-    )
-}
-
-#[cfg(test)]
-fn move_rollout_with_before_quarantine(
-    source: &Path,
-    destination: &Path,
-    codex_home: &Path,
-    before_quarantine: impl FnOnce() -> io::Result<()>,
-) -> io::Result<()> {
-    move_rollout_with_hooks(
-        source,
-        destination,
-        codex_home,
-        SourceBinding::Unbound,
-        || Ok(()),
-        before_quarantine,
     )
 }
 
@@ -179,6 +143,9 @@ fn move_rollout_with_hooks(
             stage
                 .as_file()
                 .set_times(FileTimes::new().set_modified(source_metadata.modified()?))?;
+            stage
+                .as_file()
+                .set_permissions(source_metadata.permissions())?;
             stage.as_file().sync_all()?;
             let source_after_copy = std::fs::metadata(source)?;
             if source_after_copy.len() != source_metadata.len()
@@ -210,11 +177,9 @@ fn move_rollout_with_hooks(
                 )?
                 .keep();
             sync_parent_directory(&quarantine_dir)?;
-            let quarantine_path = quarantine_dir.join(
-                canonical_source
-                    .file_name()
-                    .ok_or_else(|| io::Error::other("rollout source has no filename"))?,
-            );
+            // Recursive rollout discovery recognizes production filenames even inside hidden
+            // directories. Keep a quarantined source out of those scans after a crash.
+            let quarantine_path = quarantine_dir.join("quarantined-source");
             let intent = RolloutMoveIntent {
                 source: canonical_source,
                 destination: canonical_destination.clone(),
@@ -324,7 +289,7 @@ fn quarantine_directory(intent: &RolloutMoveIntent) -> io::Result<&Path> {
         .parent()
         .ok_or_else(|| io::Error::other("rollout quarantine has no parent"))?;
     if directory.parent() != intent.source.parent()
-        || intent.quarantine_path.file_name() != intent.source.file_name()
+        || intent.quarantine_path.file_name() != Some(std::ffi::OsStr::new("quarantined-source"))
         || !directory.file_name().is_some_and(|name| {
             name.to_string_lossy()
                 .starts_with(".codex-rollout-quarantine-")
@@ -349,10 +314,20 @@ fn finish_quarantined_source(intent: &RolloutMoveIntent) -> io::Result<()> {
                     "quarantined rollout source identity or contents changed",
                 ));
             }
-            if std::fs::symlink_metadata(&intent.source).is_ok() {
-                return Err(io::Error::other(
-                    "rollout source pathname was replaced during move",
-                ));
+            match std::fs::symlink_metadata(&intent.source) {
+                Ok(_) => {
+                    return Err(io::Error::other(
+                        "rollout source pathname was replaced during move",
+                    ));
+                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err),
+            }
+            #[cfg(windows)]
+            if metadata.permissions().readonly() {
+                let mut permissions = metadata.permissions();
+                permissions.set_readonly(false);
+                std::fs::set_permissions(&intent.quarantine_path, permissions)?;
             }
             std::fs::remove_file(&intent.quarantine_path)?;
             sync_parent_directory(&intent.quarantine_path)?;
@@ -377,11 +352,15 @@ fn write_rollout_move_intent(path: &Path, intent: &RolloutMoveIntent) -> io::Res
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("missing intent parent"))?;
+    let mut contents = serde_json::to_vec(intent).map_err(io::Error::other)?;
+    contents.push(b'\n');
+    if contents.len() > 4096 {
+        return Err(io::Error::other("rollout move intent is too large"));
+    }
     let mut file = tempfile::Builder::new()
         .prefix(".codex-move-intent-")
         .tempfile_in(parent)?;
-    serde_json::to_writer(&mut file, intent).map_err(io::Error::other)?;
-    file.write_all(b"\n")?;
+    file.write_all(&contents)?;
     file.as_file().sync_all()?;
     file.persist_noclobber(path).map_err(|err| err.error)?;
     sync_parent_directory(path)
@@ -549,4 +528,4 @@ pub(super) fn published_rollout_move_owned(
 
 #[cfg(test)]
 #[path = "rollout_move_file_tests.rs"]
-mod tests;
+pub(super) mod tests;
