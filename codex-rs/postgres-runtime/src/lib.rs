@@ -20,6 +20,9 @@ use sqlx::postgres::PgSslMode;
 use std::fmt;
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -165,27 +168,45 @@ impl PostgresPool {
             .ssl_mode(PgSslMode::VerifyFull)
             .ssl_root_cert(&settings.ca_certificate)
             .disable_statement_logging();
+        let rejected_version = Arc::new(AtomicBool::new(false));
         let pool = timeout(
             limits.connect_timeout,
             PgPoolOptions::new()
                 .max_connections(limits.max_connections)
                 .acquire_timeout(limits.connect_timeout)
+                .after_connect({
+                    let rejected_version = Arc::clone(&rejected_version);
+                    move |connection, _| {
+                        let rejected_version = Arc::clone(&rejected_version);
+                        Box::pin(async move {
+                            let version =
+                                sqlx::query_scalar::<_, String>("SHOW server_version_num")
+                                    .fetch_one(connection)
+                                    .await
+                                    .map_err(|error| {
+                                        sqlx::Error::Configuration(Box::new(classify(&error)))
+                                    })?;
+                            require_qualified_server_version(&version).map_err(|error| {
+                                rejected_version.store(true, Ordering::Relaxed);
+                                sqlx::Error::Configuration(Box::new(error))
+                            })
+                        })
+                    }
+                })
                 .connect_with(options),
         )
         .await
-        .map_err(|_| PoolError::Timeout)?
-        .map_err(|error| classify(&error))?;
-        let version = timeout(
-            limits.connect_timeout,
-            sqlx::query_scalar::<_, String>("SHOW server_version_num").fetch_one(&pool),
-        )
-        .await
         .map_err(|_| PoolError::Timeout)
-        .and_then(|result| result.map_err(|error| classify(&error)));
-        if let Err(error) = version.and_then(|version| require_qualified_server_version(&version)) {
-            let _ = timeout(limits.connect_timeout, pool.close()).await;
-            return Err(error);
-        }
+        .and_then(|result| result.map_err(|error| classify(&error)))
+        .map_err(|error| {
+            // SQLx discards and retries failed after_connect checks. Preserve the
+            // initial version rejection when no qualified connection was found.
+            if rejected_version.load(Ordering::Relaxed) {
+                PoolError::UnsupportedServer
+            } else {
+                error
+            }
+        })?;
         Ok(Self {
             pool,
             acquire_timeout: limits.acquire_timeout,

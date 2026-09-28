@@ -7,6 +7,7 @@ use codex_postgres_runtime::ConnectionSettings;
 use codex_postgres_runtime::PoolError;
 use codex_postgres_runtime::PoolLimits;
 use codex_postgres_runtime::PostgresPool;
+use pretty_assertions::assert_eq;
 use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
