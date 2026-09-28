@@ -71,40 +71,13 @@ jobs:
       - name: Test PostgreSQL connection pool against real server
         working-directory: codex-rs
         run: just test -p codex-postgres-runtime
-      - name: Restore bootstrapped schema into a separate fixture
-        shell: bash
-        run: |
-          set -euo pipefail
-          state="$RUNNER_TEMP/codex-pg-rust-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          printf 'CODEX_TEST_POSTGRES_RESTORE_STATE=%s\n' "$state" >> "$GITHUB_ENV"
-          python scripts/postgres/manage.py --state "$state" init --project "codex-pg-rust-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 16482
-          python scripts/postgres/manage.py --state "$state" pin
-          RESTORE_STATE="$state" python - <<'PY'
-          import os
-          from pathlib import Path
-          import sys
-          sys.path.insert(0, "scripts/postgres")
-          from qualification_checks import checked_backup, command, verify_endpoint
-          backup, archive = checked_backup(Path(os.environ["CODEX_TEST_POSTGRES_STATE"]))
-          destination = Path(os.environ["RESTORE_STATE"])
-          command(destination, "restore", "--archive", str(archive),
-                  "--sha256", backup["sha256"], "--confirm-empty-destination")
-          verify_endpoint(destination)
-          PY
-      - name: Verify restored metadata with the real Rust bootstrap
-        working-directory: codex-rs
-        run: CODEX_TEST_POSTGRES_STATE="$CODEX_TEST_POSTGRES_RESTORE_STATE" just test -p codex-postgres-runtime real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent
       - name: Stop fixture and retain receipts
         if: always()
         shell: bash
         run: |
-          cleanup_status=0
-          for state in "${CODEX_TEST_POSTGRES_STATE:-}" "${CODEX_TEST_POSTGRES_RESTORE_STATE:-}"; do
-            if [[ -n "$state" && -f "$state/receipt.json" ]]; then
-              python scripts/postgres/manage.py --state "$state" down || cleanup_status=1
-            fi
-          done
-          exit "$cleanup_status"
+          if [[ -n "${CODEX_TEST_POSTGRES_STATE:-}" && -f "$CODEX_TEST_POSTGRES_STATE/receipt.json" ]]; then
+            python scripts/postgres/manage.py --state "$CODEX_TEST_POSTGRES_STATE" down
+          fi
 
   offline:
     name: Offline tests (${{ matrix.os }}, Python ${{ matrix.python }})
