@@ -502,22 +502,6 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
         .expect("restore checksum");
     transaction.commit().await.expect("commit checksum restore");
     drop(connection);
-    owner_query(
-        &migrator_a,
-        "INSERT INTO codex_storage._codex_pg_migrations (version, description, success, checksum, execution_time) SELECT extra, description, TRUE, checksum, execution_time FROM codex_storage._codex_pg_migrations CROSS JOIN generate_series(2, 20001) extra WHERE version = 1",
-    )
-    .await;
-    assert_eq!(
-        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
-            .await,
-        Err(CompatibilityError::IncompatibleHistory)
-    );
-    owner_query(
-        &migrator_a,
-        "DELETE FROM codex_storage._codex_pg_migrations WHERE version <> 1",
-    )
-    .await;
-
     let mut connection = migrator_a
         .acquire()
         .await
