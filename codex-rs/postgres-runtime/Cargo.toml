@@ -17,5 +17,6 @@ sqlx-macros = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 
 [dev-dependencies]
+pretty_assertions = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

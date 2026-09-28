@@ -7,7 +7,9 @@ use crate::bootstrap::BOOTSTRAP_TIMEOUT;
 use crate::bootstrap::LOCK_CLASS;
 use crate::bootstrap::LOCK_RESOURCE;
 use sqlx::Acquire;
+use sqlx::Postgres;
 use sqlx::Row;
+use sqlx::Transaction;
 use std::fmt;
 use tokio::time::timeout;
 
@@ -68,6 +70,57 @@ fn classify(error: &sqlx::Error) -> CompatibilityError {
     }
 }
 
+fn classify_schema(error: &sqlx::Error, incompatible: CompatibilityError) -> CompatibilityError {
+    match error {
+        sqlx::Error::Database(error)
+            if matches!(
+                error.code().as_deref(),
+                Some("42P01" | "42703" | "42804" | "42809")
+            ) =>
+        {
+            incompatible
+        }
+        _ => classify(error),
+    }
+}
+
+async fn validate_relation(
+    transaction: &mut Transaction<'_, Postgres>,
+    relation: &str,
+    columns: &[(&str, &str)],
+    incompatible: CompatibilityError,
+) -> Result<(), CompatibilityError> {
+    let names: Vec<_> = columns.iter().map(|(name, _)| *name).collect();
+    let types: Vec<_> = columns.iter().map(|(_, kind)| *kind).collect();
+    let valid: Option<bool> = sqlx::query_scalar(
+        "SELECT c.relkind = 'r' AND c.relpersistence = 'p' AND NOT c.relrowsecurity
+           AND NOT c.relispartition AND NOT EXISTS (
+             SELECT 1 FROM (
+               SELECT * FROM pg_attribute WHERE attrelid = c.oid AND attnum > 0 AND NOT attisdropped
+             ) a FULL JOIN unnest($2::text[], $3::text[]) expected(name, type_name)
+               ON a.attname = expected.name
+             WHERE a.attname IS NULL OR expected.name IS NULL
+                OR a.atttypid <> expected.type_name::regtype OR NOT a.attnotnull
+                OR a.attgenerated <> '' OR a.attidentity <> '' OR a.attinhcount <> 0
+           ) AND EXISTS (
+             SELECT 1 FROM pg_index i JOIN pg_attribute a
+               ON a.attrelid = c.oid AND a.attnum = i.indkey[0]
+             WHERE i.indrelid = c.oid AND i.indisprimary AND i.indisvalid
+               AND i.indnatts = 1 AND a.attname = ($2::text[])[1]
+           ) FROM pg_class c WHERE c.oid = to_regclass($1)",
+    )
+    .bind(relation)
+    .bind(names)
+    .bind(types)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| classify_schema(&error, incompatible))?;
+    if valid != Some(true) {
+        return Err(incompatible);
+    }
+    Ok(())
+}
+
 /// Check the preprovisioned namespace through a separate `codex_migrator` pool.
 /// The ordinary runtime role has no migration-history read permission. A passing
 /// result is a prefilter only; independent native qualification still applies.
@@ -125,33 +178,61 @@ pub async fn check_codex_storage_compatibility(
             return Err(CompatibilityError::IncompatibleNamespace);
         }
 
-        let metadata = sqlx::query(
-            "SELECT format_version, min_reader_version, min_writer_version FROM codex_storage.codex_schema_meta WHERE singleton = TRUE",
-        )
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(|_| CompatibilityError::MissingMetadata)?
-        .ok_or(CompatibilityError::MissingMetadata)?;
-        let schema_format: i32 = metadata.get("format_version");
-        let min_reader: i32 = metadata.get("min_reader_version");
-        let min_writer: i32 = metadata.get("min_writer_version");
+        validate_relation(&mut transaction, "codex_storage.codex_schema_meta", &[
+            ("singleton", "bool"), ("format_version", "int4"),
+            ("min_reader_version", "int4"), ("min_writer_version", "int4"),
+        ], CompatibilityError::MissingMetadata).await?;
+        validate_relation(&mut transaction, "codex_storage._codex_pg_migrations", &[
+            ("version", "int8"), ("description", "text"), ("installed_on", "timestamptz"),
+            ("success", "bool"), ("checksum", "bytea"), ("execution_time", "int8"),
+        ], CompatibilityError::IncompatibleHistory).await?;
 
-        let history = sqlx::query(
-            "SELECT version, success, checksum FROM codex_storage._codex_pg_migrations ORDER BY version",
+        let metadata = sqlx::query(
+            "SELECT singleton, format_version, min_reader_version, min_writer_version FROM codex_storage.codex_schema_meta LIMIT 2",
         )
         .fetch_all(&mut *transaction)
         .await
-        .map_err(|_| CompatibilityError::IncompatibleHistory)?;
-        if history.iter().any(|row| !row.get::<bool, _>("success")) {
-            return Err(CompatibilityError::DirtyMigration);
+        .map_err(|error| classify_schema(&error, CompatibilityError::MissingMetadata))?;
+        let [metadata] = metadata.as_slice() else {
+            return Err(CompatibilityError::MissingMetadata);
+        };
+        if !metadata.try_get::<bool, _>("singleton").map_err(|_| CompatibilityError::MissingMetadata)? {
+            return Err(CompatibilityError::MissingMetadata);
         }
-        if history.len() != BASE_MIGRATOR.migrations.len()
-            || history.iter().zip(BASE_MIGRATOR.migrations.iter()).any(|(row, migration)| {
-                row.get::<i64, _>("version") != migration.version
-                    || row.get::<Vec<u8>, _>("checksum").as_slice() != migration.checksum.as_ref()
-            })
-        {
+        let schema_format: i32 = metadata.try_get("format_version").map_err(|_| CompatibilityError::MissingMetadata)?;
+        let min_reader: i32 = metadata.try_get("min_reader_version").map_err(|_| CompatibilityError::MissingMetadata)?;
+        let min_writer: i32 = metadata.try_get("min_writer_version").map_err(|_| CompatibilityError::MissingMetadata)?;
+
+        let versions: Vec<_> = BASE_MIGRATOR.migrations.iter().map(|migration| migration.version).collect();
+        let checksums: Vec<_> = BASE_MIGRATOR.migrations.iter().map(|migration| migration.checksum.as_ref()).collect();
+        // Compare checksums on the server: even an oversized bytea never becomes
+        // a client allocation. One extra row is sufficient to reject extra history.
+        let history = sqlx::query(
+            "SELECT history.version, history.success, COALESCE(history.checksum = expected.checksum, FALSE) AS checksum_matches
+             FROM codex_storage._codex_pg_migrations history
+             LEFT JOIN unnest($1::bigint[], $2::bytea[]) expected(version, checksum) ON history.version = expected.version
+             ORDER BY history.version LIMIT $3",
+        )
+        .bind(versions)
+        .bind(checksums)
+        .bind(BASE_MIGRATOR.migrations.len() as i64 + 1)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(|error| classify_schema(&error, CompatibilityError::IncompatibleHistory))?;
+        for row in &history {
+            if !row.try_get::<bool, _>("success").map_err(|_| CompatibilityError::IncompatibleHistory)? {
+                return Err(CompatibilityError::DirtyMigration);
+            }
+        }
+        if history.len() != BASE_MIGRATOR.migrations.len() {
             return Err(CompatibilityError::IncompatibleHistory);
+        }
+        for (row, migration) in history.iter().zip(BASE_MIGRATOR.migrations.iter()) {
+            let version: i64 = row.try_get("version").map_err(|_| CompatibilityError::IncompatibleHistory)?;
+            let checksum_matches: bool = row.try_get("checksum_matches").map_err(|_| CompatibilityError::IncompatibleHistory)?;
+            if version != migration.version || !checksum_matches {
+                return Err(CompatibilityError::IncompatibleHistory);
+            }
         }
 
         // This binary only embeds format 1, regardless of claimed host capability.

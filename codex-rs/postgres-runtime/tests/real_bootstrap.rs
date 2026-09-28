@@ -13,10 +13,14 @@ use codex_postgres_runtime::PostgresPool;
 use codex_postgres_runtime::RequiredAccess;
 use codex_postgres_runtime::bootstrap_codex_storage;
 use codex_postgres_runtime::check_codex_storage_compatibility;
+use pretty_assertions::assert_eq;
 use serde_json::Value;
 use sqlx::Acquire;
 use std::path::Path;
 use std::time::Duration;
+
+#[path = "compatibility/real_compatibility_tests.rs"]
+mod real_compatibility_cases;
 
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
     let receipt: Value = serde_json::from_slice(
@@ -48,7 +52,7 @@ async fn owner_query(pool: &PostgresPool, sql: &'static str) {
         .execute(&mut *transaction)
         .await
         .expect("assume schema owner role");
-    sqlx::query(sql)
+    sqlx::raw_sql(sql)
         .execute(&mut *transaction)
         .await
         .expect("execute owner fixture SQL");
@@ -261,6 +265,16 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
             .await,
         Err(CompatibilityError::IncompatibleHistory)
     );
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage._codex_pg_migrations SET checksum = repeat('x', 1048576)::bytea WHERE version = 1",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::IncompatibleHistory)
+    );
     let mut connection = migrator_a
         .acquire()
         .await
@@ -279,7 +293,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     drop(connection);
     owner_query(
         &migrator_a,
-        "INSERT INTO codex_storage._codex_pg_migrations (version, description, success, checksum, execution_time) SELECT 999, description, TRUE, checksum, execution_time FROM codex_storage._codex_pg_migrations WHERE version = 1",
+        "INSERT INTO codex_storage._codex_pg_migrations (version, description, success, checksum, execution_time) SELECT extra, description, TRUE, checksum, execution_time FROM codex_storage._codex_pg_migrations CROSS JOIN generate_series(2, 20001) extra WHERE version = 1",
     )
     .await;
     assert_eq!(
@@ -289,7 +303,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
     owner_query(
         &migrator_a,
-        "DELETE FROM codex_storage._codex_pg_migrations WHERE version = 999",
+        "DELETE FROM codex_storage._codex_pg_migrations WHERE version <> 1",
     )
     .await;
 
@@ -316,4 +330,5 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
             .await,
         compatible
     );
+    real_compatibility_cases::run(&migrator_a, state).await;
 }
