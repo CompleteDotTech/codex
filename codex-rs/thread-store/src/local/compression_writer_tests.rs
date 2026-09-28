@@ -17,6 +17,7 @@ use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::WriterLockCoordinator;
+use codex_rollout::append_rollout_item_to_path;
 use codex_state::ThreadMetadataBuilder;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -25,6 +26,7 @@ use uuid::Uuid;
 
 use super::LocalThreadStore;
 use super::test_support::test_config;
+use super::test_support::write_archived_session_file;
 use super::test_support::write_session_file;
 use crate::ArchiveThreadParams;
 use crate::ReadThreadParams;
@@ -32,6 +34,7 @@ use crate::ResumeThreadParams;
 use crate::ThreadMetadataPatch;
 use crate::ThreadPersistenceMetadata;
 use crate::ThreadStore;
+use crate::ThreadStoreError;
 use crate::UpdateThreadMetadataParams;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -69,6 +72,111 @@ fn message() -> RolloutItem {
         message: "acknowledged write".into(),
         ..Default::default()
     }))
+}
+
+fn write_divergent_sibling(path: &Path) -> TestResult<(PathBuf, Vec<u8>, Vec<u8>)> {
+    let plain_bytes = fs::read(path)?;
+    let plain_text = String::from_utf8(plain_bytes.clone())?;
+    assert!(plain_text.contains("Hello from user") || plain_text.contains("Archived user message"));
+    let divergent = plain_text
+        .replace("Hello from user", "different user message")
+        .replace("Archived user message", "different archived message");
+    let compressed_bytes = zstd::stream::encode_all(divergent.as_bytes(), /*level*/ 1)?;
+    let compressed_path = path.with_extension("jsonl.zst");
+    fs::write(&compressed_path, &compressed_bytes)?;
+    Ok((compressed_path, plain_bytes, compressed_bytes))
+}
+
+#[tokio::test]
+async fn divergent_siblings_refuse_append_and_resume_without_changing_files() -> TestResult<()> {
+    let (home, thread_id, plain_path) = fixture()?;
+    let (compressed_path, plain_bytes, compressed_bytes) = write_divergent_sibling(&plain_path)?;
+
+    let append_error = append_rollout_item_to_path(&plain_path, &message())
+        .await
+        .expect_err("ambiguous rollout must block append");
+    assert_eq!(append_error.kind(), std::io::ErrorKind::AlreadyExists);
+
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let resume_error = store
+        .resume_thread(resume(thread_id, &plain_path, home.path()))
+        .await
+        .expect_err("ambiguous rollout must block resume");
+    assert!(matches!(resume_error, ThreadStoreError::Conflict { .. }));
+    assert_eq!(fs::read(plain_path)?, plain_bytes);
+    assert_eq!(fs::read(compressed_path)?, compressed_bytes);
+    Ok(())
+}
+
+#[tokio::test]
+async fn divergent_siblings_refuse_archive_without_changing_files_or_sqlite() -> TestResult<()> {
+    let (home, thread_id, plain_path) = fixture()?;
+    let (compressed_path, plain_bytes, compressed_bytes) = write_divergent_sibling(&plain_path)?;
+    let config = test_config(home.path());
+    let runtime = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await?;
+    let mut builder = ThreadMetadataBuilder::new(
+        thread_id,
+        plain_path.clone(),
+        Utc::now(),
+        SessionSource::Cli,
+    );
+    builder.cwd = home.path().to_path_buf();
+    runtime
+        .upsert_thread(&builder.build(config.default_model_provider_id.as_str()))
+        .await?;
+    let before = runtime.get_thread(thread_id).await?;
+    let store = LocalThreadStore::new(config, Some(runtime.clone()));
+
+    let error = store
+        .archive_thread(ArchiveThreadParams { thread_id })
+        .await
+        .expect_err("ambiguous rollout must block archive");
+    assert!(matches!(error, ThreadStoreError::Conflict { .. }));
+    assert_eq!(fs::read(plain_path)?, plain_bytes);
+    assert_eq!(fs::read(compressed_path)?, compressed_bytes);
+    assert_eq!(runtime.get_thread(thread_id).await?, before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn divergent_siblings_refuse_unarchive_without_changing_files_or_sqlite() -> TestResult<()> {
+    let home = TempDir::new()?;
+    let uuid = Uuid::new_v4();
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let plain_path = write_archived_session_file(home.path(), "2025-01-03T12-00-00", uuid)?;
+    let (compressed_path, plain_bytes, compressed_bytes) = write_divergent_sibling(&plain_path)?;
+    let config = test_config(home.path());
+    let runtime = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await?;
+    let mut builder = ThreadMetadataBuilder::new(
+        thread_id,
+        plain_path.clone(),
+        Utc::now(),
+        SessionSource::Cli,
+    );
+    builder.cwd = home.path().to_path_buf();
+    let mut metadata = builder.build(config.default_model_provider_id.as_str());
+    metadata.archived_at = Some(metadata.updated_at);
+    runtime.upsert_thread(&metadata).await?;
+    let before = runtime.get_thread(thread_id).await?;
+    let store = LocalThreadStore::new(config, Some(runtime.clone()));
+
+    let error = store
+        .unarchive_thread(ArchiveThreadParams { thread_id })
+        .await
+        .expect_err("ambiguous rollout must block unarchive");
+    assert!(matches!(error, ThreadStoreError::Conflict { .. }));
+    assert_eq!(fs::read(plain_path)?, plain_bytes);
+    assert_eq!(fs::read(compressed_path)?, compressed_bytes);
+    assert_eq!(runtime.get_thread(thread_id).await?, before);
+    Ok(())
 }
 
 #[tokio::test]

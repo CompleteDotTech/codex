@@ -1,4 +1,5 @@
 use super::LocalThreadStore;
+use super::helpers::ensure_unambiguous_rollout;
 use super::helpers::move_rollout_noclobber;
 use super::helpers::owned_rollout_paths;
 use super::helpers::restore_rollout_moves;
@@ -38,6 +39,11 @@ pub(super) async fn unarchive_thread(
     let mut rollout_paths = owned_rollout_paths(store, thread_id).await?;
     if !rollout_paths.contains(&selected_archived_path) {
         rollout_paths.push(selected_archived_path.clone());
+    }
+    for rollout_path in &rollout_paths {
+        if rollout_path_is_archived(store.config.codex_home.as_path(), rollout_path) {
+            ensure_unambiguous_rollout(rollout_path)?;
+        }
     }
     let mut restored_path = None;
     let mut rollout_moves = Vec::new();
