@@ -25,7 +25,7 @@ jobs:
 
       - uses: ./.github/actions/prepare-voice-windows-bazel
 
-      - name: Test V8 consumer with MSVC linker and static CRT
+      - name: Test V8 consumer without forced UCRT imports
         shell: bash
         run: |
           set -euo pipefail
@@ -40,6 +40,6 @@ jobs:
             --@rules_rust//rust/settings:extra_rustc_flag=-Ctarget-feature=+crt-static \
             --subcommands=pretty_print \
             --test_output=errors \
-            --build_metadata=TAG_ci56_linker_probe=cc_crt_static \
+            --build_metadata=TAG_ci56_linker_probe=cc_crt_static_no_ucrt \
             -- \
             //codex-rs/code-mode-runtime:code-mode-runtime-array_sort-test
