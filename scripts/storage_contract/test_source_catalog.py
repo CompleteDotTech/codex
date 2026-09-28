@@ -11,7 +11,13 @@ from pathlib import Path
 
 from .records import ContractError
 from .snapshot_test_support import make_fixture, policy_for
-from .source_catalog import FIXTURES, STORES, build_fixture_policy, verified_migrations
+from .source_catalog import (
+    FIXTURES,
+    STATE_RETAINED_TABLES,
+    STORES,
+    build_fixture_policy,
+    verified_migrations,
+)
 
 
 class SourceCatalogTests(unittest.TestCase):
@@ -34,10 +40,20 @@ class SourceCatalogTests(unittest.TestCase):
                 scripts = verified_migrations(store)
                 for version, script in enumerate(scripts, 1):
                     db.executescript(script.decode())
-                    self.assertEqual(
-                        json.loads(build_fixture_policy(store, version=version)),
-                        json.loads(policy_for(db)),
-                    )
+                    actual = json.loads(build_fixture_policy(store, version=version))
+                    expected = json.loads(policy_for(db))
+                    if store == "state_5.sqlite":
+                        retained = set(STATE_RETAINED_TABLES)
+                        if "logs" not in expected["tables"]:
+                            retained.add("sqlite_sequence")
+                        expected["tables"].update(
+                            {
+                                table: "retain"
+                                for table in retained
+                                if table in expected["tables"]
+                            }
+                        )
+                    self.assertEqual(actual, expected)
 
     def test_prior_board_and_queue_fixtures_match_pinned_policies(self):
         for kind, store in (
@@ -51,11 +67,21 @@ class SourceCatalogTests(unittest.TestCase):
                 )
                 self.assertEqual(json.loads(actual), json.loads(expected))
 
-    def test_unknown_primary_store_cannot_be_reported_as_an_empty_supported_schema(
-        self,
-    ):
-        with self.assertRaisesRegex(ContractError, "unsupported_store_schema"):
-            build_fixture_policy("state_5.sqlite", version=1)
+    def test_current_primary_store_has_an_authenticated_nonempty_schema(self):
+        policy = json.loads(build_fixture_policy("state_5.sqlite", version=58))
+        self.assertIn("threads", policy["tables"])
+        self.assertIn("thread_attachments", policy["tables"])
+        self.assertNotIn("_sqlx_migrations", policy["tables"])
+        self.assertEqual(
+            {
+                table
+                for table, treatment in policy["tables"].items()
+                if treatment == "retain"
+            },
+            STATE_RETAINED_TABLES | {"sqlite_sequence"},
+        )
+        historical = json.loads(build_fixture_policy("state_5.sqlite", version=2))
+        self.assertEqual(historical["tables"]["sqlite_sequence"], "migrate")
 
     def test_unknown_or_boolean_versions_are_rejected(self):
         for version in (0, 3, True, "2", None):

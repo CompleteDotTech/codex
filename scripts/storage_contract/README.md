@@ -74,11 +74,11 @@ They are **not** real Codex SQLite schemas, compressed rollouts, fork projection
 installation receipts, or a completed table/producer/consumer audit. Fixture labels
 must not be interpreted as completed source-domain support.
 
-The additional `fixtures/` SQL assets exercise the goals, logs, both memory
-generations, queue, thread-history projection, and independent board schemas at
-the pinned source commit. They cover **seven of eight** SQLite stores at the
-schema/SQL level; the primary state store is not included. Stored public-protocol
-payloads remain synthetic. SQLx bookkeeping, Codex consumers, PostgreSQL, and
+The additional `fixtures/` SQL assets exercise the primary state, goals, logs,
+both memory generations, queue, thread-history projection, and independent board
+schemas at the pinned source commit. They cover **all eight** SQLite stores at the
+schema/SQL level, with only partial current-primary producer/consumer mapping.
+Stored public-protocol payloads remain synthetic. SQLx bookkeeping, Codex consumers, PostgreSQL, and
 canonical history and artifacts are not qualified by these tests. See
 `SOURCE_CATALOG.md` for the exact coverage and exclusions.
 
