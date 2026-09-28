@@ -24,6 +24,7 @@ pub enum BootstrapError {
     Connection(PoolError),
     Privilege,
     IncompatibleNamespace,
+    Unavailable,
     Migration,
 }
 
@@ -41,6 +42,23 @@ fn classify_sqlx(error: &sqlx::Error) -> BootstrapError {
             BootstrapError::Privilege
         }
         _ => BootstrapError::Migration,
+    }
+}
+
+fn classify_namespace_validation(error: sqlx::Error) -> BootstrapError {
+    match &error {
+        sqlx::Error::Database(error)
+            if matches!(
+                error.code().as_deref(),
+                Some("42P01" | "42703" | "42804" | "42809")
+            ) =>
+        {
+            BootstrapError::IncompatibleNamespace
+        }
+        sqlx::Error::Database(error) if error.code().as_deref() == Some("42501") => {
+            BootstrapError::Privilege
+        }
+        _ => BootstrapError::Unavailable,
     }
 }
 
@@ -129,9 +147,16 @@ async fn require_safe_protected_privileges(
                 OR has_any_column_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,REFERENCES')
               )
         ) OR EXISTS (
+            WITH RECURSIVE owner_roles(roleid) AS (
+                SELECT 'codex_owner'::regrole
+                UNION
+                SELECT membership.member
+                FROM pg_auth_members membership
+                JOIN owner_roles parent ON parent.roleid = membership.roleid
+            )
             SELECT 1 FROM pg_auth_members membership
-            WHERE membership.roleid = 'codex_owner'::regrole
-              AND membership.admin_option
+            JOIN owner_roles parent ON parent.roleid = membership.roleid
+            WHERE membership.admin_option
               AND membership.member <> 'codex_migrator'::regrole
         ) OR EXISTS (
             SELECT 1 FROM pg_class history,
@@ -253,7 +278,9 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
                       AND cst.contype = 'p'
                       AND cst.conindid = 'codex_storage._codex_pg_migrations_pkey'::regclass
                       AND cst.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = cst.conrelid AND attname = 'version')]
-                ) AND EXISTS (
+                ) AND (SELECT count(*) FROM pg_constraint
+                       WHERE conrelid = 'codex_storage._codex_pg_migrations'::regclass) = 1
+                AND EXISTS (
                     SELECT 1 FROM pg_constraint cst
                     WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
                       AND cst.conname = 'codex_schema_meta_singleton_check'
@@ -263,7 +290,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             )
             .fetch_one(&mut *transaction)
             .await
-            .map_err(|_| BootstrapError::IncompatibleNamespace)?;
+            .map_err(classify_namespace_validation)?;
             if !known_schema_complete {
                 return Err(BootstrapError::IncompatibleNamespace);
             }
@@ -272,7 +299,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             )
             .fetch_optional(&mut *transaction)
             .await
-            .map_err(|_| BootstrapError::IncompatibleNamespace)?;
+            .map_err(classify_namespace_validation)?;
             if version != Some((1, 1, 1)) {
                 return Err(BootstrapError::IncompatibleNamespace);
             }
@@ -323,6 +350,14 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .await
             .map_err(|error| classify_sqlx(&error))?;
         require_safe_protected_privileges(&mut transaction).await?;
+        let unexpected_objects = namespace_has_unexpected_objects(
+            &mut transaction,
+            &["_codex_pg_migrations", "_codex_pg_migrations_pkey", "codex_schema_meta", "codex_schema_meta_pkey"],
+        )
+        .await?;
+        if unexpected_objects {
+            return Err(BootstrapError::IncompatibleNamespace);
+        }
         transaction.commit().await.map_err(|error| classify_sqlx(&error))?;
         Ok(())
     })
