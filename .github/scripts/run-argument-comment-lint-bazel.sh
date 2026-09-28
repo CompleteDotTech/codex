@@ -3,7 +3,10 @@
 set -euo pipefail
 
 bazel_lint_args=("$@")
+bazel_runner_args=()
 if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
+  # Helper binaries run on the MSVC host even when lint targets use gnullvm.
+  bazel_runner_args+=(--windows-msvc-host-platform)
   # Some Rust top-level targets are still intentionally incompatible with the
   # local Windows exec platform. Skip those explicit targets so the native
   # lint aspect can run across the compatible crate graph instead of failing the
@@ -50,6 +53,7 @@ if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
 fi
 
 ./.github/scripts/run-bazel-ci.sh \
+  "${bazel_runner_args[@]}" \
   -- \
   build \
   "${bazel_lint_args[@]}" \
