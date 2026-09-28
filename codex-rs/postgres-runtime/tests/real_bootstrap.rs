@@ -63,6 +63,14 @@ async fn migrator_query(pool: &PostgresPool, sql: &'static str) {
         .expect("execute migrator fixture SQL");
 }
 
+async fn role_query(pool: &PostgresPool, sql: &'static str) {
+    let mut connection = pool.acquire().await.expect("acquire role connection");
+    sqlx::raw_sql(sql)
+        .execute(&mut *connection)
+        .await
+        .expect("execute role fixture SQL");
+}
+
 async fn reject_namespace_objects(pool: &PostgresPool) {
     for (create, drop) in [
         (
@@ -299,6 +307,116 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
     owner_query(&migrator_a, "DROP SCHEMA codex_view_fixture CASCADE").await;
     assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+
+    owner_query(
+        &migrator_a,
+        "CREATE SCHEMA codex_reporting_fixture AUTHORIZATION codex_owner; CREATE VIEW codex_reporting_fixture.metadata_report AS SELECT singleton, format_version FROM codex_storage.codex_schema_meta; CREATE VIEW codex_reporting_fixture.security_invoker_report WITH (security_invoker = true) AS SELECT singleton, format_version FROM codex_storage.codex_schema_meta; GRANT USAGE ON SCHEMA codex_reporting_fixture TO codex_runtime; GRANT SELECT ON codex_reporting_fixture.metadata_report, codex_reporting_fixture.security_invoker_report TO codex_runtime",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    owner_query(
+        &migrator_a,
+        "CREATE VIEW codex_reporting_fixture.history_report AS SELECT version FROM codex_storage._codex_pg_migrations; GRANT SELECT ON codex_reporting_fixture.history_report TO codex_runtime",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    owner_query(&migrator_a, "DROP SCHEMA codex_reporting_fixture CASCADE").await;
+
+    owner_query(
+        &migrator_a,
+        "CREATE SCHEMA codex_rewrite_fixture AUTHORIZATION codex_owner; CREATE TABLE codex_rewrite_fixture.proxy (id INTEGER); CREATE RULE proxy_update AS ON UPDATE TO codex_rewrite_fixture.proxy DO ALSO UPDATE codex_storage.codex_schema_meta SET format_version = 1; GRANT USAGE ON SCHEMA codex_rewrite_fixture TO codex_runtime; GRANT UPDATE ON codex_rewrite_fixture.proxy TO codex_runtime",
+    )
+    .await;
+    role_query(
+        &runtime,
+        "BEGIN; UPDATE codex_rewrite_fixture.proxy SET id = 1; ROLLBACK",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    owner_query(&migrator_a, "DROP SCHEMA codex_rewrite_fixture CASCADE").await;
+
+    owner_query(
+        &migrator_a,
+        "CREATE SCHEMA codex_backup_view_fixture AUTHORIZATION codex_owner; GRANT USAGE, CREATE ON SCHEMA codex_backup_view_fixture TO codex_backup",
+    )
+    .await;
+    role_query(
+        &backup,
+        "CREATE VIEW codex_backup_view_fixture.history_proxy AS SELECT version FROM codex_storage._codex_pg_migrations",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    owner_query(&migrator_a, "DROP SCHEMA codex_backup_view_fixture CASCADE").await;
+
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; DROP SCHEMA IF EXISTS codex_security_definer_fixture CASCADE; CREATE SCHEMA codex_security_definer_fixture; CREATE FUNCTION codex_security_definer_fixture.write_metadata() RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, codex_storage AS $$ BEGIN UPDATE codex_storage.codex_schema_meta SET format_version = 1; END $$; REVOKE ALL ON FUNCTION codex_security_definer_fixture.write_metadata() FROM PUBLIC; GRANT USAGE ON SCHEMA codex_security_definer_fixture TO codex_runtime, codex_backup; GRANT EXECUTE ON FUNCTION codex_security_definer_fixture.write_metadata() TO codex_runtime, codex_backup; RESET ROLE",
+    )
+    .await;
+    role_query(
+        &runtime,
+        "BEGIN; SELECT codex_security_definer_fixture.write_metadata(); ROLLBACK",
+    )
+    .await;
+    role_query(
+        &backup,
+        "BEGIN; SELECT codex_security_definer_fixture.write_metadata(); ROLLBACK",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; REVOKE EXECUTE ON FUNCTION codex_security_definer_fixture.write_metadata() FROM codex_runtime, codex_backup; RESET ROLE",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; DROP SCHEMA codex_security_definer_fixture CASCADE; RESET ROLE",
+    )
+    .await;
+
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; DROP ROLE IF EXISTS codex_bootstrap_graph_inert; CREATE ROLE codex_bootstrap_graph_inert NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS; GRANT codex_bootstrap_graph_principal TO codex_bootstrap_graph_inert WITH INHERIT FALSE, SET FALSE, ADMIN TRUE; GRANT codex_bootstrap_graph_principal TO codex_backup WITH INHERIT FALSE, SET TRUE; GRANT codex_bootstrap_graph_inert TO codex_runtime WITH INHERIT FALSE, SET FALSE, ADMIN FALSE; RESET ROLE",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; REVOKE codex_bootstrap_graph_principal FROM codex_backup; DROP ROLE codex_bootstrap_graph_inert; RESET ROLE",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; CREATE SCHEMA codex_superuser_view_fixture; CREATE VIEW codex_superuser_view_fixture.metadata_proxy AS SELECT singleton, format_version, min_reader_version, min_writer_version FROM codex_storage.codex_schema_meta; GRANT USAGE ON SCHEMA codex_superuser_view_fixture TO codex_runtime; GRANT UPDATE(format_version) ON codex_superuser_view_fixture.metadata_proxy TO codex_runtime; RESET ROLE",
+    )
+    .await;
+    role_query(
+        &runtime,
+        "BEGIN; UPDATE codex_superuser_view_fixture.metadata_proxy SET format_version = 1; ROLLBACK",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; DROP SCHEMA codex_superuser_view_fixture CASCADE; RESET ROLE",
+    )
+    .await;
 
     for (raise_minimum, reset_minimum) in [
         (

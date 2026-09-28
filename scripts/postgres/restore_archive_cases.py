@@ -129,6 +129,19 @@ def qualify_archive_shapes(source, reject):
         ) as captured:
             reject(f"incompatible_{field}", "SELECT 1", "SELECT 1", captured)
 
+    for table, assignment in (
+        ("codex_schema_meta", "format_version=2"),
+        ("_codex_pg_migrations", "success=FALSE"),
+    ):
+        with mutated_archive(
+            source,
+            "CREATE TABLE codex_storage.restore_shape_probe (id integer); "
+            "CREATE RULE restore_proxy AS ON UPDATE TO codex_storage.restore_shape_probe "
+            f"DO ALSO UPDATE codex_storage.{table} SET {assignment}",
+            "DROP TABLE codex_storage.restore_shape_probe",
+        ) as captured:
+            reject(f"{table}_non_view_rule_proxy", "SELECT 1", "SELECT 1", captured)
+
     for name, setup, cleanup in (
         (
             "metadata_bigint_column",
