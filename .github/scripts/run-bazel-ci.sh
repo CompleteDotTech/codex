@@ -378,6 +378,31 @@ if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
     )
   fi
   post_config_bazel_args+=("--test_env=PATH=${CODEX_BAZEL_WINDOWS_PATH}")
+
+  if [[ -n "${VOICE_WINDOWS_BAZEL_REPOSITORY:-}" ]]; then
+    voice_repository_explicit=0
+    for arg in "${bazel_args[@]}"; do
+      if [[ "$arg" == --inject_repository=voice_windows_tools=* ]]; then
+        voice_repository_explicit=1
+        break
+      fi
+    done
+
+    if [[ $voice_repository_explicit -eq 0 ]]; then
+      : "${VOICE_WINDOWS_SYSTEM_ROOT:?Windows voice SystemRoot is required}"
+      : "${VOICE_WINDOWS_HOST_ARCH:?Windows voice host architecture is required}"
+      post_config_bazel_args+=(
+        "--inject_repository=voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
+        "--//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools"
+        "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0"
+        "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows,@local_config_cc//:cc-toolchain-arm64_windows,//third_party/voice:windows_pkg_config_toolchain,//third_party/voice:windows_cmake_toolchain"
+        "--action_env=SystemRoot=${VOICE_WINDOWS_SYSTEM_ROOT}"
+        "--host_action_env=SystemRoot=${VOICE_WINDOWS_SYSTEM_ROOT}"
+        "--action_env=PROCESSOR_ARCHITECTURE=${VOICE_WINDOWS_HOST_ARCH}"
+        "--host_action_env=PROCESSOR_ARCHITECTURE=${VOICE_WINDOWS_HOST_ARCH}"
+      )
+    fi
+  fi
 fi
 
 bazel_console_log="$(mktemp)"

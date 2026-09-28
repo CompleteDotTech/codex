@@ -17,6 +17,9 @@ runs:
       with:
         target: ${{ inputs.target }}
 
+    - uses: ./.github/actions/prepare-voice-windows-bazel
+      if: ${{ runner.os == 'Windows' }}
+
     - name: Install Linux sandbox build dependencies
       if: ${{ runner.os == 'Linux' }}
       shell: bash
