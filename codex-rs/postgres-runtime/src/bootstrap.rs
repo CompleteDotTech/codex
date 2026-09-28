@@ -220,31 +220,29 @@ async fn require_safe_protected_privileges(
                 ), (
                     'codex_storage._codex_pg_migrations'::regclass::oid
                 )
-            ), dependent_views(oid) AS (
-                SELECT view.oid
-                FROM pg_class view
-                JOIN pg_rewrite rewrite ON rewrite.ev_class = view.oid
+            ), dependent_relations(oid) AS (
+                SELECT relation.oid
+                FROM pg_class relation
+                JOIN pg_rewrite rewrite ON rewrite.ev_class = relation.oid
                 JOIN pg_depend dependency
                   ON dependency.classid = 'pg_rewrite'::regclass
                  AND dependency.objid = rewrite.oid
                  AND dependency.refclassid = 'pg_class'::regclass
                 JOIN protected_relations protected ON protected.oid = dependency.refobjid
-                WHERE view.relkind = 'v'
+                WHERE relation.oid NOT IN (SELECT oid FROM protected_relations)
                 UNION
-                SELECT view.oid
-                FROM pg_class view
-                JOIN pg_rewrite rewrite ON rewrite.ev_class = view.oid
+                SELECT relation.oid
+                FROM pg_class relation
+                JOIN pg_rewrite rewrite ON rewrite.ev_class = relation.oid
                 JOIN pg_depend dependency
                   ON dependency.classid = 'pg_rewrite'::regclass
                  AND dependency.objid = rewrite.oid
                  AND dependency.refclassid = 'pg_class'::regclass
-                JOIN dependent_views parent ON parent.oid = dependency.refobjid
-                WHERE view.relkind = 'v'
+                JOIN dependent_relations parent ON parent.oid = dependency.refobjid
+                WHERE relation.oid NOT IN (SELECT oid FROM protected_relations)
             )
             SELECT 1
-            FROM pg_class view
-            WHERE view.relowner = 'codex_owner'::regrole
-              AND view.oid IN (SELECT oid FROM dependent_views)
+            FROM dependent_relations
         )",
     )
     .fetch_one(connection)
