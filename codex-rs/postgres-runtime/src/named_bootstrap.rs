@@ -24,32 +24,51 @@ fn classify(error: &sqlx::Error) -> BootstrapError {
     }
 }
 
-pub(crate) fn namespaced_migration(
+pub(crate) fn namespaced_migrations(
     namespace: &NamedNamespace,
-) -> Result<Migration, BootstrapError> {
-    let [base] = BASE_MIGRATOR.migrations.as_ref() else {
+) -> Result<Vec<Migration>, BootstrapError> {
+    let [metadata, graph] = BASE_MIGRATOR.migrations.as_ref() else {
         return Err(BootstrapError::Migration);
     };
-    let source = base.sql.as_str();
+    let source = metadata.sql.as_str();
     // Version 1 has exactly two schema-qualified identifiers: CREATE and INSERT.
     // A changed SQL layout needs a new review before identifier substitution.
-    if base.version != 1
-        || base.no_tx
+    if metadata.version != 1
+        || metadata.no_tx
         || !source.starts_with("CREATE TABLE codex_storage.codex_schema_meta (")
         || !source.contains("\nINSERT INTO codex_storage.codex_schema_meta\n")
         || source.matches("codex_storage.").count() != 2
     {
         return Err(BootstrapError::Migration);
     }
+    let graph_source = graph.sql.as_str();
+    // Version 2 has only the reviewed table, index target and metadata update.
+    if graph.version != 2
+        || graph.no_tx
+        || !graph_source.starts_with("CREATE TABLE codex_storage.thread_spawn_edges (")
+        || !graph_source.contains("\n    ON codex_storage.thread_spawn_edges (")
+        || !graph_source.contains("\nUPDATE codex_storage.codex_schema_meta\n")
+        || graph_source.matches("codex_storage.").count() != 3
+    {
+        return Err(BootstrapError::Migration);
+    }
     let qualified_prefix = format!("{}.", namespace.quoted_schema());
-    let sql = source.replace("codex_storage.", &qualified_prefix);
-    Ok(Migration::new(
-        base.version,
-        base.description.clone(),
-        base.migration_type,
-        AssertSqlSafe(sql).into_sql_str(),
-        base.no_tx,
-    ))
+    Ok([metadata, graph]
+        .into_iter()
+        .map(|base| {
+            let sql = base
+                .sql
+                .as_str()
+                .replace("codex_storage.", &qualified_prefix);
+            Migration::new(
+                base.version,
+                base.description.clone(),
+                base.migration_type,
+                AssertSqlSafe(sql).into_sql_str(),
+                base.no_tx,
+            )
+        })
+        .collect())
 }
 
 /// Bootstrap a distinct preprovisioned schema using its matching migrator login.
@@ -58,7 +77,7 @@ pub async fn bootstrap_named_namespace(
     pool: &PostgresPool,
     namespace: &NamedNamespace,
 ) -> Result<(), BootstrapError> {
-    let migration = namespaced_migration(namespace)?;
+    let migrations = namespaced_migrations(namespace)?;
     timeout(BOOTSTRAP_TIMEOUT, async {
         let mut connection = pool.acquire().await.map_err(BootstrapError::Connection)?;
         let mut transaction = connection.begin().await.map_err(|error| classify(&error))?;
@@ -94,7 +113,7 @@ pub async fn bootstrap_named_namespace(
             return Err(BootstrapError::IncompatibleNamespace);
         }
         let unexpected_objects: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND typtype <> 'b' AND typrelid = 0)",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey', 'thread_spawn_edges', 'thread_spawn_edges_pkey', 'idx_thread_spawn_edges_parent_status')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND typtype <> 'b' AND typrelid = 0)",
         )
         .bind(&namespace.schema)
         .fetch_one(&mut *transaction)
@@ -119,7 +138,17 @@ pub async fn bootstrap_named_namespace(
                 .fetch_optional(&mut *transaction)
                 .await
                 .map_err(|_| BootstrapError::IncompatibleNamespace)?;
-            if format != Some(1) {
+            let history_query = format!(
+                "SELECT version, success, checksum FROM {}.\"_codex_pg_migrations\" ORDER BY version",
+                namespace.quoted_schema()
+            );
+            let history = sqlx::query(AssertSqlSafe(history_query))
+                .fetch_all(&mut *transaction)
+                .await
+                .map_err(|_| BootstrapError::IncompatibleNamespace)?;
+            if !format.is_some_and(|format| {
+                crate::bootstrap::history_matches(&history, &migrations, format)
+            }) {
                 return Err(BootstrapError::IncompatibleNamespace);
             }
         } else {
@@ -138,7 +167,7 @@ pub async fn bootstrap_named_namespace(
         let qualified_schema = namespace.quoted_schema();
         let history = format!("{qualified_schema}.\"_codex_pg_migrations\"");
         let migrator = Migrator {
-            migrations: Cow::Owned(vec![migration]),
+            migrations: Cow::Owned(migrations),
             table_name: Cow::Owned(history.clone()),
             locking: false,
             ignore_missing: false,
@@ -148,6 +177,20 @@ pub async fn bootstrap_named_namespace(
             .run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
             .await
             .map_err(|_| BootstrapError::Migration)?;
+        sqlx::query(AssertSqlSafe(format!(
+            "REVOKE ALL ON {qualified_schema}.\"thread_spawn_edges\" FROM {}",
+            namespace.quoted_runtime()
+        )))
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| classify(&error))?;
+        sqlx::query(AssertSqlSafe(format!(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON {qualified_schema}.\"thread_spawn_edges\" TO {}",
+            namespace.quoted_runtime()
+        )))
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| classify(&error))?;
         sqlx::query(AssertSqlSafe(format!(
             "REVOKE ALL ON {qualified_schema}.\"codex_schema_meta\" FROM {}",
             namespace.quoted_runtime()

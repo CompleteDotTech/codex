@@ -6,6 +6,7 @@ use crate::bootstrap::BASE_MIGRATOR;
 use crate::bootstrap::BOOTSTRAP_TIMEOUT;
 use crate::bootstrap::LOCK_CLASS;
 use crate::bootstrap::LOCK_RESOURCE;
+use crate::bootstrap::history_matches;
 use sqlx::Acquire;
 use sqlx::Row;
 use std::fmt;
@@ -116,7 +117,7 @@ pub async fn check_codex_storage_compatibility(
         }
 
         let unexpected_objects: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'codex_storage'::regnamespace AND typtype <> 'b' AND typrelid = 0)",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey', 'thread_spawn_edges', 'thread_spawn_edges_pkey', 'idx_thread_spawn_edges_parent_status')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'codex_storage'::regnamespace AND typtype <> 'b' AND typrelid = 0)",
         )
         .fetch_one(&mut *transaction)
         .await
@@ -142,21 +143,20 @@ pub async fn check_codex_storage_compatibility(
         .fetch_all(&mut *transaction)
         .await
         .map_err(|_| CompatibilityError::IncompatibleHistory)?;
-        if history.iter().any(|row| !row.get::<bool, _>("success")) {
+        if history
+            .iter()
+            .any(|row| row.try_get::<bool, _>("success").ok() == Some(false))
+        {
             return Err(CompatibilityError::DirtyMigration);
         }
-        if history.len() != BASE_MIGRATOR.migrations.len()
-            || history.iter().zip(BASE_MIGRATOR.migrations.iter()).any(|(row, migration)| {
-                row.get::<i64, _>("version") != migration.version
-                    || row.get::<Vec<u8>, _>("checksum").as_slice() != migration.checksum.as_ref()
-            })
-        {
+        if !matches!(schema_format, 1 | 2) {
+            return Err(CompatibilityError::UnsupportedSchema);
+        }
+        if !history_matches(&history, BASE_MIGRATOR.migrations.as_ref(), schema_format) {
             return Err(CompatibilityError::IncompatibleHistory);
         }
 
-        // This binary only embeds format 1, regardless of claimed host capability.
-        if schema_format != 1
-            || schema_format < capabilities.min_schema_format
+        if schema_format < capabilities.min_schema_format
             || schema_format > capabilities.max_schema_format
         {
             return Err(CompatibilityError::UnsupportedSchema);

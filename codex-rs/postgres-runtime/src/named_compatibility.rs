@@ -9,7 +9,8 @@ use crate::RequiredAccess;
 use crate::bootstrap::BOOTSTRAP_TIMEOUT;
 use crate::bootstrap::LOCK_CLASS;
 use crate::bootstrap::LOCK_RESOURCE;
-use crate::named_bootstrap::namespaced_migration;
+use crate::bootstrap::history_matches;
+use crate::named_bootstrap::namespaced_migrations;
 use sqlx::Acquire;
 use sqlx::AssertSqlSafe;
 use sqlx::Row;
@@ -39,8 +40,8 @@ pub async fn check_named_namespace_compatibility(
     {
         return Err(CompatibilityError::InvalidCapabilities);
     }
-    let migration =
-        namespaced_migration(namespace).map_err(|_| CompatibilityError::IncompatibleHistory)?;
+    let migrations =
+        namespaced_migrations(namespace).map_err(|_| CompatibilityError::IncompatibleHistory)?;
     timeout(BOOTSTRAP_TIMEOUT, async {
         let mut connection = migrator
             .acquire()
@@ -82,7 +83,7 @@ pub async fn check_named_namespace_compatibility(
             return Err(CompatibilityError::IncompatibleNamespace);
         }
         let unexpected_objects: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND typtype <> 'b' AND typrelid = 0)",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey', 'thread_spawn_edges', 'thread_spawn_edges_pkey', 'idx_thread_spawn_edges_parent_status')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND typtype <> 'b' AND typrelid = 0)",
         )
         .bind(&namespace.schema)
         .fetch_one(&mut *transaction)
@@ -110,17 +111,19 @@ pub async fn check_named_namespace_compatibility(
             .fetch_all(&mut *transaction)
             .await
             .map_err(|_| CompatibilityError::IncompatibleHistory)?;
-        if history.iter().any(|row| !row.get::<bool, _>("success")) {
+        if history
+            .iter()
+            .any(|row| row.try_get::<bool, _>("success").ok() == Some(false))
+        {
             return Err(CompatibilityError::DirtyMigration);
         }
-        if history.len() != 1
-            || history[0].get::<i64, _>("version") != migration.version
-            || history[0].get::<Vec<u8>, _>("checksum").as_slice() != migration.checksum.as_ref()
-        {
+        if !matches!(schema_format, 1 | 2) {
+            return Err(CompatibilityError::UnsupportedSchema);
+        }
+        if !history_matches(&history, &migrations, schema_format) {
             return Err(CompatibilityError::IncompatibleHistory);
         }
-        if schema_format != 1
-            || schema_format < capabilities.min_schema_format
+        if schema_format < capabilities.min_schema_format
             || schema_format > capabilities.max_schema_format
         {
             return Err(CompatibilityError::UnsupportedSchema);

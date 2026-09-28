@@ -3,7 +3,10 @@
 use crate::PoolError;
 use crate::PostgresPool;
 use sqlx::Acquire;
+use sqlx::Row;
+use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
+use sqlx::postgres::PgRow;
 use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
@@ -14,6 +17,19 @@ pub(crate) const LOCK_CLASS: i32 = 0x4344_5850; // CDXP; transaction-scoped, ind
 pub(crate) const LOCK_RESOURCE: i32 = 1; // Fixed codex_storage metadata namespace.
 const MIGRATIONS_TABLE: &str = "codex_storage._codex_pg_migrations";
 pub(crate) static BASE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
+
+pub(crate) fn history_matches(rows: &[PgRow], migrations: &[Migration], format: i32) -> bool {
+    if !matches!(format, 1 | 2) || rows.len() != format as usize || rows.len() > migrations.len() {
+        return false;
+    }
+    rows.iter().zip(migrations).all(|(row, migration)| {
+        row.try_get::<i64, _>("version").ok() == Some(migration.version)
+            && row.try_get::<bool, _>("success").ok() == Some(true)
+            && row
+                .try_get::<Vec<u8>, _>("checksum")
+                .is_ok_and(|checksum| checksum.as_slice() == migration.checksum.as_ref())
+    })
+}
 
 /// A redacted bootstrap outcome; SQLx diagnostics may contain server details.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,7 +86,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         }
 
         let unexpected_objects: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'codex_storage'::regnamespace AND typtype <> 'b' AND typrelid = 0)",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey', 'thread_spawn_edges', 'thread_spawn_edges_pkey', 'idx_thread_spawn_edges_parent_status')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'codex_storage'::regnamespace AND typtype <> 'b' AND typrelid = 0)",
         )
         .fetch_one(&mut *transaction)
         .await
@@ -92,7 +108,15 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .fetch_optional(&mut *transaction)
             .await
             .map_err(|_| BootstrapError::IncompatibleNamespace)?;
-            if format != Some(1) {
+            let history = sqlx::query(
+                "SELECT version, success, checksum FROM codex_storage._codex_pg_migrations ORDER BY version",
+            )
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(|_| BootstrapError::IncompatibleNamespace)?;
+            if !format.is_some_and(|format| {
+                history_matches(&history, BASE_MIGRATOR.migrations.as_ref(), format)
+            }) {
                 return Err(BootstrapError::IncompatibleNamespace);
             }
         } else {
@@ -118,6 +142,18 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
             .await
             .map_err(|_| BootstrapError::Migration)?;
+        sqlx::query("REVOKE ALL ON codex_storage.thread_spawn_edges FROM codex_runtime, codex_backup")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("GRANT SELECT, INSERT, UPDATE, DELETE ON codex_storage.thread_spawn_edges TO codex_runtime")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("GRANT SELECT ON codex_storage.thread_spawn_edges TO codex_backup")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
         // The fixture's default grants are broad; metadata and history must be immutable to runtime.
         sqlx::query("REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime")
             .execute(&mut *transaction)
@@ -141,3 +177,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
     .await
     .map_err(|_| BootstrapError::Timeout)?
 }
+
+#[cfg(test)]
+#[path = "bootstrap_v2_tests.rs"]
+mod tests;
