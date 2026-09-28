@@ -47,6 +47,13 @@ async fn real_postgres_pool_bounds_waits_and_rejects_bad_credentials() {
             .await
             .expect("connect with verified TLS"),
     );
+    let mut checked_connection = pool.acquire().await.expect("inspect qualified server");
+    let server_version: String = sqlx::query_scalar("SHOW server_version_num")
+        .fetch_one(&mut *checked_connection)
+        .await
+        .expect("read server version");
+    assert_eq!(server_version, "170011");
+    drop(checked_connection);
     pool.health().await.expect("healthy PostgreSQL connection");
     let held = pool.acquire().await.expect("hold sole connection");
     let waiting = tokio::spawn({
