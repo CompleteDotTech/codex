@@ -39,7 +39,11 @@ BEGIN
                   AND attribute.atttypid = required.type_oid
                   AND attribute.attnotnull
                   AND attribute.attidentity = '' AND attribute.attgenerated = ''
-                  AND pg_get_expr(definition.adbin, definition.adrelid) IS NOT DISTINCT FROM required.expression
+                  AND (
+                      pg_get_expr(definition.adbin, definition.adrelid) IS NOT DISTINCT FROM required.expression
+                      OR (required.relation_oid = history AND required.name = 'installed_on'
+                          AND pg_get_expr(definition.adbin, definition.adrelid) = 'CURRENT_TIMESTAMP')
+                  )
             )
         ) THEN
             RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unrecognized protected columns';
