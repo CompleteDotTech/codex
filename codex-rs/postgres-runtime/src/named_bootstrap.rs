@@ -24,7 +24,9 @@ fn classify(error: &sqlx::Error) -> BootstrapError {
     }
 }
 
-fn namespaced_migration(namespace: &NamedNamespace) -> Result<Migration, BootstrapError> {
+pub(crate) fn namespaced_migration(
+    namespace: &NamedNamespace,
+) -> Result<Migration, BootstrapError> {
     let [base] = BASE_MIGRATOR.migrations.as_ref() else {
         return Err(BootstrapError::Migration);
     };

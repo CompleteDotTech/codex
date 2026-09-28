@@ -35,6 +35,8 @@ pub use namespace::InvalidNamespace;
 pub use namespace::NamedNamespace;
 mod named_bootstrap;
 pub use named_bootstrap::bootstrap_named_namespace;
+mod named_compatibility;
+pub use named_compatibility::check_named_namespace_compatibility;
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_CONNECTIONS: u32 = 32;
