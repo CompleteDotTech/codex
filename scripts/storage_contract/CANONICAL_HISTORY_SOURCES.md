@@ -121,6 +121,15 @@ Embedded source cwd/path values remain unchanged, and the test does not qualify
 path relocation, complete capture enumeration, foreign-host execution, live
 writer fencing, PostgreSQL, or outbound inference equivalence.
 
+The separate native `stale_sqlite_path_cannot_substitute_another_threads_history`
+fixture gives a thread an existing SQLite `rollout_path` that points to a
+different thread's canonical file. A history read must return the requested
+thread's full file history through ID resolution; after that rightful file is
+removed, the same read must fail instead of returning the other thread's
+history. This checks one local identity guard under inconsistent metadata.
+It does not prove a coherent capture, remap source paths, or qualify another
+host or storage backend.
+
 The remaining #2/#11 inventory must trace every app-server/TUI/exec/daemon read
 entry point, file-backed attachment implementation, ephemeral sessions (which
 have no durable rollout to capture), caller-supplied history, memory files,
