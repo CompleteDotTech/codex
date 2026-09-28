@@ -166,6 +166,53 @@ PRIMARY_PROJECT_EDGES = {
     },
 }
 
+# Selected direct goal-store and public boundary edges. Goal updates can also
+# append canonical rollout items, so SQLite rows alone are not a full capture.
+GOAL_EDGES = {
+    "thread_goals": {
+        "state/goals_migrations/0001_thread_goals.sql": {
+            "schema": "CREATE TABLE thread_goals (",
+        },
+        "state/src/runtime/goals.rs": {
+            "read": "FROM thread_goals",
+            "write": "INSERT INTO thread_goals (",
+            "update": "UPDATE thread_goals",
+            "delete": "DELETE FROM thread_goals",
+        },
+        "ext/goal/src/api.rs": {
+            "external_update": ".update_thread_goal(",
+            "external_clear": ".delete_thread_goal(thread_id)",
+        },
+        "ext/goal/src/runtime.rs": {
+            "turn_usage": ".account_thread_goal_usage(",
+        },
+        "app-server/src/request_processors/thread_goal_processor.rs": {
+            "api_set": ".set_thread_goal(",
+            "canonical_event": "outcome.thread_goal_updated_item()",
+        },
+        "app-server/src/request_processors/thread_fork_goal.rs": {
+            "fork_snapshot": ".replace_thread_goal_snapshot(&goal)",
+        },
+    },
+    "thread_goal_continuation_deferrals": {
+        "state/goals_migrations/0002_thread_goal_continuation_deferrals.sql": {
+            "schema": "CREATE TABLE thread_goal_continuation_deferrals (",
+            "cascade": "REFERENCES thread_goals(thread_id) ON DELETE CASCADE",
+        },
+        "state/src/runtime/goals.rs": {
+            "write": "INSERT INTO thread_goal_continuation_deferrals (thread_id)",
+            "read": "FROM thread_goal_continuation_deferrals",
+            "clear": "DELETE FROM thread_goal_continuation_deferrals WHERE thread_id = ?",
+        },
+        "ext/goal/src/runtime.rs": {
+            "continuation_gate": ".has_thread_goal_continuation_deferral(self.thread_id())",
+        },
+        "ext/goal/src/extension.rs": {
+            "turn_start_clear": ".clear_thread_goal_continuation_deferral(runtime.thread_id())",
+        },
+    },
+}
+
 # Direct queue data and notification edges. The revision table is written by
 # SQLite triggers, not by queued_items.rs. These source clauses cover the local
 # adapter and service entry points, but not every app-server RPC caller.
@@ -238,6 +285,9 @@ def audit_coverage() -> dict:
                 else {},
                 "observed_queue_edges": QUEUE_EDGES.get(table, {})
                 if store == "queue_1.sqlite"
+                else {},
+                "observed_goal_edges": GOAL_EDGES.get(table, {})
+                if store == "goals_1.sqlite"
                 else {},
             }
             for table, (issue, source) in entries.items()

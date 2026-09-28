@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from .coverage_matrix import (
     FILES,
+    GOAL_EDGES,
     PRIMARY_PROJECT_EDGES,
     QUEUE_EDGES,
     TABLES,
@@ -46,6 +47,19 @@ class CoverageMatrixTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2] / "codex-rs"
         for table in QUEUE_EDGES:
             modules = matrix[table]["observed_queue_edges"]
+            for module, operations in modules.items():
+                source = (
+                    (root / module).read_text(encoding="utf-8").replace("\r\n", "\n")
+                )
+                for operation, clause in operations.items():
+                    with self.subTest(table=table, module=module, operation=operation):
+                        self.assertIn(clause, source)
+
+    def test_goal_edges_match_migrations_and_production_callers(self):
+        matrix = audit_coverage()["stores"]["goals_1.sqlite"]
+        root = Path(__file__).resolve().parents[2] / "codex-rs"
+        for table in GOAL_EDGES:
+            modules = matrix[table]["observed_goal_edges"]
             for module, operations in modules.items():
                 source = (
                     (root / module).read_text(encoding="utf-8").replace("\r\n", "\n")
