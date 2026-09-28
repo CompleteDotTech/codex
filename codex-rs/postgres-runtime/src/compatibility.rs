@@ -14,6 +14,7 @@ use sqlx::Postgres;
 use sqlx::Row;
 use sqlx::Transaction;
 use std::fmt;
+use tokio::time::Instant;
 use tokio::time::timeout;
 
 /// Host-verified package/build capabilities, never target-supplied.
@@ -68,6 +69,13 @@ fn classify(error: &sqlx::Error) -> CompatibilityError {
     match error {
         sqlx::Error::Database(error) if error.code().as_deref() == Some("42501") => {
             CompatibilityError::Privilege
+        }
+        sqlx::Error::Database(error)
+            if matches!(error.code().as_deref(), Some("55P03" | "25P04"))
+                || error.code().as_deref() == Some("57014")
+                    && error.message().contains("statement timeout") =>
+        {
+            CompatibilityError::Timeout
         }
         _ => CompatibilityError::Unavailable,
     }
@@ -151,6 +159,7 @@ pub async fn check_codex_storage_compatibility(
     {
         return Err(CompatibilityError::InvalidCapabilities);
     }
+    let deadline = Instant::now() + BOOTSTRAP_TIMEOUT;
     timeout(BOOTSTRAP_TIMEOUT, async {
         let mut connection = migrator
             .acquire()
@@ -161,11 +170,16 @@ pub async fn check_codex_storage_compatibility(
             .execute(&mut *transaction)
             .await
             .map_err(|error| classify(&error))?;
-        sqlx::query("SET LOCAL statement_timeout = '29s'")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify(&error))?;
-        sqlx::query("SET LOCAL lock_timeout = '29s'")
+        // Bound the whole PostgreSQL 17 transaction within the outer deadline.
+        let remaining = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis()
+            .saturating_sub(1000);
+        if remaining == 0 {
+            return Err(CompatibilityError::Timeout);
+        }
+        sqlx::query("SELECT set_config('transaction_timeout', $1, true)")
+            .bind(format!("{remaining}ms"))
             .execute(&mut *transaction)
             .await
             .map_err(|error| classify(&error))?;

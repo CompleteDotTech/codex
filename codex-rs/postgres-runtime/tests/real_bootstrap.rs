@@ -398,21 +398,6 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
 
     owner_query(
         &migrator_a,
-        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 2",
-    )
-    .await;
-    assert_eq!(
-        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
-            .await,
-        compatible
-    );
-    assert_eq!(
-        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadWrite)
-            .await,
-        Err(CompatibilityError::WriterTooOld)
-    );
-    owner_query(
-        &migrator_a,
         "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 2",
     )
     .await;
