@@ -21,6 +21,17 @@ BEGIN
                OR relation.relowner <> 'codex_owner'::regrole
                OR relation.relpersistence <> 'p'
                OR relation.relrowsecurity
+        ) OR EXISTS (
+            SELECT 1 FROM pg_inherits inheritance
+            WHERE inheritance.inhrelid IN (metadata, history)
+               OR inheritance.inhparent IN (metadata, history)
+        ) OR EXISTS (
+            SELECT 1 FROM pg_trigger row_trigger
+            WHERE row_trigger.tgrelid IN (metadata, history)
+              AND NOT row_trigger.tgisinternal
+        ) OR EXISTS (
+            SELECT 1 FROM pg_rewrite rewrite
+            WHERE rewrite.ev_class IN (metadata, history)
         ) OR NOT EXISTS (
             SELECT 1 FROM pg_constraint constraint_row
             WHERE constraint_row.conrelid = metadata
@@ -89,11 +100,15 @@ BEGIN
                OR pg_has_role('codex_backup', candidate.oid, 'SET'))
           AND (
             has_schema_privilege(candidate.oid, 'codex_storage', 'CREATE')
-            OR
-            has_table_privilege(candidate.oid, metadata, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
-            OR has_any_column_privilege(candidate.oid, metadata, 'INSERT,UPDATE,REFERENCES')
-            OR has_table_privilege(candidate.oid, history, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
-            OR has_any_column_privilege(candidate.oid, history, 'INSERT,UPDATE,REFERENCES')
+            OR EXISTS (
+                SELECT 1 FROM pg_class relation
+                WHERE relation.relnamespace = 'codex_storage'::regnamespace
+                  AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+                  AND (
+                    has_table_privilege(candidate.oid, relation.oid, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                    OR has_any_column_privilege(candidate.oid, relation.oid, 'INSERT,UPDATE,REFERENCES')
+                  )
+            )
             OR EXISTS (
                 SELECT 1 FROM pg_class sequence
                 WHERE sequence.relnamespace = 'codex_storage'::regnamespace
@@ -135,6 +150,38 @@ BEGIN
           )
     ) THEN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe foreign role privileges';
+    END IF;
+    IF EXISTS (
+        WITH RECURSIVE owner_roles(roleid) AS (
+            SELECT 'codex_owner'::regrole
+            UNION
+            SELECT membership.member
+            FROM pg_auth_members membership
+            JOIN owner_roles parent ON parent.roleid = membership.roleid
+        )
+        SELECT 1 FROM pg_auth_members membership
+        JOIN owner_roles parent ON parent.roleid = membership.roleid
+        WHERE membership.admin_option
+          AND membership.member <> 'codex_migrator'::regrole
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe owner role administration';
+    END IF;
+    IF EXISTS (
+        SELECT 1 FROM pg_class relation,
+             LATERAL aclexplode(coalesce(relation.relacl, acldefault('r', relation.relowner))) acl
+        WHERE relation.oid = history
+          AND acl.privilege_type = 'SELECT'
+          AND acl.is_grantable
+          AND acl.grantee NOT IN ('codex_owner'::regrole, 'codex_migrator'::regrole)
+    ) OR EXISTS (
+        SELECT 1 FROM pg_attribute attribute,
+             LATERAL aclexplode(attribute.attacl) acl
+        WHERE attribute.attrelid = history
+          AND acl.privilege_type = 'SELECT'
+          AND acl.is_grantable
+          AND acl.grantee NOT IN ('codex_owner'::regrole, 'codex_migrator'::regrole)
+    ) THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe history grant options';
     END IF;
     IF NOT EXISTS (
         SELECT 1 FROM pg_default_acl defaults
