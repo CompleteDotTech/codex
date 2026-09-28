@@ -130,6 +130,14 @@ history. This checks one local identity guard under inconsistent metadata.
 It does not prove a coherent capture, remap source paths, or qualify another
 host or storage backend.
 
+Native archive/unarchive collision fixtures exercise occupied canonical target
+paths in both directions. Exclusive file linking refuses to replace an existing
+target, and the fixtures preserve both distinct byte streams and the SQLite
+metadata row on refusal. A crash between link and source unlink can leave two
+hardlinks to the same file; a crash after unlink but before metadata update can
+leave stale SQLite path/status. Capture and recovery must reconcile either
+state, and these fixtures do not establish a cross-store transaction.
+
 The remaining #2/#11 inventory must trace every app-server/TUI/exec/daemon read
 entry point, file-backed attachment implementation, ephemeral sessions (which
 have no durable rollout to capture), caller-supplied history, memory files,

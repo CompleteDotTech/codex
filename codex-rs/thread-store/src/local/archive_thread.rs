@@ -1,4 +1,5 @@
 use super::LocalThreadStore;
+use super::helpers::move_rollout_noclobber;
 use super::helpers::owned_rollout_paths_from_index;
 use super::helpers::restore_rollout_moves;
 use super::helpers::rollout_path_is_archived;
@@ -116,8 +117,12 @@ async fn archive_thread_with_paths(
     })?;
 
     for (index, (source, destination)) in rollout_moves.iter().enumerate() {
-        if let Err(err) = std::fs::rename(source, destination) {
-            if let Err(restore_err) = restore_rollout_moves(&rollout_moves[..index]) {
+        if let Err(err) =
+            move_rollout_noclobber(source, destination, store.config.codex_home.as_path())
+        {
+            if let Err(restore_err) =
+                restore_rollout_moves(&rollout_moves[..index], store.config.codex_home.as_path())
+            {
                 return Err(ThreadStoreError::Internal {
                     message: format!(
                         "failed to archive thread: {err}; failed to restore moved rollouts: {restore_err}"
@@ -135,7 +140,9 @@ async fn archive_thread_with_paths(
             .mark_archived(thread_id, archived_path.as_path(), Utc::now())
             .await
     {
-        if let Err(restore_err) = restore_rollout_moves(&rollout_moves) {
+        if let Err(restore_err) =
+            restore_rollout_moves(&rollout_moves, store.config.codex_home.as_path())
+        {
             return Err(ThreadStoreError::Internal {
                 message: format!(
                     "failed to update archived thread metadata: {err}; failed to restore moved rollouts: {restore_err}"
@@ -170,6 +177,7 @@ mod tests {
     use crate::ThreadStore;
     use crate::local::LocalThreadStore;
     use crate::local::test_support::test_config;
+    use crate::local::test_support::write_archived_session_file;
     use crate::local::test_support::write_session_file;
     use crate::local::test_support::write_session_file_with_history_mode;
 
@@ -367,5 +375,58 @@ mod tests {
         assert_eq!(updated.rollout_path, archived_path);
         assert!(updated.archived_at.is_some());
         assert_eq!(updated.recency_at, metadata.recency_at);
+    }
+
+    #[tokio::test]
+    async fn archive_does_not_replace_an_existing_canonical_file() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(/*v*/ 303);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let source = write_session_file(home.path(), "2025-01-03T12-00-00", uuid)
+            .expect("active canonical file");
+        let destination = write_archived_session_file(home.path(), "2025-01-03T12-00-00", uuid)
+            .expect("occupied archived file");
+        let source_bytes = std::fs::read(&source).expect("read source");
+        let destination_bytes = std::fs::read(&destination).expect("read destination");
+        assert_ne!(source_bytes, destination_bytes);
+
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db");
+        let mut builder = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            source.clone(),
+            Utc::now(),
+            SessionSource::Cli,
+        );
+        builder.cwd = home.path().to_path_buf();
+        let metadata = builder.build(config.default_model_provider_id.as_str());
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("upsert thread");
+        let store = LocalThreadStore::new(config, Some(runtime.clone()));
+
+        let error = store
+            .archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect_err("occupied destination must prevent archive");
+        assert!(matches!(error, ThreadStoreError::Internal { .. }));
+        assert_eq!(
+            std::fs::read(source).expect("source retained"),
+            source_bytes
+        );
+        assert_eq!(
+            std::fs::read(destination).expect("destination retained"),
+            destination_bytes
+        );
+        assert_eq!(
+            runtime.get_thread(thread_id).await.expect("state read"),
+            Some(metadata)
+        );
     }
 }
