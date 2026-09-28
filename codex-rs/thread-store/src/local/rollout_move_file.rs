@@ -30,12 +30,36 @@ pub(super) fn move_rollout_noclobber(
     clear_rollout_move_intent(destination)
 }
 
+#[cfg(test)]
 pub(super) fn move_rollout_noclobber_retained(
     source: &Path,
     destination: &Path,
     codex_home: &Path,
 ) -> std::io::Result<()> {
     move_rollout_with_before_quarantine(source, destination, codex_home, || Ok(()))
+}
+
+pub(super) fn move_rollout_noclobber_retained_bound(
+    source: &Path,
+    destination: &Path,
+    codex_home: &Path,
+    expected_source_id: RolloutFileIdentity,
+    expected_source_digest: [u8; 32],
+) -> io::Result<()> {
+    let verify_source = || {
+        if rollout_file_identity(source)? != expected_source_id
+            || rollout_file_digest(source)? != expected_source_digest
+        {
+            return Err(io::Error::other(
+                "rollout source differs from journaled revision",
+            ));
+        }
+        Ok(())
+    };
+    verify_source()?;
+    // Verify again after staging and publication, before the source is quarantined. A
+    // replacement during copy remains available and cannot be mistaken for the journaled file.
+    move_rollout_with_before_quarantine(source, destination, codex_home, verify_source)
 }
 
 fn move_rollout_with_before_quarantine(

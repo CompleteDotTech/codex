@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use super::LocalThreadStore;
 use super::rollout_move_file::clear_rollout_move_intent;
-use super::rollout_move_file::move_rollout_noclobber_retained;
+use super::rollout_move_file::move_rollout_noclobber_retained_bound;
 use super::rollout_move_file::published_rollout_move_owned;
 use super::rollout_move_file::touch_modified_time;
 use super::rollout_move_file::verify_published_rollout_move;
@@ -136,6 +136,19 @@ pub(super) fn begin_move(
 }
 
 impl PendingMove {
+    pub(super) fn move_all(&self, codex_home: &Path) -> io::Result<()> {
+        for pair in &self.transaction.moves {
+            move_rollout_noclobber_retained_bound(
+                &pair.source,
+                &pair.destination,
+                codex_home,
+                pair.source_id,
+                pair.source_digest,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(super) fn complete(self) -> io::Result<()> {
         // SQLite may already reflect the move if the process exits here. Replay checks
         // the row and skips an idempotent write before removing this journal.
@@ -312,11 +325,16 @@ pub(super) async fn replay_pending_move(
         }
         for pair in &pending.transaction.moves {
             if pair.source.exists() {
-                move_rollout_noclobber_retained(&pair.source, &pair.destination, home).map_err(
-                    |err| ThreadStoreError::Internal {
-                        message: format!("failed to replay rollout move: {err}"),
-                    },
-                )?;
+                move_rollout_noclobber_retained_bound(
+                    &pair.source,
+                    &pair.destination,
+                    home,
+                    pair.source_id,
+                    pair.source_digest,
+                )
+                .map_err(|err| ThreadStoreError::Internal {
+                    message: format!("failed to replay rollout move: {err}"),
+                })?;
             }
         }
         let selected = pending.transaction.selected_destination.as_path();

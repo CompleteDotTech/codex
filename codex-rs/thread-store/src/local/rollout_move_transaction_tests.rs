@@ -155,6 +155,39 @@ async fn replay_rejects_replaced_source_before_any_partial_move()
     Ok(())
 }
 
+#[test]
+fn live_move_rejects_replacement_after_journal_creation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let home = tempfile::tempdir()?;
+    let uuid = Uuid::from_u128(527);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_session_file(home.path(), "2025-01-03T19-00-02", uuid)?;
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let destination = archive.join(source.file_name().expect("filename"));
+    let pending = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Archive,
+        &destination,
+        &[(source.clone(), destination.clone())],
+    )?;
+    let original = source.with_extension("original");
+    fs::rename(&source, &original)?;
+    fs::copy(&original, &source)?;
+
+    assert!(pending.move_all(home.path()).is_err());
+    assert_eq!(fs::read(&source)?, fs::read(&original)?);
+    assert!(!destination.exists());
+    assert!(
+        home.path()
+            .join("rollout_move_transactions")
+            .join(format!("{thread_id}.json"))
+            .exists()
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn replay_finishes_destination_only_unarchive() -> Result<(), Box<dyn std::error::Error>> {
     let home = tempfile::tempdir()?;
