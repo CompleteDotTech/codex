@@ -25,6 +25,8 @@ use super::rollout_move_identity::rollout_file_identity;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
+const MAX_MOVE_JOURNAL_BYTES: usize = 1_048_576;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) enum MoveDirection {
     Archive,
@@ -91,7 +93,7 @@ pub(super) fn begin_move(
         Err(err) => return Err(err),
     }
     for pair in &transaction.moves {
-        validate_move_pair(codex_home, pair)?;
+        validate_move_pair(codex_home, direction, pair)?;
         verify_planned_source(pair)?;
         // Reject a known collision before publishing the journal. A failed archive must not
         // leave an intent that blocks ordinary reads of an intact source.
@@ -110,6 +112,11 @@ pub(super) fn begin_move(
             }
         }
     }
+    let mut journal = serde_json::to_vec(&transaction).map_err(io::Error::other)?;
+    journal.push(b'\n');
+    if journal.len() > MAX_MOVE_JOURNAL_BYTES {
+        return Err(io::Error::other("pending rollout move is too large"));
+    }
     let journal_parent = path
         .parent()
         .ok_or_else(|| io::Error::other("missing journal parent"))?;
@@ -122,8 +129,7 @@ pub(super) fn begin_move(
     let mut file = tempfile::Builder::new()
         .prefix(".codex-move-transaction-")
         .tempfile_in(journal_parent)?;
-    serde_json::to_writer(&mut file, &transaction).map_err(io::Error::other)?;
-    file.write_all(b"\n")?;
+    file.write_all(&journal)?;
     file.as_file().sync_all()?;
     file.persist_noclobber(&path).map_err(|err| err.error)?;
     #[cfg(unix)]
@@ -221,7 +227,7 @@ pub(super) async fn replay_pending_move(
         });
     }
     for pair in &pending.transaction.moves {
-        validate_move_pair(home, pair).map_err(|err| ThreadStoreError::Internal {
+        validate_move_pair(home, direction, pair).map_err(|err| ThreadStoreError::Internal {
             message: format!("pending rollout move path is invalid: {err}"),
         })?;
         // Validate every surviving source before either abandoning a collision or moving
@@ -438,7 +444,11 @@ pub(super) async fn replay_pending_move(
     Ok(Some(direction))
 }
 
-fn validate_move_pair(codex_home: &Path, pair: &MovePair) -> io::Result<()> {
+fn validate_move_pair(
+    codex_home: &Path,
+    direction: MoveDirection,
+    pair: &MovePair,
+) -> io::Result<()> {
     let sessions = std::fs::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
     let archived = std::fs::canonicalize(codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR))?;
     let source_parent = std::fs::canonicalize(
@@ -453,10 +463,15 @@ fn validate_move_pair(codex_home: &Path, pair: &MovePair) -> io::Result<()> {
     )?;
     let same_filename = pair.source.file_name() == pair.destination.file_name()
         && codex_rollout::rollout_id_from_path(&pair.source).is_some();
-    let opposite_collections = (source_parent.starts_with(&sessions)
-        && destination_parent.starts_with(&archived))
-        || (source_parent.starts_with(&archived) && destination_parent.starts_with(&sessions));
-    if !same_filename || !opposite_collections {
+    let collection_matches_direction = match direction {
+        MoveDirection::Archive => {
+            source_parent.starts_with(&sessions) && destination_parent.starts_with(&archived)
+        }
+        MoveDirection::Unarchive => {
+            source_parent.starts_with(&archived) && destination_parent.starts_with(&sessions)
+        }
+    };
+    if !same_filename || !collection_matches_direction {
         return Err(io::Error::other("rollout move is outside its collection"));
     }
     Ok(())
@@ -514,7 +529,7 @@ fn load_move(codex_home: &Path, thread_id: ThreadId) -> io::Result<Option<(Pendi
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),
     };
-    if file.metadata()?.len() > 1_048_576 {
+    if file.metadata()?.len() > MAX_MOVE_JOURNAL_BYTES as u64 {
         return Err(io::Error::other("pending rollout move is too large"));
     }
     let mut contents = String::new();

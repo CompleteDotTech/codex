@@ -30,6 +30,58 @@ use crate::local::test_support::write_archived_session_file;
 use crate::local::test_support::write_session_file;
 use crate::local::test_support::write_session_file_with_history_mode;
 
+#[test]
+fn move_journal_rejects_direction_that_disagrees_with_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let uuid = Uuid::from_u128(521);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_session_file(home.path(), "2025-01-03T16-00-06", uuid)?;
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let destination = archive.join(source.file_name().expect("filename"));
+
+    let result = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Unarchive,
+        &destination,
+        &[(source.clone(), destination.clone())],
+    );
+
+    assert!(result.is_err());
+    assert!(source.exists());
+    assert!(!destination.exists());
+    assert!(!home.path().join("rollout_move_transactions").exists());
+    Ok(())
+}
+
+#[test]
+fn move_journal_rejects_a_record_it_cannot_replay() -> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let uuid = Uuid::from_u128(522);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let source = write_session_file(home.path(), "2025-01-03T16-00-07", uuid)?;
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let destination = archive.join(source.file_name().expect("filename"));
+    let moves = vec![(source.clone(), destination.clone()); 8_000];
+
+    let result = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Archive,
+        &destination,
+        &moves,
+    );
+
+    assert!(result.is_err());
+    assert!(source.exists());
+    assert!(!destination.exists());
+    assert!(!home.path().join("rollout_move_transactions").exists());
+    Ok(())
+}
+
 #[tokio::test]
 async fn destination_only_replay_rejects_in_place_modification()
 -> Result<(), Box<dyn std::error::Error>> {
