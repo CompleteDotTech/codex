@@ -24,6 +24,31 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
         schema_format: 1,
         activation_permitted: false,
     });
+    assert_eq!(
+        check_codex_storage_compatibility(
+            migrator,
+            ClientCapabilities {
+                reader_version: 0,
+                ..capabilities
+            },
+            RequiredAccess::ReadOnly,
+        )
+        .await,
+        Err(CompatibilityError::InvalidCapabilities),
+    );
+    assert_eq!(
+        check_codex_storage_compatibility(
+            migrator,
+            ClientCapabilities {
+                min_schema_format: 2,
+                max_schema_format: 2,
+                ..capabilities
+            },
+            RequiredAccess::ReadOnly,
+        )
+        .await,
+        Err(CompatibilityError::UnsupportedSchema),
+    );
     for (damage, repair, error) in [
         (
             "ALTER TABLE codex_storage.codex_schema_meta ALTER COLUMN format_version TYPE BIGINT",
@@ -46,8 +71,23 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
             CompatibilityError::IncompatibleHistory,
         ),
         (
+            "ALTER TABLE codex_storage._codex_pg_migrations ADD CONSTRAINT unexpected_history_check CHECK (success)",
+            "ALTER TABLE codex_storage._codex_pg_migrations DROP CONSTRAINT unexpected_history_check",
+            CompatibilityError::IncompatibleHistory,
+        ),
+        (
             "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_pkey",
             "ALTER TABLE codex_storage.codex_schema_meta ADD PRIMARY KEY (singleton)",
+            CompatibilityError::MissingMetadata,
+        ),
+        (
+            "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_format_version_check",
+            "ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0)",
+            CompatibilityError::MissingMetadata,
+        ),
+        (
+            "ALTER TABLE codex_storage.codex_schema_meta ALTER COLUMN singleton DROP DEFAULT",
+            "ALTER TABLE codex_storage.codex_schema_meta ALTER COLUMN singleton SET DEFAULT TRUE",
             CompatibilityError::MissingMetadata,
         ),
         (
@@ -58,6 +98,11 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
         (
             "GRANT UPDATE ON codex_storage.codex_schema_meta TO codex_runtime",
             "REVOKE UPDATE ON codex_storage.codex_schema_meta FROM codex_runtime",
+            CompatibilityError::Privilege,
+        ),
+        (
+            "GRANT UPDATE ON codex_storage.codex_schema_meta TO PUBLIC",
+            "REVOKE UPDATE ON codex_storage.codex_schema_meta FROM PUBLIC",
             CompatibilityError::Privilege,
         ),
         (
@@ -101,6 +146,21 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
         );
     }
 
+    owner_query(
+        migrator,
+        "INSERT INTO codex_storage._codex_pg_migrations (version, description, success, checksum, execution_time) SELECT extra, description, TRUE, checksum, execution_time FROM codex_storage._codex_pg_migrations CROSS JOIN generate_series(2, 20001) extra WHERE version = 1",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(migrator, capabilities, RequiredAccess::ReadOnly).await,
+        Err(CompatibilityError::IncompatibleHistory),
+    );
+    owner_query(
+        migrator,
+        "DELETE FROM codex_storage._codex_pg_migrations WHERE version <> 1",
+    )
+    .await;
+
     let mut connection_settings = settings(state, "migrator");
     connection_settings.limits.max_connections = 1;
     let query_pool = PostgresPool::connect(connection_settings)
@@ -112,15 +172,9 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
         .await
         .expect("query backend PID");
     drop(connection);
-    for (lock, query) in [
-        (
-            "LOCK TABLE codex_storage.codex_schema_meta IN ACCESS EXCLUSIVE MODE",
-            "SELECT singleton,%",
-        ),
-        (
-            "LOCK TABLE codex_storage._codex_pg_migrations IN ACCESS EXCLUSIVE MODE",
-            "SELECT history.version,%",
-        ),
+    for lock in [
+        "LOCK TABLE codex_storage.codex_schema_meta IN ACCESS EXCLUSIVE MODE",
+        "LOCK TABLE codex_storage._codex_pg_migrations IN ACCESS EXCLUSIVE MODE",
     ] {
         let mut blocker = migrator.acquire().await.expect("lock connection");
         let mut transaction = blocker.begin().await.expect("begin relation lock");
@@ -136,8 +190,8 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
         let cancel = async {
             tokio::time::timeout(Duration::from_secs(5), async {
                 loop {
-                    let waiting: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock' AND query LIKE $2)")
-                        .bind(backend).bind(query).fetch_one(&mut *observer).await.expect("observe blocked query");
+                    let waiting: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE pid = $1 AND wait_event_type = 'Lock')")
+                        .bind(backend).fetch_one(&mut *observer).await.expect("observe blocked query");
                     if waiting { break; }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                 }
