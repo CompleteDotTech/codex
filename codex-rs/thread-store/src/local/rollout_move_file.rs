@@ -426,7 +426,12 @@ pub(super) fn verify_published_rollout_move(
 }
 
 /// Check ownership without requiring source unlink, for an interrupted publication.
-pub(super) fn published_rollout_move_owned(source: &Path, destination: &Path) -> io::Result<bool> {
+pub(super) fn published_rollout_move_owned(
+    source: &Path,
+    destination: &Path,
+    expected_source_id: RolloutFileIdentity,
+    expected_source_digest: [u8; 32],
+) -> io::Result<bool> {
     let source_parent = std::fs::canonicalize(
         source
             .parent()
@@ -451,6 +456,11 @@ pub(super) fn published_rollout_move_owned(source: &Path, destination: &Path) ->
     };
     if intent.source != source_parent.join(source_name) || intent.destination != destination {
         return Ok(false);
+    }
+    if intent.source_id != expected_source_id || intent.source_digest != expected_source_digest {
+        return Err(io::Error::other(
+            "published move belongs to a different source revision",
+        ));
     }
     match std::fs::symlink_metadata(&destination) {
         Ok(metadata) if metadata.file_type().is_file() => Ok(rollout_file_identity(&destination)?

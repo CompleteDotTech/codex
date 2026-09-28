@@ -5,6 +5,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
+use codex_protocol::protocol::ThreadHistoryMode;
 use codex_protocol::protocol::ThreadMemoryMode;
 use pretty_assertions::assert_eq;
 use uuid::Uuid;
@@ -27,6 +28,7 @@ use crate::local::rollout_move_file::move_rollout_noclobber_retained;
 use crate::local::test_support::test_config;
 use crate::local::test_support::write_archived_session_file;
 use crate::local::test_support::write_session_file;
+use crate::local::test_support::write_session_file_with_history_mode;
 
 #[tokio::test]
 async fn destination_only_replay_rejects_in_place_modification()
@@ -104,6 +106,48 @@ async fn replay_finishes_partially_moved_archive_rollouts() -> Result<(), Box<dy
     assert!(
         !home
             .path()
+            .join("rollout_move_transactions")
+            .join(format!("{thread_id}.json"))
+            .exists()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn replay_rejects_replaced_source_before_any_partial_move()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = tempfile::tempdir()?;
+    let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+    let uuid = Uuid::from_u128(526);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    let first = write_session_file(home.path(), "2025-01-03T19-00-00", uuid)?;
+    let second = write_session_file(home.path(), "2025-01-03T19-00-01", uuid)?;
+    let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    fs::create_dir(&archive)?;
+    let first_destination = archive.join(first.file_name().expect("first filename"));
+    let second_destination = archive.join(second.file_name().expect("second filename"));
+    let pending = begin_move(
+        home.path(),
+        thread_id,
+        MoveDirection::Archive,
+        &first_destination,
+        &[
+            (first.clone(), first_destination.clone()),
+            (second.clone(), second_destination.clone()),
+        ],
+    )?;
+    move_rollout_noclobber_retained(&first, &first_destination, home.path())?;
+    let replacement = second.with_extension("replacement");
+    fs::rename(&second, &replacement)?;
+    fs::copy(&replacement, &second)?;
+    drop(pending); // Crash before the second file's sidecar was written.
+
+    assert!(replay_pending_move(&store, thread_id).await.is_err());
+    assert_eq!(fs::read(&second)?, fs::read(&replacement)?);
+    assert!(!second_destination.exists());
+    assert!(first_destination.exists());
+    assert!(
+        home.path()
             .join("rollout_move_transactions")
             .join(format!("{thread_id}.json"))
             .exists()
@@ -836,19 +880,25 @@ async fn paginated_fork_replays_before_lineage_discovery() -> Result<(), Box<dyn
     let config = test_config(home.path());
     let uuid = Uuid::from_u128(525);
     let thread_id = ThreadId::from_string(&uuid.to_string())?;
-    let source = write_session_file(home.path(), "2025-01-03T18-00-02", uuid)?;
+    let source = write_session_file_with_history_mode(
+        home.path(),
+        "2025-01-03T18-00-02",
+        uuid,
+        ThreadHistoryMode::Paginated,
+    )?;
     let runtime = codex_state::StateRuntime::init(
         config.sqlite.clone(),
         config.default_model_provider_id.clone(),
     )
     .await?;
-    let metadata = codex_state::ThreadMetadataBuilder::new(
+    let mut metadata = codex_state::ThreadMetadataBuilder::new(
         thread_id,
         source.clone(),
         Utc::now(),
         SessionSource::Cli,
     )
     .build(config.default_model_provider_id.as_str());
+    metadata.history_mode = ThreadHistoryMode::Paginated;
     runtime.upsert_thread(&metadata).await?;
     let store = LocalThreadStore::new(config, Some(runtime.clone()));
     let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
@@ -864,12 +914,13 @@ async fn paginated_fork_replays_before_lineage_discovery() -> Result<(), Box<dyn
     move_rollout_noclobber_retained(&source, &destination, home.path())?;
     drop(pending);
 
-    let _fork_result = store
+    let fork_result = store
         .prepare_fork(PrepareForkParams {
             thread_id,
             boundary: ForkBoundary::Latest,
         })
-        .await;
+        .await?;
+    assert_eq!(fork_result.source_thread_id, thread_id);
     let updated = runtime.get_thread(thread_id).await?.expect("SQLite row");
     assert_eq!(updated.rollout_path, destination);
     assert!(updated.archived_at.is_some());

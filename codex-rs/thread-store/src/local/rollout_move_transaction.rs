@@ -19,6 +19,9 @@ use super::rollout_move_file::move_rollout_noclobber_retained;
 use super::rollout_move_file::published_rollout_move_owned;
 use super::rollout_move_file::touch_modified_time;
 use super::rollout_move_file::verify_published_rollout_move;
+use super::rollout_move_identity::RolloutFileIdentity;
+use super::rollout_move_identity::rollout_file_digest;
+use super::rollout_move_identity::rollout_file_identity;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
@@ -32,6 +35,8 @@ pub(super) enum MoveDirection {
 struct MovePair {
     source: PathBuf,
     destination: PathBuf,
+    source_id: RolloutFileIdentity,
+    source_digest: [u8; 32],
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -69,11 +74,15 @@ pub(super) fn begin_move(
         selected_destination: selected_destination.to_path_buf(),
         moves: moves
             .iter()
-            .map(|(source, destination)| MovePair {
-                source: source.clone(),
-                destination: destination.clone(),
+            .map(|(source, destination)| {
+                Ok(MovePair {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    source_id: rollout_file_identity(source)?,
+                    source_digest: rollout_file_digest(source)?,
+                })
             })
-            .collect(),
+            .collect::<io::Result<Vec<_>>>()?,
     };
     let path = transaction_path(codex_home, thread_id);
     match std::fs::symlink_metadata(&path) {
@@ -83,6 +92,7 @@ pub(super) fn begin_move(
     }
     for pair in &transaction.moves {
         validate_move_pair(codex_home, pair)?;
+        verify_planned_source(pair)?;
         // Reject a known collision before publishing the journal. A failed archive must not
         // leave an intent that blocks ordinary reads of an intact source.
         match std::fs::symlink_metadata(&pair.destination) {
@@ -197,6 +207,19 @@ pub(super) async fn replay_pending_move(
         validate_move_pair(home, pair).map_err(|err| ThreadStoreError::Internal {
             message: format!("pending rollout move path is invalid: {err}"),
         })?;
+        // Validate every surviving source before either abandoning a collision or moving
+        // another file. A journal is authority for the original files, not replacements.
+        match std::fs::symlink_metadata(&pair.source) {
+            Ok(_) => verify_planned_source(pair).map_err(|err| ThreadStoreError::Internal {
+                message: format!("pending rollout source changed: {err}"),
+            })?,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                return Err(ThreadStoreError::Internal {
+                    message: format!("failed to inspect pending rollout source: {err}"),
+                });
+            }
+        }
     }
     if !committed
         && pending.transaction.moves.iter().all(|pair| {
@@ -208,13 +231,15 @@ pub(super) async fn replay_pending_move(
         for pair in &pending.transaction.moves {
             match std::fs::symlink_metadata(&pair.destination) {
                 Ok(_) => {
-                    if published_rollout_move_owned(&pair.source, &pair.destination).map_err(
-                        |err| ThreadStoreError::Internal {
-                            message: format!(
-                                "failed to inspect pending rollout publication: {err}"
-                            ),
-                        },
-                    )? {
+                    if published_rollout_move_owned(
+                        &pair.source,
+                        &pair.destination,
+                        pair.source_id,
+                        pair.source_digest,
+                    )
+                    .map_err(|err| ThreadStoreError::Internal {
+                        message: format!("failed to inspect pending rollout publication: {err}"),
+                    })? {
                         owned_destination = true;
                     } else {
                         collided_destination = true;
@@ -241,6 +266,21 @@ pub(super) async fn replay_pending_move(
         // Validate every recorded file before mutating any. The journal may have been damaged
         // or externally changed, and a destination-only file must have a published receipt.
         for pair in &pending.transaction.moves {
+            if std::fs::symlink_metadata(&pair.destination).is_ok()
+                && !published_rollout_move_owned(
+                    &pair.source,
+                    &pair.destination,
+                    pair.source_id,
+                    pair.source_digest,
+                )
+                .map_err(|err| ThreadStoreError::Internal {
+                    message: format!("failed to verify pending rollout ownership: {err}"),
+                })?
+            {
+                return Err(ThreadStoreError::Internal {
+                    message: "pending rollout destination is not owned by this move".to_string(),
+                });
+            }
             let readable = if pair.source.exists() {
                 pair.source.as_path()
             } else {
@@ -251,6 +291,14 @@ pub(super) async fn replay_pending_move(
                 )?;
                 pair.destination.as_path()
             };
+            if rollout_file_digest(readable).map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to hash pending rollout: {err}"),
+            })? != pair.source_digest
+            {
+                return Err(ThreadStoreError::Internal {
+                    message: "pending rollout content differs from journaled source".to_string(),
+                });
+            }
             let session_meta = codex_rollout::read_session_meta_line(readable)
                 .await
                 .map_err(|err| ThreadStoreError::Internal {
@@ -330,6 +378,19 @@ pub(super) async fn replay_pending_move(
             }
         }
         for pair in &pending.transaction.moves {
+            if !published_rollout_move_owned(
+                &pair.source,
+                &pair.destination,
+                pair.source_id,
+                pair.source_digest,
+            )
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to verify committed rollout ownership: {err}"),
+            })? {
+                return Err(ThreadStoreError::Internal {
+                    message: "committed rollout destination is not owned by this move".to_string(),
+                });
+            }
             verify_published_rollout_move(&pair.source, &pair.destination, home).map_err(
                 |err| ThreadStoreError::Internal {
                     message: format!("failed to verify committed rollout move: {err}"),
@@ -375,6 +436,17 @@ fn validate_move_pair(codex_home: &Path, pair: &MovePair) -> io::Result<()> {
         || (source_parent.starts_with(&archived) && destination_parent.starts_with(&sessions));
     if !same_filename || !opposite_collections {
         return Err(io::Error::other("rollout move is outside its collection"));
+    }
+    Ok(())
+}
+
+fn verify_planned_source(pair: &MovePair) -> io::Result<()> {
+    if rollout_file_identity(&pair.source)? != pair.source_id
+        || rollout_file_digest(&pair.source)? != pair.source_digest
+    {
+        return Err(io::Error::other(
+            "rollout source identity or content differs from journal",
+        ));
     }
     Ok(())
 }
