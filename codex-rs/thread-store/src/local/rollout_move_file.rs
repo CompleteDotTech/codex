@@ -15,6 +15,7 @@ use serde::Serialize;
 use super::rollout_move_identity::RolloutFileIdentity;
 use super::rollout_move_identity::rollout_file_digest;
 use super::rollout_move_identity::rollout_file_identity;
+use super::rollout_move_identity::rollout_file_identity_from_handle;
 pub(super) fn touch_modified_time(path: &Path) -> std::io::Result<()> {
     let times = FileTimes::new().set_modified(SystemTime::now());
     OpenOptions::new().append(true).open(path)?.set_times(times)
@@ -109,6 +110,15 @@ fn move_rollout_with_hooks(
     let source_digest = rollout_file_digest(source)?;
     binding.verify(source)?;
     before_staging()?;
+    binding.verify(source)?;
+    let source_after_hook = std::fs::metadata(source)?;
+    if source_after_hook.len() != source_metadata.len()
+        || source_after_hook.modified()? != source_metadata.modified()?
+        || rollout_file_identity(source)? != source_id
+        || rollout_file_digest(source)? != source_digest
+    {
+        return Err(io::Error::other("rollout source changed before staging"));
+    }
     let intent = match std::fs::symlink_metadata(&intent_path) {
         Ok(metadata) => {
             if !metadata.file_type().is_file() {
@@ -135,36 +145,11 @@ fn move_rollout_with_hooks(
             // Give the published file an identity distinct from the source before the
             // no-clobber publication. The durable intent can then distinguish our file
             // from even an unrelated hard link to the source after a crash.
-            let mut stage = tempfile::Builder::new()
+            let stage = tempfile::Builder::new()
                 .prefix(".codex-rollout-stage-")
                 .tempfile_in(&canonical_destination_parent)?;
-            let mut input = std::fs::File::open(source)?;
-            io::copy(&mut input, &mut stage)?;
-            stage
-                .as_file()
-                .set_times(FileTimes::new().set_modified(source_metadata.modified()?))?;
-            stage
-                .as_file()
-                .set_permissions(source_metadata.permissions())?;
-            stage.as_file().sync_all()?;
-            let source_after_copy = std::fs::metadata(source)?;
-            if source_after_copy.len() != source_metadata.len()
-                || source_after_copy.modified()? != source_metadata.modified()?
-                || rollout_file_identity(source)? != source_id
-            {
-                return Err(io::Error::other(
-                    "rollout source changed while preparing move",
-                ));
-            }
             let stage_path = stage.path().to_path_buf();
             let stage_id = rollout_file_identity(&stage_path)?;
-            let stage_digest = rollout_file_digest(&stage_path)?;
-            if stage_digest != source_digest {
-                return Err(io::Error::other(
-                    "rollout source changed while preparing move",
-                ));
-            }
-            binding.verify(source)?;
             let (stage_file, stage_path) = stage.keep().map_err(|err| err.error)?;
             drop(stage_file);
             sync_parent_directory(&stage_path)?;
@@ -189,7 +174,7 @@ fn move_rollout_with_hooks(
                 source_digest,
                 stage_path,
                 stage_id,
-                stage_digest,
+                stage_digest: source_digest,
                 quarantine_path,
             };
             if let Err(err) = write_rollout_move_intent(&intent_path, &intent) {
@@ -197,6 +182,8 @@ fn move_rollout_with_hooks(
                 let _ = std::fs::remove_dir(quarantine_dir);
                 return Err(err);
             }
+            // The receipt must be durable before any rollout bytes enter the stage.
+            // A crash before this point can leave only an empty, unowned tempfile.
             intent
         }
         Err(err) => return Err(err),
@@ -219,6 +206,7 @@ fn move_rollout_with_hooks(
             }
         }
         Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            prepare_stage(source, &intent, binding)?;
             binding.verify(source)?;
             if rollout_file_identity(&intent.stage_path)? != intent.stage_id
                 || rollout_file_digest(&intent.stage_path)? != intent.stage_digest
@@ -267,6 +255,121 @@ fn sync_parent_directory(path: &Path) -> io::Result<()> {
     #[cfg(not(unix))]
     let _ = path;
     Ok(())
+}
+
+fn prepare_stage(
+    source: &Path,
+    intent: &RolloutMoveIntent,
+    binding: SourceBinding,
+) -> io::Result<()> {
+    binding.verify(source)?;
+    let mut stage = std::fs::File::open(&intent.stage_path)?;
+    if rollout_file_identity(&intent.stage_path)? != intent.stage_id
+        || rollout_file_identity_from_handle(&stage)? != intent.stage_id
+    {
+        return Err(io::Error::other("rollout move stage identity changed"));
+    }
+    let stage_metadata = stage.metadata()?;
+    if !stage_has_single_link(&stage)? || stage_metadata.len() > intent.source_len {
+        return Err(io::Error::other(
+            "rollout move stage is not an exclusive partial copy",
+        ));
+    }
+    let mut input = validate_stage_prefix(source, &mut stage, stage_metadata.len())?;
+    if stage_metadata.len() == intent.source_len
+        && rollout_file_digest(&intent.stage_path)? == intent.stage_digest
+        && stage_metadata.modified()? == intent.source_modified
+        && stage_permissions_match(&stage_metadata, &std::fs::metadata(source)?)
+    {
+        return Ok(());
+    }
+    let mut writable_stage = OpenOptions::new().append(true).open(&intent.stage_path)?;
+    if rollout_file_identity_from_handle(&writable_stage)? != intent.stage_id {
+        return Err(io::Error::other("rollout move stage identity changed"));
+    }
+    if stage_metadata.len() < intent.source_len {
+        io::copy(&mut input, &mut writable_stage)?;
+    }
+    let source_metadata = std::fs::metadata(source)?;
+    if source_metadata.len() != intent.source_len
+        || source_metadata.modified()? != intent.source_modified
+        || rollout_file_identity(source)? != intent.source_id
+        || rollout_file_digest(source)? != intent.source_digest
+        || rollout_file_identity_from_handle(&writable_stage)? != intent.stage_id
+        || rollout_file_digest(&intent.stage_path)? != intent.stage_digest
+    {
+        return Err(io::Error::other(
+            "rollout source or stage changed while preparing move",
+        ));
+    }
+    writable_stage.set_times(FileTimes::new().set_modified(intent.source_modified))?;
+    writable_stage.set_permissions(source_metadata.permissions())?;
+    writable_stage.sync_all()?;
+    sync_parent_directory(&intent.stage_path)
+}
+
+fn validate_stage_prefix(
+    source: &Path,
+    stage: &mut std::fs::File,
+    stage_len: u64,
+) -> io::Result<std::fs::File> {
+    let mut input = std::fs::File::open(source)?;
+    let mut remaining = stage_len;
+    let mut source_buf = [0; 8192];
+    let mut stage_buf = [0; 8192];
+    while remaining > 0 {
+        let amount = remaining.min(source_buf.len() as u64) as usize;
+        input.read_exact(&mut source_buf[..amount])?;
+        stage.read_exact(&mut stage_buf[..amount])?;
+        if source_buf[..amount] != stage_buf[..amount] {
+            return Err(io::Error::other(
+                "rollout move stage differs from source prefix",
+            ));
+        }
+        remaining -= amount as u64;
+    }
+    Ok(input)
+}
+
+#[cfg(unix)]
+fn stage_permissions_match(stage: &std::fs::Metadata, source: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    stage.permissions().mode() == source.permissions().mode()
+}
+
+#[cfg(windows)]
+fn stage_permissions_match(stage: &std::fs::Metadata, source: &std::fs::Metadata) -> bool {
+    stage.permissions().readonly() == source.permissions().readonly()
+}
+
+#[cfg(unix)]
+fn stage_has_single_link(file: &std::fs::File) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(file.metadata()?.nlink() == 1)
+}
+
+#[cfg(windows)]
+fn stage_has_single_link(file: &std::fs::File) -> io::Result<bool> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::FILE_STANDARD_INFO;
+    use windows_sys::Win32::Storage::FileSystem::FileStandardInfo;
+    use windows_sys::Win32::Storage::FileSystem::GetFileInformationByHandleEx;
+
+    let mut info: FILE_STANDARD_INFO = unsafe { std::mem::zeroed() };
+    let result = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle() as _,
+            FileStandardInfo,
+            (&mut info as *mut FILE_STANDARD_INFO).cast(),
+            std::mem::size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    };
+    if result == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info.NumberOfLinks == 1)
 }
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
@@ -416,14 +519,55 @@ pub(super) fn clear_rollout_move_intent(destination: &Path) -> io::Result<()> {
     {
         return Err(io::Error::other("rollout move has an invalid stage path"));
     }
+    let stage_exists = match std::fs::symlink_metadata(&intent.stage_path) {
+        Ok(_) => true,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err),
+    };
+    let quarantine_exists = match std::fs::symlink_metadata(&intent.quarantine_path) {
+        Ok(_) => true,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
+        Err(err) => return Err(err),
+    };
+    if stage_exists && quarantine_exists {
+        return Err(io::Error::other(
+            "rollout stage and quarantined source coexist",
+        ));
+    }
     finish_quarantined_source(&intent)?;
     match std::fs::symlink_metadata(&intent.stage_path) {
         Ok(_) => {
+            let mut stage = std::fs::File::open(&intent.stage_path)?;
             if rollout_file_identity(&intent.stage_path)? != intent.stage_id
-                || rollout_file_digest(&intent.stage_path)? != intent.stage_digest
+                || rollout_file_identity_from_handle(&stage)? != intent.stage_id
             {
                 return Err(io::Error::other("rollout move stage identity changed"));
             }
+            if rollout_file_digest(&intent.stage_path)? != intent.stage_digest {
+                if !stage_has_single_link(&stage)? {
+                    return Err(io::Error::other(
+                        "rollout move partial stage has other links",
+                    ));
+                }
+                match std::fs::symlink_metadata(&intent.destination) {
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                    Ok(_) => {
+                        return Err(io::Error::other(
+                            "rollout destination exists during partial-stage cleanup",
+                        ));
+                    }
+                    Err(err) => return Err(err),
+                }
+                if stage.metadata()?.len() > intent.source_len
+                    || rollout_file_identity(&intent.source)? != intent.source_id
+                    || rollout_file_digest(&intent.source)? != intent.source_digest
+                {
+                    return Err(io::Error::other("rollout move stage contents changed"));
+                }
+                let stage_len = stage.metadata()?.len();
+                validate_stage_prefix(&intent.source, &mut stage, stage_len)?;
+            }
+            drop(stage);
             std::fs::remove_file(&intent.stage_path)?;
             sync_parent_directory(&intent.stage_path)?;
         }

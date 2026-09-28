@@ -307,6 +307,130 @@ fn retry_publishes_a_prepared_stage_after_crash() -> std::io::Result<()> {
 }
 
 #[test]
+fn retry_resumes_an_intact_partial_stage_after_crash() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout contents")?;
+    let intent = prepare_move_intent(&source, &destination)?;
+    // Fault point: the durable receipt exists, but only a prefix was copied.
+    OpenOptions::new()
+        .write(true)
+        .open(&intent.stage_path)?
+        .set_len(7)?;
+
+    move_rollout_noclobber(&source, &destination, home.path())?;
+
+    assert!(!source.exists());
+    assert_eq!(std::fs::read(&destination)?, b"rollout contents");
+    assert!(!intent.stage_path.exists());
+    assert!(!rollout_move_intent_path(&destination).exists());
+    Ok(())
+}
+
+#[test]
+fn retry_rejects_a_changed_partial_stage_without_deleting_source() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout contents")?;
+    let intent = prepare_move_intent(&source, &destination)?;
+    // A file at the recorded pathname is not authority to overwrite its contents.
+    std::fs::write(&intent.stage_path, b"replaced prefix")?;
+
+    let error = move_rollout_noclobber_retained(&source, &destination, home.path())
+        .expect_err("changed stage must stop recovery");
+
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(std::fs::read(&source)?, b"rollout contents");
+    assert!(!destination.exists());
+    assert!(rollout_move_intent_path(&destination).exists());
+    assert!(clear_rollout_move_intent(&destination).is_err());
+    assert!(intent.stage_path.exists());
+    Ok(())
+}
+
+#[test]
+fn abandoned_partial_stage_is_cleared_only_with_its_receipt() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout contents")?;
+    let intent = prepare_move_intent(&source, &destination)?;
+    OpenOptions::new()
+        .write(true)
+        .open(&intent.stage_path)?
+        .set_len(7)?;
+
+    clear_rollout_move_intent(&destination)?;
+
+    assert_eq!(std::fs::read(&source)?, b"rollout contents");
+    assert!(!intent.stage_path.exists());
+    assert!(!rollout_move_intent_path(&destination).exists());
+    Ok(())
+}
+
+#[test]
+fn cleanup_refuses_stage_and_quarantined_source_together() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout contents")?;
+    let intent = prepare_move_intent(&source, &destination)?;
+    OpenOptions::new()
+        .write(true)
+        .open(&intent.stage_path)?
+        .set_len(7)?;
+    std::fs::rename(&source, &intent.quarantine_path)?;
+
+    assert!(clear_rollout_move_intent(&destination).is_err());
+
+    assert_eq!(std::fs::read(&intent.quarantine_path)?, b"rollout contents");
+    assert!(intent.stage_path.exists());
+    assert!(rollout_move_intent_path(&destination).exists());
+    Ok(())
+}
+
+#[test]
+fn cleanup_finishes_a_published_stage_hard_link() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout contents")?;
+    let intent = prepare_move_intent(&source, &destination)?;
+    // Fault point: no-clobber publication linked the stage but has not removed its name.
+    std::fs::hard_link(&intent.stage_path, &destination)?;
+
+    move_rollout_noclobber_retained(&source, &destination, home.path())?;
+    clear_rollout_move_intent(&destination)?;
+
+    assert!(!source.exists());
+    assert_eq!(std::fs::read(&destination)?, b"rollout contents");
+    assert!(!intent.stage_path.exists());
+    Ok(())
+}
+
+#[test]
 fn retry_preserves_source_if_published_bytes_change_in_place() -> std::io::Result<()> {
     let home = tempfile::tempdir()?;
     let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);

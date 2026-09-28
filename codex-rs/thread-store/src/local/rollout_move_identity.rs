@@ -1,3 +1,4 @@
+use std::fs::File;
 use std::io;
 use std::path::Path;
 
@@ -17,7 +18,10 @@ pub(super) fn rollout_file_identity(path: &Path) -> io::Result<RolloutFileIdenti
     if !std::fs::symlink_metadata(path)?.file_type().is_file() {
         return Err(io::Error::other("rollout move path is not a regular file"));
     }
-    let file = std::fs::File::open(path)?;
+    rollout_file_identity_from_handle(&std::fs::File::open(path)?)
+}
+
+pub(super) fn rollout_file_identity_from_handle(file: &File) -> io::Result<RolloutFileIdentity> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
