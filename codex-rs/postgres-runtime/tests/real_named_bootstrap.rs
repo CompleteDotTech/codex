@@ -118,7 +118,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     .fetch_one(&mut *transaction)
     .await
     .expect("read named metadata and history");
-    assert_eq!((format, history), (3, 3));
+    assert_eq!((format, history), (4, 4));
     transaction
         .rollback()
         .await
@@ -130,7 +130,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
             .fetch_one(&mut *runtime_connection)
             .await
             .expect("runtime reads named metadata");
-    assert_eq!(visible, 3);
+    assert_eq!(visible, 4);
     let denied = sqlx::query("SELECT version FROM codex_storage_isolation._codex_pg_migrations")
         .execute(&mut *runtime_connection)
         .await
@@ -142,16 +142,43 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
             .as_deref(),
         Some("42501")
     );
+    let denied = sqlx::query("SELECT id FROM codex_storage.threads")
+        .execute(&mut *runtime_connection)
+        .await
+        .expect_err("named runtime cannot read default thread metadata");
+    assert_eq!(
+        denied
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("42501")
+    );
     drop(runtime_connection);
+    let default_runtime = PostgresPool::connect(settings(state, "runtime"))
+        .await
+        .expect("default runtime pool");
+    let mut default_connection = default_runtime.acquire().await.expect("default runtime");
+    let denied = sqlx::query("SELECT id FROM codex_storage_isolation.threads")
+        .execute(&mut *default_connection)
+        .await
+        .expect_err("default runtime cannot read named thread metadata");
+    assert_eq!(
+        denied
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("42501")
+    );
+    drop(default_connection);
 
     let capabilities = ClientCapabilities {
-        min_schema_format: 3,
-        max_schema_format: 3,
-        reader_version: 3,
-        writer_version: 3,
+        min_schema_format: 4,
+        max_schema_format: 4,
+        reader_version: 4,
+        writer_version: 4,
     };
     let compatible = Ok(CompatibilityResult {
-        schema_format: 3,
+        schema_format: 4,
         activation_permitted: false,
     });
     assert_eq!(
@@ -189,7 +216,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
 
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET min_writer_version = 4",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET min_writer_version = 5",
     )
     .await;
     assert_eq!(
@@ -214,7 +241,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     );
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET min_reader_version = 4",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET min_reader_version = 5",
     )
     .await;
     assert_eq!(
@@ -229,7 +256,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     );
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 4, min_reader_version = 3, min_writer_version = 3",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 5, min_reader_version = 4, min_writer_version = 4",
     )
     .await;
     assert_eq!(
@@ -244,7 +271,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     );
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 3",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 4",
     )
     .await;
 

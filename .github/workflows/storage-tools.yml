@@ -135,6 +135,26 @@ jobs:
         run: |
           if [[ -n "${CODEX_TEST_POSTGRES_IMPORT_UPGRADE_STATE:-}" && -f "$CODEX_TEST_POSTGRES_IMPORT_UPGRADE_STATE/receipt.json" ]]; then
             python scripts/postgres/manage.py --state "$CODEX_TEST_POSTGRES_IMPORT_UPGRADE_STATE" down
+          fi
+      - name: Start isolated v3 to v4 thread upgrade fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/codex-pg-thread-upgrade-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'CODEX_TEST_POSTGRES_THREAD_UPGRADE_STATE=%s\n' "$state" >> "$GITHUB_ENV"
+          python scripts/postgres/manage.py --state "$state" init --project "codex-pg-thread-upgrade-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 56085
+          python scripts/postgres/manage.py --state "$state" pin
+          python scripts/postgres/manage.py --state "$state" up
+      - name: Test PostgreSQL v3 to v4 transactional thread upgrade
+        working-directory: codex-rs
+        run: just test -p codex-postgres-runtime real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths
+      - name: Stop thread upgrade fixture and retain receipts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${CODEX_TEST_POSTGRES_THREAD_UPGRADE_STATE:-}" && -f "$CODEX_TEST_POSTGRES_THREAD_UPGRADE_STATE/receipt.json" ]]; then
+            python scripts/postgres/manage.py --state "$CODEX_TEST_POSTGRES_THREAD_UPGRADE_STATE" down
+          fi
 
   offline:
     name: Offline tests (${{ matrix.os }}, Python ${{ matrix.python }})

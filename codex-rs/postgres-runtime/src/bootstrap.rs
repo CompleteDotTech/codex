@@ -19,7 +19,7 @@ const MIGRATIONS_TABLE: &str = "codex_storage._codex_pg_migrations";
 pub(crate) static BASE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
 
 pub(crate) fn history_matches(rows: &[PgRow], migrations: &[Migration], format: i32) -> bool {
-    if !matches!(format, 1..=3) || rows.len() != format as usize || rows.len() > migrations.len() {
+    if !matches!(format, 1..=4) || rows.len() != format as usize || rows.len() > migrations.len() {
         return false;
     }
     rows.iter().zip(migrations).all(|(row, migration)| {
@@ -86,7 +86,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         }
 
         let unexpected_objects: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey', 'thread_spawn_edges', 'thread_spawn_edges_pkey', 'idx_thread_spawn_edges_parent_status', 'external_agent_config_imports', 'external_agent_config_imports_pkey', 'idx_external_agent_config_imports_history')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'codex_storage'::regnamespace AND typtype <> 'b' AND typrelid = 0)",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey', 'thread_spawn_edges', 'thread_spawn_edges_pkey', 'idx_thread_spawn_edges_parent_status', 'external_agent_config_imports', 'external_agent_config_imports_pkey', 'idx_external_agent_config_imports_history', 'threads', 'threads_pkey', 'idx_threads_recency_id')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'codex_storage'::regnamespace AND typtype <> 'b' AND typrelid = 0)",
         )
         .fetch_one(&mut *transaction)
         .await
@@ -163,6 +163,18 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .await
             .map_err(|error| classify_sqlx(&error))?;
         sqlx::query("GRANT SELECT ON codex_storage.external_agent_config_imports TO codex_backup")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("REVOKE ALL ON codex_storage.threads FROM codex_runtime, codex_backup")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("GRANT SELECT, INSERT, UPDATE, DELETE ON codex_storage.threads TO codex_runtime")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("GRANT SELECT ON codex_storage.threads TO codex_backup")
             .execute(&mut *transaction)
             .await
             .map_err(|error| classify_sqlx(&error))?;
