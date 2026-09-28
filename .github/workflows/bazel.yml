@@ -168,6 +168,8 @@ jobs:
           # the PR-blocking critical path after the useful test work is done.
           cache-scope: bazel-test
 
+      - uses: ./.github/actions/prepare-voice-windows-bazel
+
       - name: bazel test shard
         env:
           BAZEL_TEST_SHARD: ${{ matrix.shard }}
@@ -276,6 +278,8 @@ jobs:
           target: x86_64-pc-windows-msvc
           cache-scope: bazel-${{ github.job }}
 
+      - uses: ./.github/actions/prepare-voice-windows-bazel
+
       - name: bazel test //...
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
@@ -366,6 +370,9 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
+
+      - uses: ./.github/actions/prepare-voice-windows-bazel
+        if: runner.os == 'Windows'
 
       - name: bazel build --config=clippy lint targets
         env:
@@ -464,6 +471,9 @@ jobs:
         with:
           target: ${{ matrix.target }}
           cache-scope: bazel-${{ github.job }}
+
+      - uses: ./.github/actions/prepare-voice-windows-bazel
+        if: runner.os == 'Windows'
 
       - name: bazel build verify-release-build targets
         env:
