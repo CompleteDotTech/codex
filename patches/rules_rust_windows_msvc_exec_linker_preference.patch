@@ -5,9 +5,9 @@
              linker_preference = value
  
 +    # Probe the MSVC linker for target Rust without changing the linker used
-+    # to bootstrap Rust tools in the exec configuration.
++    # by the Rust toolchain that bootstraps process_wrapper.
 +    if (
-+        ctx.configuration.is_tool_configuration() and
++        ctx.attr.bootstrapping and
 +        target_os == "windows" and
 +        target_abi == "msvc" and
 +        linker_preference == "cc" and
