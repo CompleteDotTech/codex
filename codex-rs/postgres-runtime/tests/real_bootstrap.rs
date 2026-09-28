@@ -45,7 +45,7 @@ async fn owner_query(pool: &PostgresPool, sql: &'static str) {
         .execute(&mut *transaction)
         .await
         .expect("assume schema owner role");
-    sqlx::query(sql)
+    sqlx::raw_sql(sql)
         .execute(&mut *transaction)
         .await
         .expect("execute owner fixture SQL");
@@ -326,6 +326,38 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     .expect("reader roles regain schema access");
     assert_eq!(schema_usage, (true, true));
     drop(schema_observer);
+
+    for (damage, repair) in [
+        (
+            "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_pkey; ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (format_version)",
+            "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_pkey; ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (singleton)",
+        ),
+        (
+            "ALTER TABLE codex_storage._codex_pg_migrations DROP CONSTRAINT _codex_pg_migrations_pkey; ALTER TABLE codex_storage._codex_pg_migrations ADD CONSTRAINT _codex_pg_migrations_pkey PRIMARY KEY (description)",
+            "ALTER TABLE codex_storage._codex_pg_migrations DROP CONSTRAINT _codex_pg_migrations_pkey; ALTER TABLE codex_storage._codex_pg_migrations ADD CONSTRAINT _codex_pg_migrations_pkey PRIMARY KEY (version)",
+        ),
+    ] {
+        owner_query(&migrator_a, damage).await;
+        assert_eq!(
+            bootstrap_codex_storage(&migrator_a).await,
+            Err(BootstrapError::IncompatibleNamespace)
+        );
+        owner_query(&migrator_a, repair).await;
+    }
+    owner_query(
+        &migrator_a,
+        "ALTER TABLE codex_storage.codex_schema_meta ENABLE ROW LEVEL SECURITY",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::IncompatibleNamespace)
+    );
+    owner_query(
+        &migrator_a,
+        "ALTER TABLE codex_storage.codex_schema_meta DISABLE ROW LEVEL SECURITY",
+    )
+    .await;
 
     owner_query(
         &migrator_a,
