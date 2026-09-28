@@ -9,5 +9,5 @@ cd "${repo_root}"
 # executables are covered by the test matrix; building every test binary here
 # exhausts the hosted Linux runner before this release check can finish.
 # Exclude the experimental V8 proof of concept from this sweep.
-bazelisk query --output=label \
+./.github/scripts/run-bazel-query-ci.sh --output=label -- \
   'attr("testonly", "^0$", kind("rust_(binary|library|proc_macro) rule", //codex-rs/... except //codex-rs/v8-poc/...))'

@@ -164,10 +164,12 @@ jobs:
         include:
           - os: macos-15
             target: aarch64-apple-darwin
+            legacy_name: macos-15-xlarge
           - os: macos-15-intel
             target: x86_64-apple-darwin
+            legacy_name: macos-15-xlarge
     runs-on: ubuntu-24.04
-    name: Bazel test on ${{ matrix.os }} for ${{ matrix.target }}
+    name: Bazel test on ${{ matrix.legacy_name }} for ${{ matrix.target }}
     steps:
       - name: Confirm macOS Bazel test shards passed
         shell: bash
@@ -331,7 +333,7 @@ jobs:
           - 3
           - 4
     runs-on: windows-2025
-    name: Bazel test on windows-2025 for x86_64-pc-windows-gnullvm shard ${{ matrix.shard }}/4
+    name: Bazel test on windows-latest for x86_64-pc-windows-gnullvm shard ${{ matrix.shard }}/4
     environment:
       name: bazel
       deployment: false
@@ -449,7 +451,7 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     timeout-minutes: 90
     runs-on: windows-2025
-    name: Bazel test on windows-2025 for x86_64-pc-windows-msvc (native main)
+    name: Bazel test on windows-latest for x86_64-pc-windows-msvc (native main)
     environment:
       name: bazel
       deployment: false
@@ -538,11 +540,13 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: macos-15
             target: aarch64-apple-darwin
+            legacy_name: macos-15-xlarge
           - os: windows-2025
             target: x86_64-pc-windows-gnullvm
             runs_on: windows-2025
+            legacy_name: windows-latest
     runs-on: ${{ matrix.runs_on || matrix.os }}
-    name: Bazel clippy on ${{ matrix.os }} for ${{ matrix.target }}
+    name: Bazel clippy on ${{ matrix.legacy_name || matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
       deployment: false
@@ -569,6 +573,9 @@ jobs:
         run: |
           bazel_clippy_args=(
             --config=clippy
+            # Run the Clippy aspect without also linking every test binary.
+            # The default output group exhausted the Linux runner's disk.
+            --output_groups=clippy_checks
             --build_metadata=COMMIT_SHA=${GITHUB_SHA}
             --build_metadata=TAG_job=clippy
           )
@@ -639,11 +646,13 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: macos-15
             target: aarch64-apple-darwin
+            legacy_name: macos-15-xlarge
           - os: windows-2025
             target: x86_64-pc-windows-gnullvm
             runs_on: windows-2025
+            legacy_name: windows-latest
     runs-on: ${{ matrix.runs_on || matrix.os }}
-    name: Verify release build on ${{ matrix.os }} for ${{ matrix.target }}
+    name: Verify release build on ${{ matrix.legacy_name || matrix.os }} for ${{ matrix.target }}
     environment:
       name: bazel
       deployment: false
