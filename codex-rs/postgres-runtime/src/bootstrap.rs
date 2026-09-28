@@ -79,12 +79,12 @@ async fn namespace_has_unexpected_objects(
     .map_err(|error| classify_sqlx(&error))
 }
 
-async fn require_safe_runtime_privileges(
+async fn require_safe_protected_privileges(
     connection: &mut PgConnection,
 ) -> Result<(), BootstrapError> {
     // Check effective access, including column ACLs, PUBLIC, inherited roles,
-    // and roles the runtime could assume explicitly.
-    let unsafe_runtime_privileges: bool = sqlx::query_scalar(
+    // and roles either login could assume explicitly.
+    let unsafe_privileges: bool = sqlx::query_scalar(
         "SELECT EXISTS (
             SELECT 1 FROM pg_roles
             WHERE (pg_has_role('codex_runtime', oid, 'USAGE') OR pg_has_role('codex_runtime', oid, 'SET'))
@@ -95,12 +95,24 @@ async fn require_safe_runtime_privileges(
                 OR has_table_privilege(oid, 'codex_storage._codex_pg_migrations', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
                 OR has_any_column_privilege(oid, 'codex_storage._codex_pg_migrations', 'SELECT,INSERT,UPDATE,REFERENCES')
               )
+        ) OR EXISTS (
+            SELECT 1 FROM pg_roles
+            WHERE (rolname = 'codex_backup'
+                   OR pg_has_role('codex_backup', oid, 'USAGE')
+                   OR pg_has_role('codex_backup', oid, 'SET'))
+              AND (
+                has_schema_privilege(oid, 'codex_storage', 'CREATE')
+                OR has_table_privilege(oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,REFERENCES')
+                OR has_table_privilege(oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,REFERENCES')
+              )
         )",
     )
     .fetch_one(connection)
     .await
     .map_err(|error| classify_sqlx(&error))?;
-    if unsafe_runtime_privileges {
+    if unsafe_privileges {
         return Err(BootstrapError::Privilege);
     }
     Ok(())
@@ -151,18 +163,55 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         .await
         .map_err(|error| classify_sqlx(&error))?;
         if history_exists {
-            let format: Option<i32> = sqlx::query_scalar(
-                "SELECT format_version FROM codex_storage.codex_schema_meta WHERE singleton = TRUE",
+            let known_schema_complete: bool = sqlx::query_scalar(
+                "SELECT NOT EXISTS (
+                    SELECT 1 FROM (VALUES
+                        ('codex_schema_meta', 'r'),
+                        ('_codex_pg_migrations', 'r'),
+                        ('codex_schema_meta_pkey', 'i'),
+                        ('_codex_pg_migrations_pkey', 'i')
+                    ) AS required(name, kind)
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM pg_class relation
+                        WHERE relation.relnamespace = 'codex_storage'::regnamespace
+                          AND relation.relname = required.name
+                          AND relation.relkind::text = required.kind
+                    )
+                ) AND EXISTS (
+                    SELECT 1 FROM pg_constraint cst
+                    WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
+                      AND cst.contype = 'p'
+                      AND cst.conindid = 'codex_storage.codex_schema_meta_pkey'::regclass
+                ) AND EXISTS (
+                    SELECT 1 FROM pg_constraint cst
+                    WHERE cst.conrelid = 'codex_storage._codex_pg_migrations'::regclass
+                      AND cst.contype = 'p'
+                      AND cst.conindid = 'codex_storage._codex_pg_migrations_pkey'::regclass
+                ) AND EXISTS (
+                    SELECT 1 FROM pg_constraint cst
+                    WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
+                      AND cst.conname = 'codex_schema_meta_singleton_check'
+                      AND cst.contype = 'c'
+                )",
+            )
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|_| BootstrapError::IncompatibleNamespace)?;
+            if !known_schema_complete {
+                return Err(BootstrapError::IncompatibleNamespace);
+            }
+            let version: Option<(i32, i32, i32)> = sqlx::query_as(
+                "SELECT format_version, min_reader_version, min_writer_version FROM codex_storage.codex_schema_meta WHERE singleton = TRUE",
             )
             .fetch_optional(&mut *transaction)
             .await
             .map_err(|_| BootstrapError::IncompatibleNamespace)?;
-            if format != Some(1) {
+            if version != Some((1, 1, 1)) {
                 return Err(BootstrapError::IncompatibleNamespace);
             }
             // Refuse privilege drift on an existing namespace before any ACL
             // changes, so bootstrap cannot silently repair caller-owned policy.
-            require_safe_runtime_privileges(&mut transaction).await?;
+            require_safe_protected_privileges(&mut transaction).await?;
         } else {
             let occupied = namespace_has_unexpected_objects(&mut transaction, &[]).await?;
             if occupied {
@@ -190,6 +239,10 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .execute(&mut *transaction)
             .await
             .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("GRANT SELECT ON codex_storage.codex_schema_meta TO codex_backup")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
         sqlx::query("REVOKE ALL ON codex_storage._codex_pg_migrations FROM codex_runtime, codex_backup")
             .execute(&mut *transaction)
             .await
@@ -198,7 +251,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .execute(&mut *transaction)
             .await
             .map_err(|error| classify_sqlx(&error))?;
-        require_safe_runtime_privileges(&mut transaction).await?;
+        require_safe_protected_privileges(&mut transaction).await?;
         transaction.commit().await.map_err(|error| classify_sqlx(&error))?;
         Ok(())
     })

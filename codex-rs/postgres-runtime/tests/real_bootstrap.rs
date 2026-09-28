@@ -105,6 +105,9 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     let runtime = PostgresPool::connect(settings(state, "runtime"))
         .await
         .expect("runtime pool");
+    let backup = PostgresPool::connect(settings(state, "backup"))
+        .await
+        .expect("backup pool");
 
     owner_query(
         &migrator_a,
@@ -205,6 +208,21 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
             "REVOKE SELECT ON codex_storage._codex_pg_migrations FROM PUBLIC",
             "SELECT has_table_privilege('codex_runtime', 'codex_storage._codex_pg_migrations', 'SELECT')",
         ),
+        (
+            "GRANT UPDATE (format_version) ON codex_storage.codex_schema_meta TO codex_backup",
+            "REVOKE UPDATE (format_version) ON codex_storage.codex_schema_meta FROM codex_backup",
+            "SELECT has_column_privilege('codex_backup', 'codex_storage.codex_schema_meta', 'format_version', 'UPDATE')",
+        ),
+        (
+            "GRANT UPDATE (version) ON codex_storage._codex_pg_migrations TO codex_backup",
+            "REVOKE UPDATE (version) ON codex_storage._codex_pg_migrations FROM codex_backup",
+            "SELECT has_column_privilege('codex_backup', 'codex_storage._codex_pg_migrations', 'version', 'UPDATE')",
+        ),
+        (
+            "GRANT CREATE ON SCHEMA codex_storage TO codex_backup",
+            "REVOKE CREATE ON SCHEMA codex_storage FROM codex_backup",
+            "SELECT has_schema_privilege('codex_backup', 'codex_storage', 'CREATE')",
+        ),
     ] {
         owner_query(&migrator_a, grant).await;
         assert_eq!(
@@ -219,6 +237,59 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
         assert!(preserved);
         drop(connection);
         owner_query(&migrator_a, revoke).await;
+        assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    }
+
+    for (raise_minimum, reset_minimum) in [
+        (
+            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 2",
+            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 1",
+        ),
+        (
+            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 2",
+            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 1",
+        ),
+    ] {
+        owner_query(&migrator_a, raise_minimum).await;
+        assert_eq!(
+            bootstrap_codex_storage(&migrator_a).await,
+            Err(BootstrapError::IncompatibleNamespace)
+        );
+        owner_query(&migrator_a, reset_minimum).await;
+        assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    }
+
+    owner_query(
+        &migrator_a,
+        "REVOKE SELECT ON codex_storage.codex_schema_meta FROM codex_backup",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    let mut backup_reader = backup.acquire().await.expect("backup metadata reader");
+    let backup_can_read: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM codex_storage.codex_schema_meta")
+            .fetch_one(&mut *backup_reader)
+            .await
+            .expect("backup can read metadata");
+    assert_eq!(backup_can_read, 1);
+    drop(backup_reader);
+
+    for (drop_key, restore_key) in [
+        (
+            "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_pkey",
+            "ALTER TABLE codex_storage.codex_schema_meta ADD PRIMARY KEY (singleton)",
+        ),
+        (
+            "ALTER TABLE codex_storage._codex_pg_migrations DROP CONSTRAINT _codex_pg_migrations_pkey",
+            "ALTER TABLE codex_storage._codex_pg_migrations ADD PRIMARY KEY (version)",
+        ),
+    ] {
+        owner_query(&migrator_a, drop_key).await;
+        assert_eq!(
+            bootstrap_codex_storage(&migrator_a).await,
+            Err(BootstrapError::IncompatibleNamespace)
+        );
+        owner_query(&migrator_a, restore_key).await;
         assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
     }
 

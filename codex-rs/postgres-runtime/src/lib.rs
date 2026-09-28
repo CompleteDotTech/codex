@@ -147,7 +147,9 @@ impl PostgresPool {
             limits.connect_timeout,
             PgPoolOptions::new()
                 .max_connections(limits.max_connections)
-                .acquire_timeout(limits.connect_timeout)
+                // SQLx uses this limit during startup too. The outer timeouts
+                // enforce each operation's own deadline.
+                .acquire_timeout(limits.connect_timeout.max(limits.acquire_timeout))
                 .connect_with(options),
         )
         .await

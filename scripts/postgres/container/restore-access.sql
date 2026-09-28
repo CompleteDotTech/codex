@@ -21,48 +21,56 @@ BEGIN
     -- role as archive objects are recreated. Refuse this drift transactionally;
     -- changing the operator's role memberships or global defaults is not repair.
     IF EXISTS (
-        SELECT 1 FROM pg_roles
-        WHERE (pg_has_role('codex_runtime', oid, 'USAGE')
-               OR pg_has_role('codex_runtime', oid, 'SET'))
+        SELECT 1 FROM pg_roles candidate
+        WHERE (pg_has_role('codex_runtime', candidate.oid, 'USAGE')
+               OR pg_has_role('codex_runtime', candidate.oid, 'SET'))
           AND (
-            has_schema_privilege(oid, 'codex_storage', 'CREATE')
+            has_schema_privilege(candidate.oid, 'codex_storage', 'CREATE')
             OR (metadata IS NOT NULL AND (
-                has_table_privilege(oid, metadata, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
-                OR has_any_column_privilege(oid, metadata, 'INSERT,UPDATE,REFERENCES')
+                has_table_privilege(candidate.oid, metadata, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(candidate.oid, metadata, 'INSERT,UPDATE,REFERENCES')
             ))
             OR (history IS NOT NULL AND (
-                has_table_privilege(oid, history, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
-                OR has_any_column_privilege(oid, history, 'SELECT,INSERT,UPDATE,REFERENCES')
+                has_table_privilege(candidate.oid, history, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(candidate.oid, history, 'SELECT,INSERT,UPDATE,REFERENCES')
             ))
             OR EXISTS (
                 SELECT 1 FROM pg_class sequence
                 WHERE sequence.relnamespace = 'codex_storage'::regnamespace
-                  AND sequence.relkind = 'S'
-                  AND has_sequence_privilege(oid, sequence.oid, 'UPDATE')
+                  AND CASE WHEN sequence.relkind = 'S'
+                    THEN has_sequence_privilege(candidate.oid, sequence.oid, 'UPDATE')
+                    ELSE FALSE END
             )
           )
     ) THEN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe runtime privileges';
     END IF;
     IF EXISTS (
-        SELECT 1 FROM pg_roles
-        WHERE (rolname = 'codex_backup'
-               OR pg_has_role('codex_backup', oid, 'USAGE')
-               OR pg_has_role('codex_backup', oid, 'SET'))
+        SELECT 1 FROM pg_roles candidate
+        WHERE (candidate.rolname = 'codex_backup'
+               OR pg_has_role('codex_backup', candidate.oid, 'USAGE')
+               OR pg_has_role('codex_backup', candidate.oid, 'SET'))
           AND (
-            has_table_privilege(oid, metadata, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
-            OR has_any_column_privilege(oid, metadata, 'INSERT,UPDATE,REFERENCES')
-            OR has_table_privilege(oid, history, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
-            OR has_any_column_privilege(oid, history, 'INSERT,UPDATE,REFERENCES')
+            has_schema_privilege(candidate.oid, 'codex_storage', 'CREATE')
+            OR
+            has_table_privilege(candidate.oid, metadata, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+            OR has_any_column_privilege(candidate.oid, metadata, 'INSERT,UPDATE,REFERENCES')
+            OR has_table_privilege(candidate.oid, history, 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+            OR has_any_column_privilege(candidate.oid, history, 'INSERT,UPDATE,REFERENCES')
             OR EXISTS (
                 SELECT 1 FROM pg_class sequence
                 WHERE sequence.relnamespace = 'codex_storage'::regnamespace
-                  AND sequence.relkind = 'S'
-                  AND has_sequence_privilege(oid, sequence.oid, 'USAGE,UPDATE')
+                  AND CASE WHEN sequence.relkind = 'S'
+                    THEN has_sequence_privilege(candidate.oid, sequence.oid, 'USAGE,UPDATE')
+                    ELSE FALSE END
             )
           )
     ) THEN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe backup privileges';
+    END IF;
+    IF pg_has_role('codex_backup', 'codex_runtime', 'USAGE')
+       OR pg_has_role('codex_backup', 'codex_runtime', 'SET') THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe backup role escalation';
     END IF;
 END
 $restore_access$;

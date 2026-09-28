@@ -20,3 +20,4 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 pretty_assertions = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "net"] }
