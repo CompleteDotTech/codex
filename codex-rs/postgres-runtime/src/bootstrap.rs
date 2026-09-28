@@ -114,6 +114,20 @@ pub(crate) async fn require_safe_protected_privileges(
                    OR pg_has_role('codex_backup', candidate.oid, 'SET'))
               AND (pg_has_role(candidate.oid, 'codex_runtime', 'USAGE')
                    OR pg_has_role(candidate.oid, 'codex_runtime', 'SET'))
+        ) OR EXISTS (
+            SELECT 1 FROM pg_roles candidate
+            WHERE candidate.rolname NOT IN ('codex_owner', 'codex_migrator')
+              AND left(candidate.rolname, 3) <> 'pg_'
+              AND NOT candidate.rolsuper
+              AND (
+                pg_has_role(candidate.oid, 'codex_owner', 'USAGE')
+                OR pg_has_role(candidate.oid, 'codex_owner', 'SET')
+                OR has_schema_privilege(candidate.oid, 'codex_storage', 'CREATE')
+                OR has_table_privilege(candidate.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(candidate.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,REFERENCES')
+                OR has_table_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,REFERENCES')
+              )
         )",
     )
     .fetch_one(connection)
@@ -184,17 +198,20 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
                           AND relation.relname = required.name
                           AND relation.relkind::text = required.kind
                           AND relation.relowner = 'codex_owner'::regrole
+                          AND NOT relation.relrowsecurity
                     )
                 ) AND EXISTS (
                     SELECT 1 FROM pg_constraint cst
                     WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
                       AND cst.contype = 'p'
                       AND cst.conindid = 'codex_storage.codex_schema_meta_pkey'::regclass
+                      AND cst.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = cst.conrelid AND attname = 'singleton')]
                 ) AND EXISTS (
                     SELECT 1 FROM pg_constraint cst
                     WHERE cst.conrelid = 'codex_storage._codex_pg_migrations'::regclass
                       AND cst.contype = 'p'
                       AND cst.conindid = 'codex_storage._codex_pg_migrations_pkey'::regclass
+                      AND cst.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = cst.conrelid AND attname = 'version')]
                 ) AND EXISTS (
                     SELECT 1 FROM pg_constraint cst
                     WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
