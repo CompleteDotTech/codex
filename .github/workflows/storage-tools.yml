@@ -73,6 +73,9 @@ jobs:
         run: just test -p codex-postgres-runtime
       - name: Provision separate namespace roles in fixture
         run: python scripts/postgres/isolation_fixture.py --state "$CODEX_TEST_POSTGRES_STATE"
+      - name: Test named namespace bootstrap against real server
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles
       - name: Test two-namespace role isolation against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_postgres_roles_isolate_two_schemas

@@ -30,6 +30,11 @@ pub use compatibility::CompatibilityError;
 pub use compatibility::CompatibilityResult;
 pub use compatibility::RequiredAccess;
 pub use compatibility::check_codex_storage_compatibility;
+mod namespace;
+pub use namespace::InvalidNamespace;
+pub use namespace::NamedNamespace;
+mod named_bootstrap;
+pub use named_bootstrap::bootstrap_named_namespace;
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_CONNECTIONS: u32 = 32;
