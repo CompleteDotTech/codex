@@ -41,6 +41,7 @@ use tracing::warn;
 
 mod backfill;
 mod external_agent_config_imports;
+mod goal_store;
 mod goals;
 mod logs;
 mod memories;
@@ -61,6 +62,8 @@ pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportHistoryRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportSuccessRecord;
+pub use goal_store::GoalStoreFuture;
+pub use goal_store::ThreadGoalStore;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
@@ -288,7 +291,7 @@ impl StateRuntime {
         &self.sqlite
     }
 
-    pub fn thread_goals(&self) -> &GoalStore {
+    pub fn thread_goals(&self) -> &dyn ThreadGoalStore {
         &self.thread_goals
     }
 
