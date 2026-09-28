@@ -68,8 +68,14 @@ BEGIN
     ) THEN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe backup privileges';
     END IF;
-    IF pg_has_role('codex_backup', 'codex_runtime', 'USAGE')
-       OR pg_has_role('codex_backup', 'codex_runtime', 'SET') THEN
+    IF EXISTS (
+        SELECT 1 FROM pg_roles candidate
+        WHERE (candidate.rolname = 'codex_backup'
+               OR pg_has_role('codex_backup', candidate.oid, 'USAGE')
+               OR pg_has_role('codex_backup', candidate.oid, 'SET'))
+          AND (pg_has_role(candidate.oid, 'codex_runtime', 'USAGE')
+               OR pg_has_role(candidate.oid, 'codex_runtime', 'SET'))
+    ) THEN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe backup role escalation';
     END IF;
 END
