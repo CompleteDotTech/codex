@@ -138,6 +138,13 @@ hardlinks to the same file; a crash after unlink but before metadata update can
 leave stale SQLite path/status. Capture and recovery must reconcile either
 state, and these fixtures do not establish a cross-store transaction.
 
+The native `compressed_rollout_survives_archive_and_unarchive` fixture starts
+with a compressed-only canonical file and exercises local archive and unarchive
+through `ThreadStore`. It compares the exact compressed bytes, full returned
+history, and SQLite path/archive state at both transitions. This covers one
+cold-file lifecycle; the authoritative choice and reconciliation of divergent
+plain/compressed siblings remain unresolved for capture.
+
 The remaining #2/#11 inventory must trace every app-server/TUI/exec/daemon read
 entry point, file-backed attachment implementation, ephemeral sessions (which
 have no durable rollout to capture), caller-supplied history, memory files,

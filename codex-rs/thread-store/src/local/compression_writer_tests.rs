@@ -7,13 +7,17 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 
+use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::EventMsg;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadMemoryMode;
 use codex_protocol::protocol::UserMessageEvent;
+use codex_rollout::ARCHIVED_SESSIONS_SUBDIR;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::WriterLockCoordinator;
+use codex_state::ThreadMetadataBuilder;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use tempfile::TempDir;
@@ -22,6 +26,8 @@ use uuid::Uuid;
 use super::LocalThreadStore;
 use super::test_support::test_config;
 use super::test_support::write_session_file;
+use crate::ArchiveThreadParams;
+use crate::ReadThreadParams;
 use crate::ResumeThreadParams;
 use crate::ThreadMetadataPatch;
 use crate::ThreadPersistenceMetadata;
@@ -63,6 +69,90 @@ fn message() -> RolloutItem {
         message: "acknowledged write".into(),
         ..Default::default()
     }))
+}
+
+#[tokio::test]
+async fn compressed_rollout_survives_archive_and_unarchive() -> TestResult<()> {
+    let (home, thread_id, plain_path) = fixture()?;
+    let compressed_path = plain_path.with_extension("jsonl.zst");
+    let original = fs::read(&plain_path)?;
+    let compressed_bytes = zstd::stream::encode_all(original.as_slice(), /*level*/ 1)?;
+    fs::write(&compressed_path, &compressed_bytes)?;
+    fs::remove_file(&plain_path)?;
+
+    let config = test_config(home.path());
+    let runtime = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await?;
+    let mut builder = ThreadMetadataBuilder::new(
+        thread_id,
+        plain_path.clone(),
+        Utc::now(),
+        SessionSource::Cli,
+    );
+    builder.cwd = home.path().to_path_buf();
+    runtime
+        .upsert_thread(&builder.build(config.default_model_provider_id.as_str()))
+        .await?;
+    let store = LocalThreadStore::new(config, Some(runtime.clone()));
+    let before = store
+        .read_thread(ReadThreadParams {
+            thread_id,
+            include_archived: false,
+            include_history: true,
+        })
+        .await?;
+    let expected_history = serde_json::to_value(before.history)?;
+
+    store
+        .archive_thread(ArchiveThreadParams { thread_id })
+        .await?;
+    let archived_path = home
+        .path()
+        .join(ARCHIVED_SESSIONS_SUBDIR)
+        .join(compressed_path.file_name().expect("compressed filename"));
+    assert!(!compressed_path.exists());
+    assert_eq!(fs::read(&archived_path)?, compressed_bytes);
+    let archived_metadata = runtime
+        .get_thread(thread_id)
+        .await?
+        .expect("archived metadata");
+    assert_eq!(archived_metadata.rollout_path, archived_path);
+    assert!(archived_metadata.archived_at.is_some());
+    let archived = store
+        .read_thread(ReadThreadParams {
+            thread_id,
+            include_archived: true,
+            include_history: true,
+        })
+        .await?;
+    assert_eq!(archived.thread_id, thread_id);
+    assert_eq!(serde_json::to_value(archived.history)?, expected_history);
+
+    store
+        .unarchive_thread(ArchiveThreadParams { thread_id })
+        .await?;
+    assert!(!archived_path.exists());
+    assert_eq!(fs::read(&compressed_path)?, compressed_bytes);
+    assert!(!plain_path.exists());
+    let restored_metadata = runtime
+        .get_thread(thread_id)
+        .await?
+        .expect("restored metadata");
+    assert_eq!(restored_metadata.rollout_path, compressed_path);
+    assert_eq!(restored_metadata.archived_at, None);
+    let restored = store
+        .read_thread(ReadThreadParams {
+            thread_id,
+            include_archived: false,
+            include_history: true,
+        })
+        .await?;
+    assert_eq!(restored.thread_id, thread_id);
+    assert_eq!(serde_json::to_value(restored.history)?, expected_history);
+    Ok(())
 }
 
 async fn wait_until(ready: impl Fn() -> bool) {
