@@ -6,6 +6,17 @@ use tempfile::tempdir;
 fn fresh_home_identity_survives_reopen_and_reuses_the_same_claim() {
     let directory = tempdir().unwrap();
     let first = initialize_empty_home(directory.path()).unwrap();
+    assert_eq!(
+        first.marker,
+        ActivationMarker {
+            format_version: FORMAT_VERSION,
+            dataset_id: first.identity.dataset_id,
+            instance_id: first.identity.instance_id,
+            home_id: first.identity.home_id,
+            generation: 1,
+            remote_ever_activated: false,
+        }
+    );
     assert_eq!(load_local_authority(directory.path()).unwrap(), first);
     assert_eq!(initialize_empty_home(directory.path()).unwrap(), first);
 }
@@ -56,19 +67,88 @@ fn unknown_version_and_oversized_record_fail_closed() {
 
 #[cfg(unix)]
 #[test]
-fn linked_record_is_rejected() {
+fn linked_and_fifo_records_are_rejected() {
+    assert_record_rejected(|path| {
+        std::os::unix::fs::symlink("missing-target", path).unwrap();
+    });
+    assert_record_rejected(|path| {
+        assert!(
+            std::process::Command::new("mkfifo")
+                .arg(path)
+                .status()
+                .unwrap()
+                .success()
+        );
+    });
+}
+
+#[test]
+fn directory_records_are_rejected() {
+    assert_record_rejected(|path| std::fs::create_dir(path).unwrap());
+}
+
+fn assert_record_rejected(replace: impl Fn(&Path)) {
+    for name in [IDENTITY_FILE, ACTIVATION_FILE] {
+        let directory = tempdir().unwrap();
+        initialize_empty_home(directory.path()).unwrap();
+        let path = directory.path().join(name);
+        std::fs::remove_file(&path).unwrap();
+        replace(&path);
+        for read in [load_local_authority, initialize_empty_home] {
+            assert!(matches!(
+                read(directory.path()),
+                Err(AuthorityError::Blocked("authority record is not regular"))
+            ));
+        }
+    }
+}
+
+#[test]
+fn persisted_generations_stay_in_the_manifest_range() {
     let directory = tempdir().unwrap();
-    initialize_empty_home(directory.path()).unwrap();
-    std::fs::remove_file(directory.path().join(ACTIVATION_FILE)).unwrap();
-    std::os::unix::fs::symlink(
+    let mut authority = initialize_empty_home(directory.path()).unwrap();
+    for generation in [0, 1, i64::MAX as u64, i64::MAX as u64 + 1, u64::MAX] {
+        authority.identity.generation = generation;
+        authority.marker.generation = generation;
+        std::fs::write(
+            directory.path().join(IDENTITY_FILE),
+            serde_json::to_vec(&authority.identity).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join(ACTIVATION_FILE),
+            serde_json::to_vec(&authority.marker).unwrap(),
+        )
+        .unwrap();
+        for read in [load_local_authority, initialize_empty_home] {
+            if generation == 1 || generation == i64::MAX as u64 {
+                assert_eq!(read(directory.path()).unwrap(), authority);
+            } else {
+                assert!(matches!(
+                    read(directory.path()),
+                    Err(AuthorityError::Blocked("invalid authority generation"))
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn mixed_instance_records_fail_closed() {
+    let directory = tempdir().unwrap();
+    let mut identity = initialize_empty_home(directory.path()).unwrap().identity;
+    identity.instance_id = Uuid::new_v4();
+    std::fs::write(
         directory.path().join(IDENTITY_FILE),
-        directory.path().join(ACTIVATION_FILE),
+        serde_json::to_vec(&identity).unwrap(),
     )
     .unwrap();
-    assert!(matches!(
-        load_local_authority(directory.path()),
-        Err(AuthorityError::Blocked("authority record is a symlink"))
-    ));
+    for read in [load_local_authority, initialize_empty_home] {
+        assert!(matches!(
+            read(directory.path()),
+            Err(AuthorityError::Blocked("authority records disagree"))
+        ));
+    }
 }
 
 #[test]
