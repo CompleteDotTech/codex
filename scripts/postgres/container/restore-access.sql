@@ -68,6 +68,10 @@ BEGIN
     ) THEN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe backup privileges';
     END IF;
+    IF pg_has_role('codex_backup', 'codex_runtime', 'USAGE')
+       OR pg_has_role('codex_backup', 'codex_runtime', 'SET') THEN
+        RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe backup role escalation';
+    END IF;
 END
 $restore_access$;
 ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner IN SCHEMA codex_storage

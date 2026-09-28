@@ -13,11 +13,16 @@ from state import ServiceError
 class RestoreQualificationTests(unittest.TestCase):
     def test_wrapper_preserves_failure_and_cleans_retained_fixture(self):
         failure = ServiceError("qualification_failed")
+
+        def fail_after_roles(source, destination, owned_roles):
+            owned_roles.append(True)
+            raise failure
+
         with (
             patch.object(
                 qualification,
                 "_qualify_restore_access",
-                side_effect=failure,
+                side_effect=fail_after_roles,
             ),
             patch.object(qualification, "_cleanup_roles") as cleanup,
         ):
@@ -27,10 +32,34 @@ class RestoreQualificationTests(unittest.TestCase):
                 )
         cleanup.assert_called_once_with(Path("destination"))
 
+    def test_wrapper_preserves_primary_failure_when_cleanup_fails(self):
+        def fail_after_roles(source, destination, owned_roles):
+            owned_roles.append(True)
+            raise ServiceError("qualification_failed")
+
+        with (
+            patch.object(
+                qualification, "_qualify_restore_access", side_effect=fail_after_roles
+            ),
+            patch.object(
+                qualification,
+                "_cleanup_roles",
+                side_effect=ServiceError("cleanup_failed"),
+            ),
+        ):
+            with self.assertRaisesRegex(ServiceError, "qualification_failed"):
+                qualification.qualify_restore_access(
+                    Path("source"), Path("destination")
+                )
+
     def test_wrapper_reports_cleanup_failure_after_success(self):
         cleanup_failure = ServiceError("cleanup_failed")
         with (
-            patch.object(qualification, "_qualify_restore_access", return_value={}),
+            patch.object(
+                qualification,
+                "_qualify_restore_access",
+                side_effect=lambda s, d, roles: roles.append(True) or {},
+            ),
             patch.object(qualification, "_cleanup_roles", side_effect=cleanup_failure),
         ):
             with self.assertRaisesRegex(ServiceError, "cleanup_failed"):

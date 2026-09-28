@@ -21,23 +21,25 @@ def _cleanup_roles(destination):
 def qualify_restore_access(source, destination):
     """Reject drifted destination defaults, prove rollback, then retry safely."""
     failure = None
+    owned_roles = []
     try:
-        return _qualify_restore_access(source, destination)
+        report = _qualify_restore_access(source, destination, owned_roles)
     except BaseException as error:
         failure = error
         raise
     finally:
-        try:
-            _cleanup_roles(destination)
-        except ServiceError:
-            # The destination may not have started, or a primary failure may
-            # have made SQL unavailable. Preserve that original error; otherwise
-            # cleanup failure must prevent a false successful qualification.
-            if failure is None:
-                raise
+        if owned_roles:
+            try:
+                _cleanup_roles(destination)
+            except ServiceError:
+                if failure is None:
+                    raise
+    report["safe_retry_passed"] = True
+    publish_json(destination / "restore-qualification.json", report)
+    return report
 
 
-def _qualify_restore_access(source, destination):
+def _qualify_restore_access(source, destination, owned_roles):
     """Reject drifted destination defaults, prove rollback, then retry safely."""
     protected_rows = (
         "SELECT json_build_object('metadata', "
@@ -49,14 +51,24 @@ def _qualify_restore_access(source, destination):
     if not expected["metadata"] or not expected["history"]:
         raise ServiceError("protected_restore_source_missing_metadata")
     sequence_name = "codex_storage.codex_restore_qualification_seq"
+    if sql(source, f"SELECT to_regclass('{sequence_name}') IS NOT NULL") != "f":
+        raise ServiceError("protected_restore_source_sequence_already_exists")
     sql(
         source,
         f"SET ROLE codex_owner; CREATE SEQUENCE {sequence_name}; RESET ROLE",
     )
+    backup_failure = None
     try:
         backup, archive = checked_backup(source)
+    except BaseException as error:
+        backup_failure = error
+        raise
     finally:
-        sql(source, f"DROP SEQUENCE IF EXISTS {sequence_name}")
+        try:
+            sql(source, f"DROP SEQUENCE IF EXISTS {sequence_name}")
+        except ServiceError:
+            if backup_failure is None:
+                raise
     command(destination, "up")
     verify_endpoint(destination)
     if (
@@ -67,15 +79,24 @@ def _qualify_restore_access(source, destination):
         != "0"
     ):
         raise ServiceError("protected_restore_fixture_not_empty")
-    _cleanup_roles(destination)
+    if (
+        sql(
+            destination,
+            "SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname "
+            "IN ('codex_restore_inherited', 'codex_restore_assumable'))",
+        )
+        != "f"
+    ):
+        raise ServiceError("protected_restore_fixture_roles_already_exist")
     sql(
         destination,
-        "CREATE ROLE codex_restore_inherited; CREATE ROLE codex_restore_assumable; "
+        "BEGIN; CREATE ROLE codex_restore_inherited; CREATE ROLE codex_restore_assumable; "
         "GRANT codex_restore_inherited TO codex_runtime WITH INHERIT TRUE, SET FALSE; "
         "GRANT codex_restore_assumable TO codex_runtime WITH INHERIT FALSE, SET TRUE; "
         "GRANT codex_restore_inherited TO codex_backup WITH INHERIT TRUE, SET FALSE; "
-        "GRANT codex_restore_assumable TO codex_backup WITH INHERIT FALSE, SET TRUE",
+        "GRANT codex_restore_assumable TO codex_backup WITH INHERIT FALSE, SET TRUE; COMMIT",
     )
+    owned_roles.append(True)
     if (
         sql(
             destination,
@@ -168,6 +189,49 @@ def _qualify_restore_access(source, destination):
         report["steps"].append({"name": name, "rejected_and_rolled_back": True})
         publish_json(destination / "restore-qualification.json", report)
 
+    for name, grantee in (
+        ("public_schema_create", "PUBLIC"),
+        ("runtime_schema_create", "codex_runtime"),
+        ("backup_schema_create", "codex_backup"),
+        ("inherited_schema_create", "codex_restore_inherited"),
+        ("set_role_schema_create", "codex_restore_assumable"),
+    ):
+        sql(
+            destination,
+            "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
+            f"GRANT CREATE ON SCHEMAS TO {grantee}",
+        )
+        before = json.loads(sql(destination, snapshot))
+        command(
+            destination,
+            *restore_args,
+            expected_error="restore_outcome_unconfirmed_inspect_destination",
+        )
+        if json.loads(sql(destination, snapshot)) != before:
+            raise ServiceError("unsafe_restore_changed_empty_destination")
+        sql(
+            destination,
+            "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
+            f"REVOKE CREATE ON SCHEMAS FROM {grantee}",
+        )
+        report["steps"].append({"name": name, "rejected_and_rolled_back": True})
+        publish_json(destination / "restore-qualification.json", report)
+
+    sql(destination, "GRANT codex_runtime TO codex_backup WITH INHERIT FALSE, SET TRUE")
+    before = json.loads(sql(destination, snapshot))
+    command(
+        destination,
+        *restore_args,
+        expected_error="restore_outcome_unconfirmed_inspect_destination",
+    )
+    if json.loads(sql(destination, snapshot)) != before:
+        raise ServiceError("unsafe_restore_changed_empty_destination")
+    sql(destination, "REVOKE codex_runtime FROM codex_backup")
+    report["steps"].append(
+        {"name": "backup_runtime_role_escalation", "rejected_and_rolled_back": True}
+    )
+    publish_json(destination / "restore-qualification.json", report)
+
     command(destination, *restore_args)
     verify_endpoint(destination)
     sql(destination, f"DROP SEQUENCE IF EXISTS {sequence_name}")
@@ -218,6 +282,4 @@ def _qualify_restore_access(source, destination):
         "SET ROLE codex_restore_assumable; UPDATE codex_storage.codex_schema_meta SET format_version=99",
     ):
         sql(destination, statement, role="runtime", expected_sqlstate="42501")
-    report["safe_retry_passed"] = True
-    publish_json(destination / "restore-qualification.json", report)
     return report
