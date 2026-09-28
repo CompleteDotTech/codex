@@ -4,6 +4,7 @@ use crate::PoolError;
 use crate::PostgresPool;
 use sqlx::Acquire;
 use sqlx::PgConnection;
+use sqlx::migrate::MigrateError;
 use sqlx::migrate::Migrator;
 use std::borrow::Cow;
 use std::fmt;
@@ -40,6 +41,29 @@ fn classify_sqlx(error: &sqlx::Error) -> BootstrapError {
     match error {
         sqlx::Error::Database(error) if error.code().as_deref() == Some("42501") => {
             BootstrapError::Privilege
+        }
+        sqlx::Error::Database(error)
+            if error.code().is_some_and(|code| {
+                code.starts_with("08") || matches!(code.as_ref(), "57P01" | "57P02" | "57P03")
+            }) =>
+        {
+            BootstrapError::Unavailable
+        }
+        sqlx::Error::Io(_)
+        | sqlx::Error::Tls(_)
+        | sqlx::Error::Protocol(_)
+        | sqlx::Error::PoolTimedOut
+        | sqlx::Error::PoolClosed
+        | sqlx::Error::WorkerCrashed
+        | sqlx::Error::BeginFailed => BootstrapError::Unavailable,
+        _ => BootstrapError::Migration,
+    }
+}
+
+fn classify_migration(error: MigrateError) -> BootstrapError {
+    match error {
+        MigrateError::Execute(error) | MigrateError::ExecuteMigration(error, _) => {
+            classify_sqlx(&error)
         }
         _ => BootstrapError::Migration,
     }
@@ -280,6 +304,32 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
                       AND cst.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = cst.conrelid AND attname = 'version')]
                 ) AND (SELECT count(*) FROM pg_constraint
                        WHERE conrelid = 'codex_storage._codex_pg_migrations'::regclass) = 1
+                AND (SELECT count(*) FROM pg_attribute
+                     WHERE attrelid = 'codex_storage._codex_pg_migrations'::regclass
+                       AND attnum > 0
+                       AND NOT attisdropped) = 6
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM (VALUES
+                        ('version'::name, 'bigint'::regtype, TRUE, FALSE),
+                        ('description'::name, 'text'::regtype, TRUE, FALSE),
+                        ('installed_on'::name, 'timestamptz'::regtype, TRUE, TRUE),
+                        ('success'::name, 'boolean'::regtype, TRUE, FALSE),
+                        ('checksum'::name, 'bytea'::regtype, TRUE, FALSE),
+                        ('execution_time'::name, 'bigint'::regtype, TRUE, FALSE)
+                    ) AS required(name, type_oid, not_null, has_default)
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM pg_attribute attribute
+                        WHERE attribute.attrelid = 'codex_storage._codex_pg_migrations'::regclass
+                          AND attribute.attnum > 0
+                          AND NOT attribute.attisdropped
+                          AND attribute.attname = required.name
+                          AND attribute.atttypid = required.type_oid
+                          AND attribute.attnotnull = required.not_null
+                          AND attribute.atthasdef = required.has_default
+                    )
+                )
                 AND EXISTS (
                     SELECT 1 FROM pg_constraint cst
                     WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
@@ -323,7 +373,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         migrator
             .run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
             .await
-            .map_err(|_| BootstrapError::Migration)?;
+            .map_err(classify_migration)?;
         // The fixture's default grants are broad; metadata and history must be immutable to runtime.
         sqlx::query("REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime")
             .execute(&mut *transaction)
@@ -364,3 +414,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
     .await
     .map_err(|_| BootstrapError::Timeout)?
 }
+
+#[cfg(test)]
+#[path = "bootstrap_tests.rs"]
+mod tests;

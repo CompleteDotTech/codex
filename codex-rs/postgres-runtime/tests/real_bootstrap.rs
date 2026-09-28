@@ -388,6 +388,11 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     .await;
     for (damage, repair, expected_error) in [
         (
+            "ALTER TABLE codex_storage._codex_pg_migrations ADD COLUMN required_probe TEXT NOT NULL DEFAULT 'present'; ALTER TABLE codex_storage._codex_pg_migrations ALTER COLUMN required_probe DROP DEFAULT",
+            "ALTER TABLE codex_storage._codex_pg_migrations DROP COLUMN required_probe",
+            BootstrapError::IncompatibleNamespace,
+        ),
+        (
             "ALTER TABLE codex_storage._codex_pg_migrations ADD CONSTRAINT history_version_limit CHECK (version <= 1)",
             "ALTER TABLE codex_storage._codex_pg_migrations DROP CONSTRAINT history_version_limit",
             BootstrapError::IncompatibleNamespace,
