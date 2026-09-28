@@ -33,6 +33,7 @@ the contents of a future user's home. Recheck them after an upstream rebase.
 | `core/src/session/session.rs` | `62be2d34e26cf3ec143852b186cd17b097e8acdd` |
 | `core/src/image_preparation.rs` | `02d15459d464ffaa81c812996afb4d80b1da3035` |
 | `thread-store/src/local/archive_thread.rs` | `397ab0f9e26dfcd811310b77ee882c775a28fbb4` |
+| `thread-store/src/local/unarchive_thread.rs` | `017d18ad00a3739dbc1188dd4faee35d8957c1c7` |
 | `thread-store/src/local/thread_attachments.rs` | `aa200552071f0de3b5394a7aad608291a02dea64` |
 | `thread-store/src/local/create_thread.rs` | `e3b7fc8a898b5abbd9f392e738d3ee1e88b9e5a0` |
 | `thread-store/src/local/update_thread_metadata.rs` | `8cfb38bf2f2474643fb3592258bec436b9c66c8e` |
@@ -47,20 +48,21 @@ the contents of a future user's home. Recheck them after an upstream rebase.
 
 | Representation | Producer or mutation | Consumer | Forward/reverse obligation |
 |---|---|---|---|
-| Active canonical JSONL under `sessions/` | `RolloutRecorder::new`, `record_canonical_items`, `persist`, `flush` in `rollout/src/recorder.rs`; `thread-store/src/local/live_writer.rs` records items; `read_thread.rs` and `update_thread_metadata.rs` append metadata | `RolloutRecorder::load_rollout_items`, `get_rollout_history`; `thread-store/src/local/read_thread.rs`, `search_threads.rs` | Preserve raw ordered items, rollout/session IDs and acknowledgement boundary; portable path mapping is unresolved |
-| Archived canonical JSONL under `archived_sessions/` | `thread-store/src/local/archive_thread.rs`; recorder/list paths | `rollout/src/list.rs`, `RolloutReferenceIndex::scan`, local read/search | Preserve archive status and contents together; archive is not deletion |
+| Active canonical JSONL under `sessions/` | `RolloutRecorder::new`, `record_canonical_items`, `persist`, `flush` in `rollout/src/recorder.rs`; `thread-store/src/local/live_writer.rs` records items; `update_thread_metadata.rs::update_rollout_metadata` appends metadata; `unarchive_thread.rs` moves files here | `RolloutRecorder::load_rollout_items`, `get_rollout_history`; `thread-store/src/local/read_thread.rs`, `search_threads.rs`; `archive_thread.rs` moves files away | Preserve raw ordered items, path-derived rollout ID, stable thread/session IDs and acknowledgement boundary; portable path mapping is unresolved |
+| Archived canonical JSONL under `archived_sessions/` | `thread-store/src/local/archive_thread.rs` moves files here and updates SQLite metadata | `rollout/src/list.rs`, `RolloutReferenceIndex::scan`, local read/search; `unarchive_thread.rs` moves files back and calls `mark_unarchived` | Preserve archive status and contents together; archive is not deletion |
 | Cold `.jsonl.zst` sibling | `rollout/src/compression.rs` compression worker writes and verifies compressed form | `open_rollout_line_reader`, `existing_rollout_path`, recorder load, seekable reader | Capture exactly one authoritative representation and verify decoded bytes; temporary files and duplicate siblings need reconciliation |
 | Reference-backed fork history | `core/src/thread_manager.rs::fork_prepared_thread`; `thread-store/src/local/paginated_fork.rs::prepare` returns `HistoryPosition`, then `create_thread.rs` passes it to the recorder as `SessionMeta.history_base` | `thread-store/src/local/rollout_lineage.rs`, `model_context.rs`; `RolloutReferenceIndex::scan` counts direct references | Preserve ancestor rollout IDs and exclusive ordinals, all referenced ancestors and truncation boundaries; copying only the child's file loses history |
-| Copied legacy fork and deferred copied history | `core/src/thread_manager.rs` uses `ForkPersistence::Copied` for legacy fork and `CopiedDeferred` for deferred resume; canonicalizer in `thread-store/src/local/rollout_migration/` may rewrite copied history | legacy resume/fork paths in `core/src/thread_manager.rs`; local lineage/read paths | Do not infer a `history_base` graph from copied payloads; source and migrated representation need equivalence proof |
+| Copied legacy fork and deferred copied child fork | `core/src/thread_manager.rs` uses `ForkPersistence::Copied` for legacy forks/resume and `CopiedDeferred` in `fork_thread_with_source`; `core/src/session/mod.rs` maps the latter to the subagent-spawn durability barrier; canonicalizer in `thread-store/src/local/rollout_migration/` may rewrite copied history | legacy resume/fork paths in `core/src/thread_manager.rs`; local lineage/read paths | Do not infer a `history_base` graph from copied payloads; source and migrated representation need equivalence proof |
 | Paginated thread-history projection in `thread_history_1.sqlite` | `thread-store/src/local/thread_history_materialization.rs::materialize_to_sqlite` reads canonical lineage | local thread-history read/search/turn paging; `read_thread.rs` and `model_context.rs` select paths | Treat projection as rebuildable only after canonical closure and public reconstruction are proven; see `SOURCE_CATALOG.md` |
 | `session_index.jsonl` name index | `rollout/src/session_index.rs::append_thread_name`, `append_session_index_entry`, `remove_thread_name_entries` | `find_thread_name_by_id`, `find_thread_names_by_ids`, `find_thread_meta_by_name_str`, `find_thread_meta_candidates_by_name_str`; local thread resolution | Preserve or rebuild names with the exact duplicate/clear semantics in `SESSION_INDEX_AUDIT.md` |
 | Thread attachment metadata/payload | `thread-store/src/local/thread_attachments.rs::{add_thread_attachment,copy_thread_attachments,remove_thread_attachment}` through `codex-state` primary `thread_attachments` | `list_thread_attachments` and `app-server/src/request_processors/thread_attachments.rs` add/list/remove RPC handlers | Metadata row alone does not prove referenced content closure; catalogued with primary state in `SOURCE_CATALOG.md` |
-| Image attachment bytes in model items | `core/src/image_preparation.rs` calls `AttachmentStore::upload`; default `InlineAttachmentStore` returns the original bytes, alternate implementation may return `File { file_id }` | `AttachmentStore::resolve` and model input preparation | Preserve inline bytes or resolve and materialize file references with digest/size/provenance; file IDs and URLs are not portable bytes |
+| Image attachment bytes in model items | `core/src/image_preparation.rs` calls `AttachmentStore::upload`; default `InlineAttachmentStore` returns the original bytes, alternate implementation may return `File { file_id }` | Model input preparation passes existing `ImageReference::File` IDs through; the `AttachmentStore::resolve` trait method has no production caller at this revision | Preserve inline bytes or implement resolution and materialization of file references with digest/size/provenance; file IDs and URLs are not portable bytes |
 
 `thread-store/src/local/revert_thread.rs` can rewrite a thread's effective
 history boundary, while `delete_thread.rs` checks reference descendants before
-removing owned rollout paths. `archive_thread.rs` moves files and then updates
-the state DB archive metadata; `compression.rs` may replace a cold JSONL with a
+removing owned rollout paths. `archive_thread.rs` and `unarchive_thread.rs`
+move files between active and archived collections and then update state DB
+archive metadata; `compression.rs` may replace a cold JSONL with a
 compressed sibling. A capture must fence these mutations together with the
 live writer, rather than treating a directory walk as a transaction.
 
@@ -69,8 +71,11 @@ wire item set: session metadata, response items (including optional harness
 metadata), inter-agent communication and its metadata, compaction, turn context,
 token usage, world state, security score, retained context, event messages and
 realtime items. Unknown/future variants cannot be silently discarded. Session
-metadata includes legacy `id` compatibility, separate session/rollout identities,
-history mode, and optional reference coordinates in `protocol/src/protocol.rs`.
+metadata includes stable `SessionMeta::session_id` and `SessionMeta::id` (thread
+ID), history mode, and optional reference coordinates in
+`protocol/src/protocol.rs`. A reverted rollout's ID can differ from its thread
+ID and is derived from the rollout filename; `HistoryPosition::thread_id`
+historically names a rollout ID despite the field name.
 
 For model-visible context, `thread-store/src/local/model_context.rs` scans the
 resolved lineage using `rollout/src/model_context.rs::ModelContextScan`. A recent
@@ -91,8 +96,8 @@ input. No new test was added for statically defined file names or enum variants.
 
 The remaining #2/#11 inventory must trace every app-server/TUI/exec/daemon read
 entry point, file-backed attachment implementation, ephemeral sessions (which
-have no durable rollout to capture),
-caller-supplied history, memory files, compaction/fork-only model items, and
+have no durable rollout to capture), caller-supplied history, memory files,
+compaction/fork-only model items, and
 provider/workspace permissions. It must determine which live writer owns each
 file during coherent capture, how a reference graph closes across active,
 archived and compressed files, and how a fresh host materializes every byte.
