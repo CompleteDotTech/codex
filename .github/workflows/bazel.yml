@@ -97,7 +97,10 @@ jobs:
             echo "Bazel test query returned no targets." >&2
             exit 1
           fi
-          mapfile -t bazel_targets <<< "${bazel_target_lines}"
+          bazel_targets=()
+          while IFS= read -r bazel_target; do
+            bazel_targets+=("${bazel_target}")
+          done <<< "${bazel_target_lines}"
 
           selected_targets=()
           for bazel_target in "${bazel_targets[@]}"; do
