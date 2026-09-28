@@ -152,9 +152,16 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe foreign role privileges';
     END IF;
     IF EXISTS (
+        WITH RECURSIVE owner_roles(roleid) AS (
+            SELECT 'codex_owner'::regrole
+            UNION
+            SELECT membership.member
+            FROM pg_auth_members membership
+            JOIN owner_roles parent ON parent.roleid = membership.roleid
+        )
         SELECT 1 FROM pg_auth_members membership
-        WHERE membership.roleid = 'codex_owner'::regrole
-          AND membership.admin_option
+        JOIN owner_roles parent ON parent.roleid = membership.roleid
+        WHERE membership.admin_option
           AND membership.member <> 'codex_migrator'::regrole
     ) THEN
         RAISE EXCEPTION USING ERRCODE = '42501', MESSAGE = 'unsafe owner role administration';
