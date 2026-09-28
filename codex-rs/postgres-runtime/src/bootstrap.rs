@@ -290,6 +290,11 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
                         'codex_storage.codex_schema_meta'::regclass,
                         'codex_storage._codex_pg_migrations'::regclass
                     )
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_class relation
+                    WHERE relation.relnamespace = 'codex_storage'::regnamespace
+                      AND relation.relname IN ('codex_schema_meta', '_codex_pg_migrations')
+                      AND relation.reloftype <> 0
                 ) AND EXISTS (
                     SELECT 1 FROM pg_constraint cst
                     WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
@@ -330,12 +335,24 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
                           AND attribute.atthasdef = required.has_default
                     )
                 )
-                AND EXISTS (
-                    SELECT 1 FROM pg_constraint cst
-                    WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
-                      AND cst.conname = 'codex_schema_meta_singleton_check'
-                      AND cst.contype = 'c'
-                      AND pg_get_constraintdef(cst.oid) = 'CHECK (singleton)'
+                AND (SELECT count(*) FROM pg_constraint
+                     WHERE conrelid = 'codex_storage.codex_schema_meta'::regclass) = 5
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM (VALUES
+                        ('codex_schema_meta_pkey'::name, 'p'::\"char\", NULL::text),
+                        ('codex_schema_meta_singleton_check'::name, 'c'::\"char\", 'CHECK (singleton)'),
+                        ('codex_schema_meta_format_version_check'::name, 'c'::\"char\", 'CHECK ((format_version > 0))'),
+                        ('codex_schema_meta_min_reader_version_check'::name, 'c'::\"char\", 'CHECK ((min_reader_version > 0))'),
+                        ('codex_schema_meta_min_writer_version_check'::name, 'c'::\"char\", 'CHECK ((min_writer_version > 0))')
+                    ) AS required(name, contype, definition)
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM pg_constraint cst
+                        WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
+                          AND cst.conname = required.name
+                          AND cst.contype = required.contype
+                          AND (required.definition IS NULL OR pg_get_constraintdef(cst.oid) = required.definition)
+                    )
                 )",
             )
             .fetch_one(&mut *transaction)
