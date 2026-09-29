@@ -51,6 +51,16 @@ class ControlPlanTests(unittest.TestCase):
     def test_migration_is_bound_to_manifest_and_exclusions_are_visible(self):
         report = self.preview()
         excluded = {row["id"]: row["treatment"] for row in report["excluded_domains"]}
+        self.assertEqual(
+            report["excluded_domains"],
+            [
+                {"id": rule["id"], "treatment": rule["treatment"]}
+                for rule in sorted(
+                    self.inventory["domains"], key=lambda rule: rule["id"]
+                )
+                if rule["treatment"] != "migrate"
+            ],
+        )
         self.assertTrue(HOST_RETAINED <= excluded.keys())
         self.assertTrue(all(excluded[name] == "retain" for name in HOST_RETAINED))
         self.assertEqual(report["local_history_action"], "capture_required")
@@ -183,5 +193,16 @@ class ControlPlanTests(unittest.TestCase):
                 raw,
                 hashlib.sha256(raw).hexdigest(),
                 b"x" * (MAX_MANIFEST_BYTES + 1),
+                encoded(self.manifest),
+            )
+
+    def test_oversized_valid_plan_is_rejected_with_matching_digest(self):
+        raw = encoded(self.plan)
+        raw += b" " * (MAX_MANIFEST_BYTES + 1 - len(raw))
+        with self.assertRaisesRegex(ContractError, "^plan_too_large$"):
+            preview_plan(
+                raw,
+                hashlib.sha256(raw).hexdigest(),
+                encoded(self.inventory),
                 encoded(self.manifest),
             )
