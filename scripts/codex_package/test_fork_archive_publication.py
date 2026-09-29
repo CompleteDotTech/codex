@@ -232,6 +232,36 @@ class ForkArchivePublicationTest(unittest.TestCase):
                 self.publish()
         self.assertFalse((self.parent / self.name).exists())
 
+    def test_rejects_source_fifo_swapped_after_verification_without_blocking(
+        self,
+    ) -> None:
+        from codex_package import fork_archive_publication
+
+        real_verify = verify_fork_archive
+
+        def swap_after_verification(package, archive, **kwargs):
+            digest = real_verify(package, archive, **kwargs)
+            archive.unlink()
+            os.mkfifo(archive)
+            return digest
+
+        with patch.object(
+            fork_archive_publication,
+            "verify_fork_archive",
+            side_effect=swap_after_verification,
+        ):
+            with self.assertRaisesRegex(ValueError, "not a regular file"):
+                self.publish()
+        self.assertFalse((self.parent / self.name).exists())
+
+    def test_rejects_receipt_fifo_swap_without_blocking(self) -> None:
+        receipt = self.publish()
+        published = self.parent / self.name
+        published.unlink()
+        os.mkfifo(published)
+        with self.assertRaisesRegex(ValueError, "not a regular file"):
+            verify_publication_receipt(self.directory_fd, receipt)
+
     def test_rejects_shared_directory_and_invalid_name(self) -> None:
         for mode in (0o755, 0o777):
             with self.subTest(mode=mode):

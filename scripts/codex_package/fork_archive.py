@@ -13,6 +13,8 @@ from pathlib import Path
 from .archive import archive_format_for_path
 from .archive import resolve_zstd_command
 from .fork_identity import MANIFEST_NAME
+from .fork_identity import open_regular_file
+from .fork_identity import read_regular_file
 from .fork_identity import safe_name
 from .fork_identity import verify_fork_package
 from .targets import TARGET_SPECS
@@ -23,17 +25,42 @@ def verify_fork_archive(
 ) -> str:
     """Check a sealed directory and archive, returning the archive's SHA-256."""
     verification = verify_fork_package(package_dir, pinned_root_fd=pinned_root_fd)
-    manifest_bytes = (package_dir / MANIFEST_NAME).read_bytes()
+    manifest_bytes = read_regular_file(package_dir / MANIFEST_NAME, 4 * 1024 * 1024)
     if json.loads(manifest_bytes) != verification.manifest:
         raise ValueError("fork manifest changed after directory verification")
     manifest = verification.manifest
     expected_files = manifest["files"]
     expected_directories = manifest["directories"]
     target = TARGET_SPECS[manifest["target"]]
-    before = file_digest(archive_path)
     archive_format = archive_format_for_path(archive_path)
+    with open_regular_file(archive_path) as archive_stream:
+        before = stream_digest(archive_stream)
+        archive_stream.seek(0)
+        check_archive_stream(
+            archive_stream,
+            archive_format,
+            expected_files,
+            expected_directories,
+            manifest_bytes,
+            target.is_windows,
+        )
+        archive_stream.seek(0)
+        after = stream_digest(archive_stream)
+        if after != before:
+            raise ValueError("fork archive changed during verification")
+        return after
+
+
+def check_archive_stream(
+    archive_stream,
+    archive_format,
+    expected_files,
+    expected_directories,
+    manifest_bytes,
+    windows_target,
+) -> None:
     if archive_format == "zip":
-        with zipfile.ZipFile(archive_path) as archive:
+        with zipfile.ZipFile(archive_stream) as archive:
             entries = (
                 (
                     info.filename,
@@ -49,11 +76,11 @@ def verify_fork_archive(
                 expected_files,
                 expected_directories,
                 manifest_bytes,
-                target.is_windows,
+                windows_target,
             )
     else:
-        tar_path = archive_path
         with ExitStack() as stack:
+            tar_stream = archive_stream
             if archive_format == "tar.zst":
                 temporary = stack.enter_context(
                     tempfile.TemporaryDirectory(prefix="fork-tar-")
@@ -61,11 +88,13 @@ def verify_fork_archive(
                 tar_path = Path(temporary) / "archive.tar"
                 with tar_path.open("wb") as out:
                     subprocess.run(
-                        [*resolve_zstd_command(), "-d", "-q", "-c", str(archive_path)],
+                        [*resolve_zstd_command(), "-d", "-q", "-c"],
+                        stdin=archive_stream,
                         stdout=out,
                         check=True,
                     )
-            archive = stack.enter_context(tarfile.open(tar_path, "r:*"))
+                tar_stream = stack.enter_context(tar_path.open("rb"))
+            archive = stack.enter_context(tarfile.open(fileobj=tar_stream, mode="r:*"))
             entries = (
                 (
                     member.name,
@@ -85,12 +114,8 @@ def verify_fork_archive(
                 expected_files,
                 expected_directories,
                 manifest_bytes,
-                target.is_windows,
+                windows_target,
             )
-    after = file_digest(archive_path)
-    if after != before:
-        raise ValueError("fork archive changed during verification")
-    return after
 
 
 def check_entries(
@@ -158,7 +183,7 @@ def check_archive_mode(
 
 
 def file_digest(path: Path) -> str:
-    with path.open("rb") as stream:
+    with open_regular_file(path) as stream:
         return stream_digest(stream)
 
 

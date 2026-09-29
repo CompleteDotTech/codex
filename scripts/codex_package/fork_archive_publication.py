@@ -58,7 +58,7 @@ def publish_verified_fork_archive_linux(
         expected_digest = verify_fork_archive(
             pinned_package_dir, source_archive, pinned_root_fd=package_fd
         )
-        source_fd = os.open(source_archive, os.O_RDONLY | os.O_NOFOLLOW)
+        source_fd = os.open(source_archive, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
         try:
             if not stat.S_ISREG(os.fstat(source_fd).st_mode):
                 raise ValueError("fork archive source is not a regular file")
@@ -128,10 +128,16 @@ def verify_publication_receipt(
     ):
         raise ValueError("fork archive publication directory changed")
     with os.fdopen(
-        os.open(receipt.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=destination_dir_fd),
+        os.open(
+            receipt.name,
+            os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW,
+            dir_fd=destination_dir_fd,
+        ),
         "rb",
     ) as published:
         file_identity = os.fstat(published.fileno())
+        if not stat.S_ISREG(file_identity.st_mode):
+            raise ValueError("fork archive published entry is not a regular file")
         if (file_identity.st_dev, file_identity.st_ino) != (
             receipt.file_device,
             receipt.file_inode,
