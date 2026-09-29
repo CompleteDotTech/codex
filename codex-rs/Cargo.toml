@@ -92,6 +92,7 @@ members = [
     "network-proxy",
     "ollama",
     "process-hardening",
+    "postgres-runtime",
     "realtime-webrtc",
     "voice-host",
     "protocol",
@@ -488,6 +489,8 @@ sqlx = { version = "=0.9.0", default-features = false, features = [
 ] }
 # Derives and migration embedding do not need query macros or a host SQLite driver.
 sqlx-macros = { version = "=0.9.0", default-features = false, features = ["derive", "migrate"] }
+# Keep every target driver aligned when SQLite enables sqlx-core's offline API.
+sqlx-postgres = { version = "=0.9.0", default-features = false, features = ["offline"] }
 # Preserve the target driver's query-description support without building it on the host.
 sqlx-sqlite = { version = "=0.9.0", default-features = false, features = ["offline"] }
 starlark = { version = "0.14.2", default-features = false }
