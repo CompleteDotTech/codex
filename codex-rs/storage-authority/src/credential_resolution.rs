@@ -17,6 +17,11 @@ impl ResolvedCredential {
     pub fn expose(&self) -> &str {
         self.0.as_str()
     }
+
+    /// Move the secret into another zeroizing owner without cloning plaintext.
+    pub fn into_zeroizing(self) -> Zeroizing<String> {
+        self.0
+    }
 }
 
 impl fmt::Debug for ResolvedCredential {
