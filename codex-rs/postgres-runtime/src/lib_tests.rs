@@ -2,6 +2,21 @@ use super::*;
 use pretty_assertions::assert_eq;
 
 #[test]
+fn only_the_qualified_server_release_is_accepted() {
+    assert_eq!(require_qualified_server_version("170011"), Ok(()));
+    for version in ["", "17.11", "160011", "170010", "170012", "180000"] {
+        assert_eq!(
+            require_qualified_server_version(version),
+            Err(PoolError::UnsupportedServer)
+        );
+    }
+    assert_eq!(
+        PoolError::UnsupportedServer.to_string(),
+        "PostgreSQL pool error: UnsupportedServer"
+    );
+}
+
+#[test]
 fn settings_debug_redacts_credentials() {
     let settings = ConnectionSettings {
         host: "hidden.example".to_string(),

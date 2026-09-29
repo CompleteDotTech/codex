@@ -85,6 +85,9 @@ jobs:
       - name: Test PostgreSQL connection pool against real server
         working-directory: codex-rs
         run: just test -p codex-postgres-runtime
+      - name: Verify bootstrap and preflight serialize with restore
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_LOCK_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_restore_lock_serializes_bootstrap_and_preflight
       - name: Verify archive cleanup after uncertain source mutations
         run: python -m unittest discover -s scripts/postgres/tests -p test_restore_archive_cleanup_live.py -v
       - name: Qualify transactional restore guard
@@ -122,6 +125,20 @@ jobs:
       - name: Verify restored metadata with the real Rust bootstrap
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_STATE="$CODEX_TEST_POSTGRES_RESTORE_STATE" just test -p codex-postgres-runtime real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent
+      - name: Test serializable transaction outcomes against real server
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_TRANSACTION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_serializable_conflict_deadlock_and_cancelled_write
+      - name: Provision separate namespace roles in fixture
+        run: python scripts/postgres/isolation_fixture.py --state "$CODEX_TEST_POSTGRES_STATE"
+      - name: Test named namespace bootstrap against real server
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles
+      - name: Test two-namespace role isolation against real server
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_postgres_roles_isolate_two_schemas
+      - name: Test bounded restart and loopback network interruption
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_INTERRUPTION_STATE="$CODEX_TEST_POSTGRES_STATE" CODEX_TEST_POSTGRES_MANAGER="$GITHUB_WORKSPACE/scripts/postgres/manage.py" just test -p codex-postgres-runtime real_restart_and_loopback_network_cut_are_bounded
       - name: Stop fixture and retain receipts
         if: always()
         shell: bash

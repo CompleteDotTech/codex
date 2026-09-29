@@ -4,6 +4,8 @@
 //! candidate configuration. Callers that need the preprovisioned storage
 //! schema must explicitly invoke the transactional `bootstrap_codex_storage`
 //! entry point.
+//! Only PostgreSQL 17.11 is qualified by the current real-server fixture. This
+//! exact-version gate does not assert support for every PostgreSQL 17 release.
 
 #![expect(
     clippy::disallowed_methods,
@@ -29,9 +31,26 @@ use tokio::time::timeout;
 mod bootstrap;
 pub use bootstrap::BootstrapError;
 pub use bootstrap::bootstrap_codex_storage;
+mod compatibility;
+pub use compatibility::ClientCapabilities;
+pub use compatibility::CompatibilityError;
+pub use compatibility::CompatibilityResult;
+pub use compatibility::RequiredAccess;
+pub use compatibility::check_codex_storage_compatibility;
+mod namespace;
+pub use namespace::InvalidNamespace;
+pub use namespace::NamedNamespace;
+mod named_bootstrap;
+pub use named_bootstrap::bootstrap_named_namespace;
+mod named_compatibility;
+pub use named_compatibility::check_named_namespace_compatibility;
+mod transaction;
+pub use transaction::PostgresTransaction;
+pub use transaction::TransactionError;
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_CONNECTIONS: u32 = 32;
+const QUALIFIED_SERVER_VERSION_NUM: &str = "170011";
 
 /// Resolved by the owning host. The password must not be logged or persisted.
 pub struct ConnectionSettings {
@@ -67,6 +86,7 @@ pub enum PoolError {
     Tls,
     Unavailable,
     Closed,
+    UnsupportedServer,
 }
 
 impl fmt::Display for PoolError {
@@ -89,6 +109,14 @@ fn classify(error: &sqlx::Error) -> PoolError {
             PoolError::Tls
         }
         _ => PoolError::Unavailable,
+    }
+}
+
+fn require_qualified_server_version(version: &str) -> Result<(), PoolError> {
+    if version == QUALIFIED_SERVER_VERSION_NUM {
+        Ok(())
+    } else {
+        Err(PoolError::UnsupportedServer)
     }
 }
 
@@ -154,6 +182,17 @@ impl PostgresPool {
         .await
         .map_err(|_| PoolError::Timeout)?
         .map_err(|error| classify(&error))?;
+        let version = timeout(
+            limits.connect_timeout,
+            sqlx::query_scalar::<_, String>("SHOW server_version_num").fetch_one(&pool),
+        )
+        .await
+        .map_err(|_| PoolError::Timeout)
+        .and_then(|result| result.map_err(|error| classify(&error)));
+        if let Err(error) = version.and_then(|version| require_qualified_server_version(&version)) {
+            let _ = timeout(limits.connect_timeout, pool.close()).await;
+            return Err(error);
+        }
         Ok(Self {
             pool,
             acquire_timeout: limits.acquire_timeout,
