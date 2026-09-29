@@ -1,0 +1,197 @@
+#![expect(
+    clippy::expect_used,
+    reason = "isolated PostgreSQL fixture failures should identify their source"
+)]
+
+use codex_postgres_runtime::ConnectionSettings;
+use codex_postgres_runtime::PoolLimits;
+use codex_postgres_runtime::PostgresPool;
+use codex_postgres_runtime::ThreadOwnershipError;
+use codex_postgres_runtime::TransactionError;
+use codex_postgres_runtime::bootstrap_codex_storage;
+use pretty_assertions::assert_eq;
+use serde_json::Value;
+use std::path::Path;
+use std::time::Duration;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+
+fn settings(state: &Path, role: &str) -> ConnectionSettings {
+    let receipt: Value = serde_json::from_slice(
+        &std::fs::read(state.join("receipt.json")).expect("read isolated PostgreSQL receipt"),
+    )
+    .expect("parse PostgreSQL receipt");
+    ConnectionSettings {
+        host: "localhost".to_string(),
+        port: receipt["port"].as_u64().expect("PostgreSQL port") as u16,
+        database: "codex".to_string(),
+        username: format!("codex_{role}"),
+        password: std::fs::read_to_string(state.join(format!("secrets/{role}.password")))
+            .expect("read private role credential")
+            .trim()
+            .to_string()
+            .into(),
+        ca_certificate: state.join("secrets/ca.crt"),
+        limits: PoolLimits {
+            connect_timeout: Duration::from_secs(5),
+            acquire_timeout: Duration::from_secs(5),
+            max_connections: 2,
+        },
+    }
+}
+
+#[tokio::test]
+async fn real_two_clients_reject_stale_thread_owners() {
+    let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_OWNERSHIP_STATE") else {
+        return;
+    };
+    let state = Path::new(&state);
+    let migrator = PostgresPool::connect(settings(state, "migrator"))
+        .await
+        .expect("migrator pool");
+    bootstrap_codex_storage(&migrator)
+        .await
+        .expect("bootstrap ownership schema");
+    let first = PostgresPool::connect(settings(state, "runtime"))
+        .await
+        .expect("first runtime client");
+    let second = PostgresPool::connect(settings(state, "runtime"))
+        .await
+        .expect("second runtime client");
+    let thread_id = format!(
+        "{:032x}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos()
+    );
+    let first_owner = "00000000000000000000000000000001";
+    let contender_owner = "00000000000000000000000000000002";
+    let replacement_owner = "00000000000000000000000000000003";
+    let reclaim_owner = "00000000000000000000000000000004";
+    let cancelled_owner = "00000000000000000000000000000005";
+    let after_cancel_owner = "00000000000000000000000000000006";
+    let short = Duration::from_secs(2);
+    let committed = first
+        .claim_thread_ownership(&thread_id, first_owner, short)
+        .await
+        .expect("first claim")
+        .expect("first owner acquired");
+    assert_eq!(committed.token, 1);
+    drop(committed); // Simulate losing the claim result before resolving it.
+    let claim = second
+        .recover_thread_ownership(&thread_id, first_owner)
+        .await
+        .expect("read back uncertain claim")
+        .expect("recover committed ownership");
+    assert_eq!(claim.token, 1);
+    assert_eq!(first.observe_thread_ownership(&claim).await, Ok(true));
+    assert_eq!(first.renew_thread_ownership(&claim, short).await, Ok(true));
+    assert_eq!(
+        second
+            .claim_thread_ownership(&thread_id, contender_owner, short)
+            .await,
+        Ok(None)
+    );
+    tokio::time::sleep(Duration::from_millis(2100)).await;
+    let replacement = second
+        .claim_thread_ownership(&thread_id, replacement_owner, Duration::from_secs(2))
+        .await
+        .expect("expired takeover")
+        .expect("second owner acquired");
+    assert_eq!(replacement.token, claim.token + 1);
+    assert_eq!(first.observe_thread_ownership(&claim).await, Ok(false));
+    assert_eq!(
+        first
+            .recover_thread_ownership(&thread_id, first_owner)
+            .await,
+        Ok(None)
+    );
+    assert_eq!(first.renew_thread_ownership(&claim, short).await, Ok(false));
+    assert_eq!(first.release_thread_ownership(&claim).await, Ok(false));
+    assert_eq!(
+        second.release_thread_ownership(&replacement).await,
+        Ok(true)
+    );
+    assert_eq!(
+        second.observe_thread_ownership(&replacement).await,
+        Ok(false)
+    );
+    let latest = first
+        .claim_thread_ownership(&thread_id, reclaim_owner, short)
+        .await
+        .expect("reclaim after release")
+        .expect("first owner reclaims");
+    assert_eq!(latest.token, replacement.token + 1);
+    assert_eq!(first.release_thread_ownership(&latest).await, Ok(true));
+    let mut lock = first
+        .begin_serializable()
+        .await
+        .expect("hold ownership row");
+    sqlx::query("SELECT token FROM codex_storage.thread_writer_ownership WHERE thread_id = $1::uuid FOR UPDATE")
+        .bind(&thread_id)
+        .fetch_one(lock.connection())
+        .await
+        .expect("lock ownership row");
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            second.claim_thread_ownership(&thread_id, cancelled_owner, short)
+        )
+        .await
+        .is_err()
+    );
+    lock.rollback().await.expect("release ownership row lock");
+    let after_cancel = second
+        .claim_thread_ownership(&thread_id, after_cancel_owner, short)
+        .await
+        .expect("claim after cancelled request")
+        .expect("second owner acquired after cancellation");
+    assert_eq!(after_cancel.token, latest.token + 1);
+    assert_eq!(
+        second.release_thread_ownership(&after_cancel).await,
+        Ok(true)
+    );
+    assert_eq!(
+        first
+            .claim_thread_ownership(
+                &thread_id,
+                "00000000000000000000000000000009",
+                Duration::ZERO
+            )
+            .await,
+        Err(ThreadOwnershipError::InvalidLease)
+    );
+
+    let concurrent_id = format!(
+        "{:032x}",
+        u128::from_str_radix(&thread_id, 16).expect("thread UUID") + 1
+    );
+    let (left, right) = tokio::join!(
+        first.claim_thread_ownership(
+            &concurrent_id,
+            "00000000000000000000000000000007",
+            Duration::from_secs(2)
+        ),
+        second.claim_thread_ownership(
+            &concurrent_id,
+            "00000000000000000000000000000008",
+            Duration::from_secs(2)
+        ),
+    );
+    let granted = [left.as_ref(), right.as_ref()]
+        .into_iter()
+        .filter(|result| matches!(result, Ok(Some(_))))
+        .count();
+    assert_eq!(granted, 1);
+    for result in [left, right] {
+        assert!(matches!(
+            result,
+            Ok(Some(_))
+                | Ok(None)
+                | Err(ThreadOwnershipError::Transaction(
+                    TransactionError::SerializationConflict
+                ))
+        ));
+    }
+}

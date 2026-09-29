@@ -53,6 +53,8 @@ pub(crate) const KNOWN_RELATIONS: &[&str] = &[
     "thread_sections_pkey",
     "idx_threads_section_recency",
     "idx_threads_section_position",
+    "thread_writer_ownership",
+    "thread_writer_ownership_pkey",
 ];
 
 /// Whether the recorded history is exactly the first `format` embedded migrations.
@@ -679,6 +681,18 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .await
             .map_err(|error| classify_sqlx(&error))?;
         sqlx::query("GRANT SELECT ON codex_storage.thread_sections TO codex_backup")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("REVOKE ALL ON codex_storage.thread_writer_ownership FROM codex_runtime, codex_backup")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("GRANT SELECT, INSERT, UPDATE ON codex_storage.thread_writer_ownership TO codex_runtime")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("GRANT SELECT ON codex_storage.thread_writer_ownership TO codex_backup")
             .execute(&mut *transaction)
             .await
             .map_err(|error| classify_sqlx(&error))?;
