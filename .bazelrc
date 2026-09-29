@@ -38,6 +38,9 @@ common:macos --strategy=CcConfigureMakeRule=remote,sandboxed,local
 common:windows --test_env=SYSTEMROOT
 common:windows --test_env=COMSPEC
 common:windows --test_env=WINDIR
+# Executable discovery uses PATHEXT; strict action environments otherwise lose
+# extensions such as .EXE and .CMD even when the test PATH is explicit.
+common:windows --test_env=PATHEXT
 # Rust's libtest harness runs test bodies on std-spawned threads. The default
 # 2 MiB stack can be too small for large async test futures on Windows CI; see
 # https://github.com/openai/codex/pull/19067 for the motivating failure.
