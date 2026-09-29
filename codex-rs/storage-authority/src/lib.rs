@@ -6,6 +6,7 @@
 
 use serde::Deserialize;
 use serde::Serialize;
+#[cfg(unix)]
 use std::fs::File;
 use std::fs::OpenOptions;
 use std::io;
@@ -33,6 +34,7 @@ pub struct LocalIdentity {
 pub struct ActivationMarker {
     pub format_version: u32,
     pub dataset_id: Uuid,
+    pub instance_id: Uuid,
     pub home_id: Uuid,
     pub generation: u64,
     pub remote_ever_activated: bool,
@@ -174,7 +176,7 @@ pub fn initialize_empty_home(home: &Path) -> Result<LocalAuthority, AuthorityErr
         format_version: FORMAT_VERSION,
         dataset_id: Uuid::new_v4(),
         instance_id: Uuid::new_v4(),
-        generation: 0,
+        generation: 1,
         home_id: Uuid::new_v4(),
     };
     let marker = initial_marker(&identity);
@@ -188,6 +190,7 @@ fn initial_marker(identity: &LocalIdentity) -> ActivationMarker {
     ActivationMarker {
         format_version: FORMAT_VERSION,
         dataset_id: identity.dataset_id,
+        instance_id: identity.instance_id,
         home_id: identity.home_id,
         generation: identity.generation,
         remote_ever_activated: false,
@@ -208,10 +211,14 @@ pub fn load_local_authority(home: &Path) -> Result<LocalAuthority, AuthorityErro
         ));
     }
     if identity.dataset_id != marker.dataset_id
+        || identity.instance_id != marker.instance_id
         || identity.home_id != marker.home_id
         || identity.generation != marker.generation
     {
         return Err(AuthorityError::Blocked("authority records disagree"));
+    }
+    if !(1..=i64::MAX as u64).contains(&identity.generation) {
+        return Err(AuthorityError::Blocked("invalid authority generation"));
     }
     if marker.remote_ever_activated {
         return Err(AuthorityError::Blocked(
@@ -238,14 +245,32 @@ fn write_new<T: Serialize>(path: &Path, value: &T) -> Result<(), AuthorityError>
 }
 
 fn read_record<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, AuthorityError> {
-    if std::fs::symlink_metadata(path)
+    if !std::fs::symlink_metadata(path)
         .map_err(|_| AuthorityError::Blocked("authority record missing"))?
         .file_type()
-        .is_symlink()
+        .is_file()
     {
-        return Err(AuthorityError::Blocked("authority record is a symlink"));
+        return Err(AuthorityError::Blocked("authority record is not regular"));
     }
-    let file = File::open(path).map_err(|_| AuthorityError::Blocked("authority record missing"))?;
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    // Validate the opened handle too: the path may change after metadata lookup.
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(AuthorityError::Blocked("authority record is not regular"));
+    }
     let mut bytes = Vec::new();
     file.take(4097).read_to_end(&mut bytes)?;
     if bytes.len() > 4096 {
