@@ -100,6 +100,8 @@ partial.
 `CANONICAL_HISTORY_SOURCES.md` separately pins a partial source-level map of
 rollout, fork, archive, compression, and attachment call sites. It does not
 qualify a coherent capture or second-host replay.
+`SPLIT_STORE_FIXTURES.md` documents populated old primary logs/memory rows at
+their drop boundaries alongside distinct or absent modern split stores.
 
 `migrate`, `regenerate`, `retain`, and `absent` are distinct treatments. Only
 `migrate` contributes verified record counts. Non-migrated entries cannot carry
