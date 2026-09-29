@@ -45,7 +45,7 @@ class PackageVersionTest(unittest.TestCase):
                 with self.assertRaises(argparse.ArgumentTypeError):
                     parse_package_version(version)
 
-    def test_fork_candidate_refuses_archives_and_prebuilt_inputs_before_output(
+    def test_fork_candidate_refuses_prebuilt_inputs_before_output(
         self,
     ) -> None:
         builder = Path(__file__).resolve().parents[1] / "build_codex_package.py"
@@ -53,17 +53,10 @@ class PackageVersionTest(unittest.TestCase):
             package = Path(temporary) / "package"
             cases = [
                 (
-                    ["--archive-output", str(Path(temporary) / f"candidate{suffix}")],
-                    "archives are not yet qualified",
-                )
-                for suffix in (".zip", ".tar.gz", ".tar.zst")
-            ]
-            cases.append(
-                (
                     ["--entrypoint-bin", str(Path(temporary) / "unverified.exe")],
                     "source-built and pinned",
                 )
-            )
+            ]
             for extra, diagnostic in cases:
                 result = subprocess.run(
                     [

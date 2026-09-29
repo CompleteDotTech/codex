@@ -42,11 +42,12 @@ Run `python scripts/verify_fork_package.py <package-dir>` to check the staged
 directory. The manifest inventories all files and directories, their byte hashes,
 and Unix mode claims. A Windows check of a Unix package reports
 `unixModeStatus=unavailable`; run that check on Unix before relying on modes.
-Fork candidate archives and prebuilt binary overrides are refused until their
-provenance and serialized entries can be verified independently. A future release
-channel must authenticate the manifest before downloads or installation can trust
-it. This option does not activate the fork installer, updater, or PostgreSQL
-storage.
+Fork candidate archives may be requested with repeated `--archive-output` flags.
+The builder stages and checks every serialized ZIP or TAR entry against the
+manifest before publishing the archives and adjacent `.sha256` files. Prebuilt
+binary overrides remain refused. A future release channel must authenticate the
+manifest before downloads or installation can trust it. This option does not
+activate the fork installer, updater, or PostgreSQL storage.
 
 If `--target` is omitted, the builder uses the release target for the current
 host platform. On Linux, that default is a musl target to match Codex release
