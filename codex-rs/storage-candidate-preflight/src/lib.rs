@@ -4,7 +4,6 @@
 //! the active backend. The caller must be the host that owns the config stack.
 
 use codex_config::ConfigLayerStack;
-use codex_postgres_runtime::ClientCapabilities;
 use codex_postgres_runtime::CompatibilityError;
 use codex_postgres_runtime::CompatibilityResult;
 use codex_postgres_runtime::ConnectionSettings;
@@ -13,7 +12,8 @@ use codex_postgres_runtime::PoolError;
 use codex_postgres_runtime::PoolLimits;
 use codex_postgres_runtime::PostgresPool;
 use codex_postgres_runtime::RequiredAccess;
-use codex_postgres_runtime::check_named_namespace_compatibility;
+use codex_postgres_runtime::VerifiedTarget;
+use codex_postgres_runtime::check_verified_named_target_compatibility;
 use codex_storage_authority::CredentialResolutionError;
 use codex_storage_authority::HostCredentialResolver;
 use codex_storage_authority::StorageCandidateProfile;
@@ -45,7 +45,7 @@ impl std::error::Error for CandidatePreflightError {}
 pub async fn preflight_trusted_candidate(
     stack: &ConfigLayerStack,
     resolver: &HostCredentialResolver<'_>,
-    capabilities: ClientCapabilities,
+    target: &VerifiedTarget,
 ) -> Result<CompatibilityResult, CandidatePreflightError> {
     let candidate = stack
         .storage_candidate()
@@ -66,7 +66,7 @@ pub async fn preflight_trusted_candidate(
         port: profile.port(),
         database: profile.database().to_owned(),
         username: namespace.migrator_login().to_owned(),
-        password: credential.expose().to_owned(),
+        password: credential.into_zeroizing().into(),
         ca_certificate: ca_certificate.to_path_buf(),
         limits: PoolLimits {
             connect_timeout: Duration::from_secs(u64::from(profile.connect_timeout_seconds())),
@@ -77,10 +77,10 @@ pub async fn preflight_trusted_candidate(
     let pool = PostgresPool::connect(settings)
         .await
         .map_err(CandidatePreflightError::Connection)?;
-    let result = check_named_namespace_compatibility(
+    let result = check_verified_named_target_compatibility(
         &pool,
         &namespace,
-        capabilities,
+        target,
         RequiredAccess::ReadWrite,
     )
     .await
