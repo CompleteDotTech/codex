@@ -3,7 +3,8 @@
 use crate::PoolError;
 use crate::PostgresPool;
 use sqlx::Acquire;
-use sqlx::migrate::{MigrateError, Migrator};
+use sqlx::migrate::MigrateError;
+use sqlx::migrate::Migrator;
 use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
