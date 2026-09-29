@@ -1491,7 +1491,8 @@ pub async fn find_project_root(
         .unwrap_or_else(|| cwd.clone()))
 }
 
-async fn discover_project_root(
+/// Find a project marker, preserving absence instead of falling back to cwd.
+pub async fn discover_project_root(
     fs: &dyn ExecutorFileSystem,
     cwd: &AbsolutePathBuf,
     project_root_markers: &[String],

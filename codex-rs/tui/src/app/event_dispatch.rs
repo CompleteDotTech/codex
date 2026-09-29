@@ -50,8 +50,6 @@ impl App {
                     | AppEvent::ResetTranscriptForThreadSwitch
                     | AppEvent::ResetTranscriptForThreadSwitchPreservingScreen
                     | AppEvent::FinishPromptRevert { .. }
-                    | AppEvent::PromptSuggestionStarted { .. }
-                    | AppEvent::PromptSuggestionFinished { .. }
                     | AppEvent::ManagedWorktreeCreated(_)
                     | AppEvent::AgentsOverviewWorktreeCreated(_)
                     | AppEvent::AppendMessageHistoryEntry { .. }
@@ -151,7 +149,7 @@ impl App {
             AppEvent::PluginMentionsLoaded { ref cwd, .. }
                 if cwds_differ(cwd, self.config.cwd.as_path()) => {}
             AppEvent::NewSession { name } => {
-                self.start_fresh_session_with_summary_hint(
+                self.start_fresh_session(
                     tui, app_server, /*session_start_source*/ None,
                     /*initial_user_message*/ None, name,
                 )
@@ -391,7 +389,7 @@ impl App {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
 
-                self.start_fresh_session_with_summary_hint(
+                self.start_fresh_session(
                     tui,
                     app_server,
                     Some(ThreadStartSource::Clear),
@@ -411,7 +409,7 @@ impl App {
                 self.clear_terminal_ui(tui, /*redraw_header*/ false)?;
                 self.reset_app_ui_state_after_clear();
 
-                self.start_fresh_session_with_summary_hint(
+                self.start_fresh_session(
                     tui,
                     app_server,
                     Some(ThreadStartSource::Clear),
@@ -531,6 +529,7 @@ impl App {
                             &self.chat_widget.config_ref().workspace_roots,
                         );
                     }
+                    fork_config.model_provider_id.clone_from(&self.chat_widget.config_ref().model_provider_id);
                     fork_config.model = Some(self.chat_widget.current_model().to_string());
                     fork_config.model_reasoning_effort =
                         self.chat_widget.current_reasoning_effort();
@@ -576,7 +575,7 @@ impl App {
                             {
                                 Ok(()) => {
                                     // Keep local input without replacing the fork's running state.
-                                    self.chat_widget.restore_reconnected_input(retained_input);
+                                    self.chat_widget.restore_reconnected_input(retained_input, &[]);
                                     if let Some(err) = name_error {
                                         self.chat_widget.add_error_message(err);
                                     }
@@ -2464,6 +2463,7 @@ impl App {
                         .add_error_message(format!("Failed to set permission profile: {err}"));
                     return Ok(AppRunControl::Continue);
                 }
+                self.runtime_approvals_reviewer_override = Some(self.config.approvals_reviewer);
                 self.runtime_permission_profile_override =
                     Some(RuntimePermissionProfileOverride::from_config(&self.config));
                 self.sync_active_thread_permission_settings_to_cached_session()
@@ -2477,11 +2477,9 @@ impl App {
                 if self.reject_pending_permission_change() {
                     return Ok(AppRunControl::Continue);
                 }
+                self.runtime_approvals_reviewer_override = Some(policy);
                 self.config.approvals_reviewer = policy;
                 self.chat_widget.set_approvals_reviewer(policy);
-                if let Some(profile) = self.runtime_permission_profile_override.as_mut() {
-                    profile.approvals_reviewer = policy;
-                }
                 self.sync_active_thread_permission_settings_to_cached_session()
                     .await;
                 if let Err(err) = crate::config_update::write_config_batch(
@@ -2600,6 +2598,7 @@ impl App {
                 }
             }
             AppEvent::OpenAgentsOverview => self.open_agents_overview(app_server),
+            AppEvent::ShowMoreAgentsOverview => self.show_more_agents_overview(app_server),
             AppEvent::NewAgentsOverviewSession { cwd } => {
                 return Box::pin(self.new_agents_overview_session(tui, app_server, cwd)).await;
             }
@@ -2660,19 +2659,6 @@ impl App {
             } => {
                 self.suggest_thread_name(app_server, thread_id, request_id)
                     .await;
-            }
-            AppEvent::GeneratePromptSuggestion(request) => {
-                self.generate_prompt_suggestion(app_server, request);
-            }
-            AppEvent::PromptSuggestionStarted { request, result } => {
-                self.on_prompt_suggestion_started(app_server, request, result);
-            }
-            AppEvent::PromptSuggestionFinished { request, temporary_thread_id, text } => {
-                self.temporary_structured_requests.remove(&temporary_thread_id);
-                if text.is_none() {
-                    request.cancellation.cancel();
-                }
-                self.chat_widget.apply_prompt_suggestion(&request, text);
             }
             AppEvent::ThreadTitleStarted {
                 cancellation,
