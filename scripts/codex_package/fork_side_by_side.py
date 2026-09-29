@@ -32,8 +32,9 @@ def stage_fork_package(
     ):
         raise ValueError("expected manifest SHA-256 must be lowercase hexadecimal")
     package_fd = os.open(package_dir, DIR_FLAGS)
-    root_fd = os.open(install_root, DIR_FLAGS)
+    root_fd = None
     try:
+        root_fd = os.open(install_root, DIR_FLAGS)
         require_private_directory(root_fd)
         if is_descendant(root_fd, os.fstat(package_fd)) or is_descendant(
             package_fd, os.fstat(root_fd)
@@ -51,8 +52,9 @@ def stage_fork_package(
         if (fd_path(package_fd) / MANIFEST_NAME).read_bytes() != manifest_bytes:
             raise ValueError("fork package manifest changed during verification")
         slots_fd = owned_child_directory(root_fd, SLOTS)
-        receipts_fd = owned_child_directory(root_fd, RECEIPTS)
+        receipts_fd = None
         try:
+            receipts_fd = owned_child_directory(root_fd, RECEIPTS)
             slot_id = expected_manifest_sha256
             if exists_at(slots_fd, slot_id) or exists_at(
                 receipts_fd, slot_id + ".json"
@@ -61,6 +63,7 @@ def stage_fork_package(
                     "fork package slot or receipt already exists; reconcile explicitly"
                 )
             os.mkdir(slot_id, 0o700, dir_fd=slots_fd)
+            os.chmod(slot_id, 0o700, dir_fd=slots_fd, follow_symlinks=False)
             os.fsync(slots_fd)
             slot_fd = os.open(slot_id, DIR_FLAGS, dir_fd=slots_fd)
             try:
@@ -70,7 +73,9 @@ def stage_fork_package(
                     verification.manifest["directories"],
                     key=lambda path: (path.count("/"), path),
                 ):
-                    (slot_path / name).mkdir(mode=0o700)
+                    directory = slot_path / name
+                    directory.mkdir(mode=0o700)
+                    directory.chmod(0o700)
                 for name, claim in verification.manifest["files"].items():
                     source = package_path / name
                     destination = slot_path / name
@@ -79,6 +84,8 @@ def stage_fork_package(
                         writer.flush()
                         if claim["unixMode"] is not None:
                             os.fchmod(writer.fileno(), int(claim["unixMode"], 8))
+                        else:
+                            os.fchmod(writer.fileno(), 0o600)
                         os.fsync(writer.fileno())
                 manifest_target_fd = os.open(
                     MANIFEST_NAME,
@@ -89,6 +96,7 @@ def stage_fork_package(
                 with os.fdopen(manifest_target_fd, "wb") as writer:
                     writer.write(manifest_bytes)
                     writer.flush()
+                    os.fchmod(writer.fileno(), 0o600)
                     os.fsync(writer.fileno())
                 for name, mode in sorted(
                     verification.manifest["directories"].items(),
@@ -126,6 +134,7 @@ def stage_fork_package(
                     json.dump(payload, writer, sort_keys=True)
                     writer.write("\n")
                     writer.flush()
+                    os.fchmod(writer.fileno(), 0o600)
                     os.fsync(writer.fileno())
                 os.fsync(receipts_fd)
                 verify_staged_fork_package(install_root, slot_id)
@@ -133,10 +142,12 @@ def stage_fork_package(
             finally:
                 os.close(slot_fd)
         finally:
-            os.close(receipts_fd)
+            if receipts_fd is not None:
+                os.close(receipts_fd)
             os.close(slots_fd)
     finally:
-        os.close(root_fd)
+        if root_fd is not None:
+            os.close(root_fd)
         os.close(package_fd)
 
 
@@ -149,8 +160,9 @@ def verify_staged_fork_package(install_root: Path, slot_id: str) -> None:
     try:
         require_private_directory(root_fd)
         slots_fd = owned_child_directory(root_fd, SLOTS, create=False)
-        receipts_fd = owned_child_directory(root_fd, RECEIPTS, create=False)
+        receipts_fd = None
         try:
+            receipts_fd = owned_child_directory(root_fd, RECEIPTS, create=False)
             slot_fd = os.open(slot_id, DIR_FLAGS, dir_fd=slots_fd)
             try:
                 receipt_fd = os.open(slot_id + ".json", FILE_FLAGS, dir_fd=receipts_fd)
@@ -185,7 +197,8 @@ def verify_staged_fork_package(install_root: Path, slot_id: str) -> None:
             finally:
                 os.close(slot_fd)
         finally:
-            os.close(receipts_fd)
+            if receipts_fd is not None:
+                os.close(receipts_fd)
             os.close(slots_fd)
     finally:
         os.close(root_fd)
@@ -216,11 +229,16 @@ def owned_child_directory(parent_fd: int, name: str, *, create: bool = True) -> 
     if create:
         try:
             os.mkdir(name, 0o700, dir_fd=parent_fd)
+            os.chmod(name, 0o700, dir_fd=parent_fd, follow_symlinks=False)
             os.fsync(parent_fd)
         except FileExistsError:
             pass
     child_fd = os.open(name, DIR_FLAGS, dir_fd=parent_fd)
-    require_private_directory(child_fd)
+    try:
+        require_private_directory(child_fd)
+    except BaseException:
+        os.close(child_fd)
+        raise
     return child_fd
 
 

@@ -4,6 +4,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,6 +16,7 @@ from codex_package.fork_identity import OWNER
 from codex_package.fork_identity import seal_fork_package
 from codex_package.fork_side_by_side import stage_fork_package
 from codex_package.fork_side_by_side import verify_staged_fork_package
+from codex_package.fork_side_by_side import owned_child_directory
 
 IDENTITY = {
     "owner": OWNER,
@@ -110,6 +112,55 @@ class SideBySideStageTest(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             verify_staged_fork_package(self.install, self.digest)
         self.assertFalse((self.install / "fork-receipts").exists())
+
+    def test_restrictive_umask_still_stages_complete_slot(self) -> None:
+        program = (
+            "import os, sys; from pathlib import Path; "
+            "from codex_package.fork_side_by_side import stage_fork_package; "
+            "os.umask(0o777); "
+            "stage_fork_package(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3])"
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                program,
+                str(self.package),
+                str(self.install),
+                self.digest,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        verify_staged_fork_package(self.install, self.digest)
+
+    def test_failed_opens_close_pinned_descriptors(self) -> None:
+        before = len(list(Path("/proc/self/fd").iterdir()))
+        with self.assertRaises(FileNotFoundError):
+            stage_fork_package(self.package, self.install / "missing", self.digest)
+        self.assertEqual(len(list(Path("/proc/self/fd").iterdir())), before)
+        (self.install / "fork-receipts").symlink_to(
+            self.package, target_is_directory=True
+        )
+        with self.assertRaises(OSError):
+            stage_fork_package(self.package, self.install, self.digest)
+        self.assertEqual(len(list(Path("/proc/self/fd").iterdir())), before)
+
+    def test_failed_child_validation_closes_descriptor(self) -> None:
+        child = self.install / "shared"
+        child.mkdir(mode=0o755)
+        child.chmod(0o755)
+        parent_fd = os.open(self.install, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            before = len(list(Path("/proc/self/fd").iterdir()))
+            with self.assertRaisesRegex(ValueError, "owner-private"):
+                owned_child_directory(parent_fd, "shared")
+            self.assertEqual(len(list(Path("/proc/self/fd").iterdir())), before)
+        finally:
+            os.close(parent_fd)
 
 
 if __name__ == "__main__":
