@@ -15,6 +15,11 @@ use std::io::Write;
 use std::path::Path;
 use uuid::Uuid;
 
+mod credential_resolution;
+pub use credential_resolution::CredentialResolutionError;
+pub use credential_resolution::HostCredentialResolver;
+pub use credential_resolution::ResolvedCredential;
+
 const IDENTITY_FILE: &str = "storage-identity.json";
 const ACTIVATION_FILE: &str = "storage-activation.json";
 const FORMAT_VERSION: u32 = 1;

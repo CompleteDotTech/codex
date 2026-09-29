@@ -4622,6 +4622,7 @@ dependencies = [
 name = "codex-storage-authority"
 version = "0.0.0"
 dependencies = [
+ "codex-keyring-store",
  "libc",
  "pretty_assertions",
  "schemars 0.8.22",
@@ -4630,6 +4631,7 @@ dependencies = [
  "tempfile",
  "uuid",
  "windows-sys 0.52.0",
+ "zeroize",
 ]
 
 [[package]]

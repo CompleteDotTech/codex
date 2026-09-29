@@ -11,10 +11,12 @@ doctest = false
 workspace = true
 
 [dependencies]
+codex-keyring-store = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 uuid = { workspace = true, features = ["serde", "v4"] }
+zeroize = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
