@@ -1,6 +1,7 @@
 """Canonical Codex package directory layout."""
 
 import json
+import os
 import shutil
 import stat
 from pathlib import Path
@@ -116,8 +117,22 @@ def validate_package_dir(
     if not metadata_path.is_file():
         raise RuntimeError("Missing package metadata: codex-package.json")
 
-    with open(metadata_path, encoding="utf-8") as fh:
-        metadata = json.load(fh)
+    metadata_fd = os.open(
+        metadata_path,
+        os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        metadata_file = os.fdopen(metadata_fd, "r", encoding="utf-8")
+    except BaseException:
+        os.close(metadata_fd)
+        raise
+    with metadata_file as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise RuntimeError("Package metadata is not a regular file")
+        metadata_bytes = fh.read(1024 * 1024 + 1)
+        if len(metadata_bytes) > 1024 * 1024:
+            raise RuntimeError("Package metadata exceeds size limit")
+        metadata = json.loads(metadata_bytes)
 
     expected_metadata = {
         "layoutVersion": LAYOUT_VERSION,
