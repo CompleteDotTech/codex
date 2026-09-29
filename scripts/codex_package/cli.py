@@ -10,7 +10,6 @@ from .cargo import build_source_binaries
 from .fork_identity import seal_fork_package
 from .fork_identity import source_identity
 from .fork_identity import verify_fork_package
-from .fork_identity import write_archive_checksum
 from .layout import build_package_dir
 from .layout import prepare_package_dir
 from .layout import validate_package_dir
@@ -93,10 +92,10 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--fork-upstream-commit",
+        "--fork-base-commit",
         help=(
-            "Opt in to CompleteDotTech package identity using this full upstream "
-            "ancestor commit. Does not change installer or update channels."
+            "Opt in to a CompleteDotTech directory candidate using a full "
+            "caller-declared ancestor commit. This does not authenticate upstream."
         ),
     )
     parser.add_argument(
@@ -191,9 +190,26 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.fork_base_commit is not None:
+        if args.archive_output:
+            raise ValueError("fork candidate archives are not yet qualified")
+        overrides = (
+            args.entrypoint_bin,
+            args.code_mode_host_bin,
+            args.bwrap_bin,
+            args.codex_command_runner_bin,
+            args.codex_windows_sandbox_setup_bin,
+            args.rg_bin,
+            args.zsh_bin,
+            args.zsh_manifest,
+        )
+        if any(value is not None for value in overrides):
+            raise ValueError(
+                "fork candidates require source-built and pinned package inputs"
+            )
     fork_identity = (
-        source_identity(args.fork_upstream_commit, args.fork_channel)
-        if args.fork_upstream_commit is not None
+        source_identity(args.fork_base_commit, args.fork_channel)
+        if args.fork_base_commit is not None
         else None
     )
     spec = TARGET_SPECS[getattr(args, "target", None) or default_target()]
@@ -251,23 +267,14 @@ def main() -> int:
         package_dir, variant, spec, include_zsh=inputs.zsh_bin is not None
     )
     if fork_identity is not None:
+        if source_identity(args.fork_base_commit, args.fork_channel) != fork_identity:
+            raise ValueError("fork candidate source changed during package build")
         seal_fork_package(package_dir, fork_identity)
         verify_fork_package(package_dir)
-
-    if fork_identity is not None and not args.force:
-        for output in args.archive_output:
-            checksum_path = output.resolve().with_name(output.name + ".sha256")
-            if checksum_path.exists() or checksum_path.is_symlink():
-                raise RuntimeError(
-                    f"fork archive checksum already exists: {checksum_path}"
-                )
 
     for archive_output in args.archive_output:
         archive_path = archive_output.resolve()
         write_archive(package_dir, archive_path, force=args.force)
-        if fork_identity is not None:
-            checksum_path = write_archive_checksum(archive_path, force=args.force)
-            print(f"Built fork archive checksum at {checksum_path}")
         print(f"Built Codex package archive at {archive_path}")
 
     print(f"Built Codex package directory at {package_dir}")

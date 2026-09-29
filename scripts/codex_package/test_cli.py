@@ -2,7 +2,9 @@
 
 import argparse
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -42,6 +44,44 @@ class PackageVersionTest(unittest.TestCase):
             with self.subTest(version=version):
                 with self.assertRaises(argparse.ArgumentTypeError):
                     parse_package_version(version)
+
+    def test_fork_candidate_refuses_archives_and_prebuilt_inputs_before_output(
+        self,
+    ) -> None:
+        builder = Path(__file__).resolve().parents[1] / "build_codex_package.py"
+        with tempfile.TemporaryDirectory() as temporary:
+            package = Path(temporary) / "package"
+            cases = [
+                (
+                    ["--archive-output", str(Path(temporary) / f"candidate{suffix}")],
+                    "archives are not yet qualified",
+                )
+                for suffix in (".zip", ".tar.gz", ".tar.zst")
+            ]
+            cases.append(
+                (
+                    ["--entrypoint-bin", str(Path(temporary) / "unverified.exe")],
+                    "source-built and pinned",
+                )
+            )
+            for extra, diagnostic in cases:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(builder),
+                        "--fork-base-commit",
+                        "a" * 40,
+                        "--package-dir",
+                        str(package),
+                        *extra,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(diagnostic, result.stderr)
+                self.assertFalse(package.exists())
 
 
 if __name__ == "__main__":

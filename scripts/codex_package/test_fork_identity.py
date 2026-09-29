@@ -2,25 +2,29 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from codex_package.fork_identity import MANIFEST_NAME
 from codex_package.fork_identity import OWNER
+from codex_package.fork_identity import package_tree
+from codex_package.fork_identity import safe_name
 from codex_package.fork_identity import seal_fork_package
+from codex_package.fork_identity import sha256
 from codex_package.fork_identity import source_identity
 from codex_package.fork_identity import verify_fork_package
-from codex_package.fork_identity import write_archive_checksum
 
 
 IDENTITY = {
     "owner": OWNER,
-    "upstreamCommit": "a" * 40,
+    "declaredBaseCommit": "a" * 40,
     "forkCommit": "b" * 40,
     "patchsetSha256": "sha256:" + "c" * 64,
     "channel": "preview",
@@ -50,11 +54,26 @@ class ForkPackageIdentityTest(unittest.TestCase):
                 fork,
             ]
         )
-        identity = source_identity(upstream, "preview")
+        from codex_package import fork_identity
+
+        original_git = fork_identity.git
+        with patch.object(
+            fork_identity,
+            "git",
+            side_effect=lambda *args: (
+                b"" if args[0] == "status" else original_git(*args)
+            ),
+        ):
+            identity = source_identity(upstream, "preview")
         self.assertEqual(identity["forkCommit"], fork)
         self.assertEqual(
             identity["patchsetSha256"], "sha256:" + hashlib.sha256(patchset).hexdigest()
         )
+
+    def test_source_identity_refuses_dirty_worktree(self) -> None:
+        with patch("codex_package.fork_identity.git", return_value=b" M source.py\n"):
+            with self.assertRaisesRegex(ValueError, "dirty"):
+                source_identity("a" * 40, "preview")
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -84,7 +103,9 @@ class ForkPackageIdentityTest(unittest.TestCase):
         seal_fork_package(self.package, IDENTITY)
 
     def test_verifies_complete_package_and_sqlite_only_capability(self) -> None:
-        manifest = verify_fork_package(self.package)
+        verification = verify_fork_package(self.package)
+        manifest = verification.manifest
+        self.assertEqual(verification.unix_mode_status, "notApplicable")
         self.assertEqual(manifest["storageCapabilities"], ["sqlite"])
         self.assertEqual(manifest["postgresSchemaVersions"], [])
         self.assertEqual(
@@ -109,15 +130,46 @@ class ForkPackageIdentityTest(unittest.TestCase):
 
     def test_rejects_uninventoried_file(self) -> None:
         (self.package / "codex-resources/extra").write_bytes(b"extra")
-        with self.assertRaisesRegex(ValueError, "inventory differs"):
+        with self.assertRaisesRegex(ValueError, "unexpected fork package resource"):
             verify_fork_package(self.package)
 
     def test_rejects_extra_executable_even_when_manifest_lists_it(self) -> None:
         (self.package / MANIFEST_NAME).unlink()
         (self.package / "bin/other.exe").write_bytes(b"unexpected executable")
-        seal_fork_package(self.package, IDENTITY)
         with self.assertRaisesRegex(ValueError, "unexpected fork package executable"):
+            seal_fork_package(self.package, IDENTITY)
+
+    def test_rejects_extra_empty_directory_before_seal_and_after_seal(self) -> None:
+        extra = self.package / "codex-resources/empty"
+        extra.mkdir()
+        with self.assertRaisesRegex(ValueError, "unexpected or empty directories"):
             verify_fork_package(self.package)
+        (self.package / MANIFEST_NAME).unlink()
+        with self.assertRaisesRegex(ValueError, "unexpected or empty directories"):
+            seal_fork_package(self.package, IDENTITY)
+
+    def test_rejects_unexpected_nonempty_directory_even_if_file_is_listed(self) -> None:
+        (self.package / MANIFEST_NAME).unlink()
+        extra = self.package / "codex-resources/other"
+        extra.mkdir()
+        (extra / "helper").write_bytes(b"unexpected resource")
+        with self.assertRaisesRegex(ValueError, "unexpected or empty directories"):
+            seal_fork_package(self.package, IDENTITY)
+
+    def test_rejects_unsafe_directory_name(self) -> None:
+        self.assertFalse(safe_name("codex-resources\\..\\escape"))
+        if os.name == "nt":
+            self.skipTest("Windows treats backslashes as path separators")
+        unsafe = self.package / "codex-resources\\..\\escape"
+        try:
+            unsafe.mkdir()
+        except OSError as error:
+            self.skipTest(f"unsafe directory name unavailable: {error}")
+        with self.assertRaisesRegex(ValueError, "unsafe path"):
+            verify_fork_package(self.package)
+        (self.package / MANIFEST_NAME).unlink()
+        with self.assertRaisesRegex(ValueError, "unsafe path"):
+            seal_fork_package(self.package, IDENTITY)
 
     def test_verifies_unix_package_on_windows_without_permission_bits(self) -> None:
         (self.package / MANIFEST_NAME).unlink()
@@ -135,10 +187,65 @@ class ForkPackageIdentityTest(unittest.TestCase):
         (self.package / "codex-resources/codex-command-runner.exe").unlink()
         (self.package / "codex-resources/codex-windows-sandbox-setup.exe").unlink()
         (self.package / "codex-resources/bwrap").write_bytes(b"bwrap")
-        seal_fork_package(self.package, IDENTITY)
+        bwrap = self.package / "codex-resources/bwrap"
+        bwrap.chmod(0o755)
+        if os.name == "nt":
+            files, directories = package_tree(self.package)
+            manifest = {
+                "manifestVersion": 1,
+                **IDENTITY,
+                "packageVersion": metadata["version"],
+                "target": metadata["target"],
+                "variant": metadata["variant"],
+                "files": {
+                    name: {
+                        "sha256": "sha256:" + sha256(path),
+                        "unixMode": "0644" if name == "codex-package.json" else "0755",
+                    }
+                    for name, path in files.items()
+                },
+                "directories": {name: "0755" for name in directories},
+            }
+            (self.package / MANIFEST_NAME).write_text(json.dumps(manifest))
+        else:
+            seal_fork_package(self.package, IDENTITY)
+        verification = verify_fork_package(self.package)
+        self.assertEqual(verification.manifest["target"], metadata["target"])
         self.assertEqual(
-            verify_fork_package(self.package)["target"], metadata["target"]
+            verification.unix_mode_status,
+            "unavailable" if os.name == "nt" else "verified",
         )
+
+    @unittest.skipIf(os.name == "nt", "Unix chmod modes are unavailable on Windows")
+    def test_unix_executable_mode_change_fails_verification(self) -> None:
+        (self.package / MANIFEST_NAME).unlink()
+        metadata_path = self.package / "codex-package.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["target"] = "x86_64-unknown-linux-musl"
+        metadata["entrypoint"] = "bin/codex"
+        metadata_path.write_text(json.dumps(metadata))
+        for old, new in (
+            ("bin/codex.exe", "bin/codex"),
+            ("bin/codex-code-mode-host.exe", "bin/codex-code-mode-host"),
+            ("codex-path/rg.exe", "codex-path/rg"),
+        ):
+            (self.package / old).rename(self.package / new)
+        (self.package / "codex-resources/codex-command-runner.exe").unlink()
+        (self.package / "codex-resources/codex-windows-sandbox-setup.exe").unlink()
+        bwrap = self.package / "codex-resources/bwrap"
+        bwrap.write_bytes(b"bwrap")
+        bwrap.chmod(0o755)
+        seal_fork_package(self.package, IDENTITY)
+        (self.package / "bin/codex").chmod(0o644)
+        with self.assertRaisesRegex(ValueError, "Unix mode differs"):
+            verify_fork_package(self.package)
+        (self.package / "bin/codex").chmod(0o755)
+        manifest_path = self.package / MANIFEST_NAME
+        manifest = json.loads(manifest_path.read_text())
+        manifest["files"]["bin/codex"]["unixMode"] = "0644"
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "not executable"):
+            verify_fork_package(self.package)
 
     def test_rejects_link_inside_package(self) -> None:
         outside = self.package.parent / "outside"
@@ -172,19 +279,6 @@ class ForkPackageIdentityTest(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest))
         with self.assertRaisesRegex(ValueError, "disagrees with package metadata"):
             verify_fork_package(self.package)
-
-    def test_archive_checksum_binds_serialized_bytes(self) -> None:
-        archive = self.package.parent / "fork-package.zip"
-        archive.write_bytes(b"archive bytes")
-        self.addCleanup(archive.unlink)
-        checksum = write_archive_checksum(archive)
-        self.addCleanup(checksum.unlink)
-        self.assertEqual(
-            checksum.read_text(),
-            f"{hashlib.sha256(b'archive bytes').hexdigest()}  fork-package.zip\n",
-        )
-        with self.assertRaisesRegex(ValueError, "already exists"):
-            write_archive_checksum(archive)
 
 
 if __name__ == "__main__":

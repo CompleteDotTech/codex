@@ -10,11 +10,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("package_dir", type=Path)
     args = parser.parse_args()
-    manifest = verify_fork_package(args.package_dir)
+    verification = verify_fork_package(args.package_dir)
+    manifest = verification.manifest
     print(
-        f"Verified {manifest['owner']} {manifest['variant']} "
+        f"Checked {manifest['owner']} candidate {manifest['variant']} "
         f"{manifest['packageVersion']} for {manifest['target']} "
-        f"at {manifest['forkCommit']}"
+        f"at {manifest['forkCommit']} "
+        f"unixModeStatus={verification.unix_mode_status}"
     )
 
 

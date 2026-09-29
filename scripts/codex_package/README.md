@@ -32,17 +32,21 @@ The builder creates a canonical Codex package directory:
 The package directory is the primary artifact. Archive formats such as
 `.tar.gz`, `.tar.zst`, and `.zip` are serializations of that directory.
 
-For an opt-in CompleteDotTech package candidate, pass
-`--fork-upstream-commit` with the full upstream ancestor commit. The builder
-records the current fork commit, SHA-256 of the upstream-to-fork Git diff,
-preview/stable channel label, and the currently qualified SQLite-only storage
-capability in `codex-fork-package.json`. It hashes every packaged file after
-assembly and writes a `.sha256` sidecar for each requested archive. Run
-`python scripts/verify_fork_package.py <package-dir>` before using the staged
-directory. These checks detect missing, extra, and modified files; a future
-release channel must authenticate the manifest and archive checksum before
-downloads or installation can trust them. This option does not activate the
-fork installer, updater, or PostgreSQL storage.
+For an opt-in CompleteDotTech package directory candidate, pass
+`--fork-base-commit` with a full caller-declared ancestor commit. The builder
+requires a clean source tree and source-built inputs, then records the current
+fork commit, SHA-256 of the base-to-fork Git diff, preview/stable channel label,
+and the currently qualified SQLite-only storage capability in
+`codex-fork-package.json`. This does not authenticate the base as OpenAI upstream.
+Run `python scripts/verify_fork_package.py <package-dir>` to check the staged
+directory. The manifest inventories all files and directories, their byte hashes,
+and Unix mode claims. A Windows check of a Unix package reports
+`unixModeStatus=unavailable`; run that check on Unix before relying on modes.
+Fork candidate archives and prebuilt binary overrides are refused until their
+provenance and serialized entries can be verified independently. A future release
+channel must authenticate the manifest before downloads or installation can trust
+it. This option does not activate the fork installer, updater, or PostgreSQL
+storage.
 
 If `--target` is omitted, the builder uses the release target for the current
 host platform. On Linux, that default is a musl target to match Codex release
