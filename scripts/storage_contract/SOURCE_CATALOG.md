@@ -9,7 +9,7 @@ server-owned storage CLI. No active backend can be changed by these modules.
 
 | SQLite file | Source SQL included | Logical tables represented | Owning implementation issue |
 |---|---|---|---|
-| `state_5.sqlite` | **Not included** | Full primary/legacy inventory still outstanding | #5 and other domain issues |
+| `state_5.sqlite` | Primary migrations 1–58 | Current SQL schema and disposable legacy-to-current fixture; public consumer inventory remains partial | #5 and other domain issues |
 | `goals_1.sqlite` | Goals migrations 1–2 | `thread_goals`, `thread_goal_continuation_deferrals` | #6 |
 | `logs_2.sqlite` | Log migrations 1–2 | `logs`, generated-ID state | #8 |
 | `memories_1.sqlite` | Memory migrations 1–2 | `stage1_outputs`, `jobs`, `consolidation_progress` | #6 |
@@ -20,10 +20,41 @@ server-owned storage CLI. No active backend can be changed by these modules.
 
 SQLx's `_sqlx_migrations` table is **not** reproduced. A SQLx-created database
 therefore must not be advertised as compatible with this fixture-only policy.
-Runtime split-store capture, older primary-store versions, canonical JSONL and
+Runtime split-store capture, full older primary-store version coverage, canonical JSONL and
 compressed/fork histories, `session_index.jsonl`, memory files, attachment content,
 host identities, installation receipts and every public consumer remain outside
 this fixture catalog. Projection coverage is not canonical history coverage.
+
+## Current primary-state source map
+
+The 58 `state_5.sqlite` source files are copied byte-for-byte from the pinned
+`codex-rs/state/migrations` Git tree
+`f946e151baedebc16c43b6e1ae62887dde3885a2`. The same tree exists at this
+catalog's original base and fork main `69effb029edd45125722ea70c4658e6b2cb7eb53`.
+Each copied blob and the complete directory tree are authenticated before SQL
+is used. The resulting current schema has 13 application tables plus SQLite's
+`sqlite_sequence` table, which remains after the historical autoincrement `logs`
+table was dropped. No current primary table has an autoincrement column. Sequence
+state for separate logs, queue and board stores is covered by their own catalogs.
+
+| Current table(s) | Observed source writer/reader | Forward/reverse treatment and owner |
+|---|---|---|
+| `threads` | `state/src/runtime/threads.rs`; also read or updated by `projects.rs`, `memories.rs`, backfill/extraction and core thread management | Migrate exact rows and ordering/timestamp fields; #5, with #6 memory semantics and #11 canonical rollout references |
+| `thread_dynamic_tools`, `thread_spawn_edges` | `state/src/runtime/threads.rs` | Migrate child/reference closure and tool order; #5 |
+| `thread_sections` | `state/src/runtime/thread_sections.rs`, `thread_section_order.rs`, `threads.rs`, `memories.rs` | Migrate section identities/order/appearance; #5 and #6 readers |
+| `thread_attachments` | `state/src/runtime/thread_attachments.rs` | Migrate metadata and independently close referenced payloads; #5 and #11 |
+| `projects`, `project_roots`, `project_idempotency_keys` | `state/src/runtime/projects.rs` | Migrate order, root paths and idempotency keys; #5; cross-host path mapping remains required |
+| `backfill_state` | `state/src/runtime/backfill.rs` | Retain as source progress evidence; rebuild decision and target treatment require #11/#13 review |
+| `rollout_migration_state`, `rollout_migration_skipped_rollouts` | `state/src/runtime/rollout_migration.rs` | Retain as host/source maintenance evidence pending #11/#13 review; do not replay into a new host as active work |
+| `remote_control_enrollments` | `state/src/runtime/remote_control.rs` | Host-bound; see `HOST_LOCAL_FIXTURES.md`; #12/#13 classification |
+| `external_agent_config_imports` | `state/src/runtime/external_agent_config_imports.rs` | Host/source import history; see `HOST_LOCAL_FIXTURES.md`; #12/#13 classification |
+| `sqlite_sequence` | SQLite internal table from historical `logs` autoincrement | Retain in current primary as source-only evidence; historical prefixes with live primary `logs` migrate its high-water mark. Other stores' live sequences are separate |
+
+This maps the directly observed `codex-state` SQL modules, not every transitive
+app-server/TUI/daemon/extension consumer. The complete producer/consumer graph,
+legacy versions, SQLx history, canonical JSONL and artifacts still require a
+separate source inventory before #2 can close. A source-schema fixture does not
+prove coherent capture, public behavior, or a safe target representation.
 
 All inserted application records are synthetic. Their field fidelity is tested
 at the SQL layer, not against Codex serialization or model-visible context.
@@ -39,8 +70,7 @@ verified SHA-256, not a claim to reconstruct the entire Rust source blob.
 
 `build_fixture_policy` runs only that source SQL in a private in-memory database
 and requires an explicit schema version. Unknown stores, out-of-range versions,
-changed provenance and altered assets fail. An unknown primary store never
-becomes a successful empty schema. Policies do not read or derive trust from the
+changed provenance and altered assets fail. Policies do not read or derive trust from the
 artifact under examination. The existing artifact auditor still requires a
 separately authenticated expected file digest.
 

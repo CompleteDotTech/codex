@@ -16,6 +16,9 @@ always includes `"activation_permitted": false`.
 - `cli.py` and `../verify_storage_bundle.py`: read-only, payload-free CLI diagnostics.
 - `sqlite_snapshot.py` and `../audit_sqlite_snapshot.py`: independently authenticated
   SQLite backup auditing; see `SQLITE_AUDIT.md` for its separate scope and limits.
+- `coverage_matrix.py`: checked partial inventory of the eight pinned SQLite
+  schemas and canonical file classes. `audit_coverage()` rejects missing or extra
+  fixture tables and reports unresolved forward/reverse treatment explicitly.
 - `test_*.py`: synthetic bundle tests and disposable SQLite/process-boundary tests.
 
 No third-party Python packages are required. Source syntax targets the enclosing
@@ -74,13 +77,31 @@ They are **not** real Codex SQLite schemas, compressed rollouts, fork projection
 installation receipts, or a completed table/producer/consumer audit. Fixture labels
 must not be interpreted as completed source-domain support.
 
-The additional `fixtures/` SQL assets exercise the goals, logs, both memory
-generations, queue, thread-history projection, and independent board schemas at
-the pinned source commit. They cover **seven of eight** SQLite stores at the
-schema/SQL level; the primary state store is not included. Stored public-protocol
-payloads remain synthetic. SQLx bookkeeping, Codex consumers, PostgreSQL, and
+The additional `fixtures/` SQL assets exercise the primary state, goals, logs,
+both memory generations, queue, thread-history projection, and independent board
+schemas at the pinned source commit. They cover **all eight** SQLite stores at the
+schema/SQL level, with only partial current-primary producer/consumer mapping.
+Stored public-protocol payloads remain synthetic. SQLx bookkeeping, Codex consumers, PostgreSQL, and
 canonical history and artifacts are not qualified by these tests. See
 `SOURCE_CATALOG.md` for the exact coverage and exclusions.
+The matrix maps all 37 current fixture tables, including SQLite sequence state,
+and eight file classes to implementation issues and direct source anchors. Its
+`fixture_treatment` records only the offline fixture policy; it is not a final
+migration decision. Producer/consumer closure and forward/reverse treatment are
+explicitly unresolved. The file-class list has no independent completeness
+check. A successful matrix audit never permits activation.
+For the project/thread primary-state family, the matrix also records selected
+direct read/write SQL clauses in the primary runtime modules. The source test
+checks the emitted mappings and those exact clauses in each module's prefix
+before its first `#[cfg(test)]` marker, excluding test helpers and fixtures.
+This conservative check does not parse Rust or SQL, enumerate every caller, or
+prove cross-host path handling. The transitive producer/consumer audit stays
+partial.
+`CANONICAL_HISTORY_SOURCES.md` separately pins a partial source-level map of
+rollout, fork, archive, compression, and attachment call sites. It does not
+qualify a coherent capture or second-host replay.
+`SPLIT_STORE_FIXTURES.md` documents populated old primary logs/memory rows at
+their drop boundaries alongside distinct or absent modern split stores.
 
 `migrate`, `regenerate`, `retain`, and `absent` are distinct treatments. Only
 `migrate` contributes verified record counts. Non-migrated entries cannot carry

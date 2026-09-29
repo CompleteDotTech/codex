@@ -2,13 +2,16 @@
 
 import hashlib
 import json
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 from .extended_fixture_support import make_extended_fixture
+from .legacy_primary_test_support import make_legacy_primary
 from .snapshot_test_support import make_fixture
 from .source_catalog import STORES, build_fixture_policy, verified_migrations
 
@@ -27,6 +30,11 @@ class CatalogCliTests(unittest.TestCase):
             make_fixture(path, "queue")
         elif store == "agent_message_board_1.sqlite":
             make_fixture(path, "board")
+        elif store == "state_5.sqlite":
+            make_legacy_primary(path, version=9)
+            with closing(sqlite3.connect(path)) as connection:
+                for script in verified_migrations(store)[9:]:
+                    connection.executescript(script.decode("utf-8"))
         else:
             make_extended_fixture(path, store)
         return path
@@ -49,7 +57,7 @@ class CatalogCliTests(unittest.TestCase):
             timeout=15,
         )
 
-    def test_all_seven_source_schemas_are_audited_without_input_changes(self):
+    def test_all_eight_source_schemas_are_audited_without_input_changes(self):
         for store in STORES:
             with self.subTest(store=store):
                 path = self.create(store)

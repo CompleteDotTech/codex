@@ -1,7 +1,8 @@
 # Populated legacy primary-store fixtures
 
-This is partial issue #2 evidence, not current primary-store support or a storage
-backend. The source catalog's seven-of-eight current-file coverage is unchanged.
+This is partial issue #2 evidence for historical primary-store prefixes, not a
+storage backend. `SOURCE_CATALOG.md` separately authenticates the complete
+current primary migration tree and now covers all eight store schemas.
 
 `legacy_primary_test_support.py` uses the first nine primary SQL migrations at
 fork `395c622d693cf8ec1c4769cf71bc4a949da3e017`, identified by their exact Git
@@ -33,11 +34,12 @@ backend, or replacing production inventory with fixture-derived policy.
 
 ## Deliberate exclusions
 
-No current `state_5.sqlite`/complete migration-chain policy, SQLx migration ledger,
-legacy-to-split-store transfer, real Codex payload deserialization, canonical
+This legacy helper alone does not establish the current `state_5.sqlite` policy;
+the separate current-primary catalog does. Neither covers the SQLx migration
+ledger, legacy-to-split-store transfer, real Codex payload deserialization, canonical
 rollouts, required artifact content, host/device classification, PostgreSQL,
 writer fencing, install/update/reverse/uninstall or exact upstream-binary
-compatibility is established here. Foreign path strings are not cross-OS tests.
+compatibility. Foreign path strings are not cross-OS tests.
 A successful offline report always has `activation_permitted: false`.
 
 Run from a complete checkout with Python >=3.10:
