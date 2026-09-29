@@ -36,6 +36,22 @@ fn settings(state: &Path, role: &str) -> ConnectionSettings {
     }
 }
 
+async fn owner_fixture_sql(pool: &PostgresPool, statements: &[&'static str]) {
+    let mut connection = pool.acquire().await.expect("acquire owner fixture");
+    let mut transaction = connection.begin().await.expect("begin owner fixture");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for fixture");
+    for &statement in statements {
+        sqlx::query(statement)
+            .execute(&mut *transaction)
+            .await
+            .expect("apply owner fixture SQL");
+    }
+    transaction.commit().await.expect("commit owner fixture");
+}
+
 #[tokio::test]
 async fn real_v1_upgrade_through_graph_and_import_schemas_is_atomic() {
     let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_UPGRADE_STATE") else {
@@ -123,6 +139,53 @@ async fn real_v1_upgrade_through_graph_and_import_schemas_is_atomic() {
     assert_eq!((format, history, table), (1, 1, false));
     inspection.rollback().await.expect("finish v1 inspection");
     drop(observer);
+
+    let mut connection = first.acquire().await.expect("acquire legacy ACL fixture");
+    let mut transaction = connection.begin().await.expect("begin legacy ACL fixture");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for legacy ACL fixture");
+    sqlx::query("GRANT TRUNCATE ON codex_storage._codex_pg_migrations TO codex_backup")
+        .execute(&mut *transaction)
+        .await
+        .expect("add privilege outside exact legacy ACL");
+    transaction
+        .commit()
+        .await
+        .expect("commit hostile legacy ACL");
+    drop(connection);
+    assert_eq!(
+        bootstrap_codex_storage(&first).await,
+        Err(BootstrapError::Privilege)
+    );
+    let mut connection = first.acquire().await.expect("repair legacy ACL fixture");
+    let mut transaction = connection.begin().await.expect("begin legacy ACL repair");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for legacy ACL repair");
+    sqlx::query("REVOKE TRUNCATE ON codex_storage._codex_pg_migrations FROM codex_backup")
+        .execute(&mut *transaction)
+        .await
+        .expect("repair hostile legacy ACL");
+    sqlx::query("REVOKE ALL ON codex_storage.codex_schema_meta, codex_storage._codex_pg_migrations FROM codex_runtime, codex_backup")
+        .execute(&mut *transaction)
+        .await
+        .expect("harden protected tables before upgrade");
+    sqlx::query("GRANT SELECT ON codex_storage.codex_schema_meta TO codex_runtime, codex_backup")
+        .execute(&mut *transaction)
+        .await
+        .expect("retain protected metadata read access");
+    sqlx::query("GRANT SELECT ON codex_storage._codex_pg_migrations TO codex_backup")
+        .execute(&mut *transaction)
+        .await
+        .expect("retain backup history read access");
+    transaction
+        .commit()
+        .await
+        .expect("commit legacy ACL repair");
+    drop(connection);
 
     let (a, b) = tokio::join!(
         bootstrap_codex_storage(&first),
@@ -441,6 +504,11 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
     assert_eq!((format, history, table), (3, 3, false));
     inspection.rollback().await.expect("finish v3 inspection");
     drop(observer);
+    owner_fixture_sql(
+        &first,
+        &["REVOKE DELETE ON codex_storage.external_agent_config_imports FROM codex_runtime"],
+    )
+    .await;
     let (a, b) = tokio::join!(
         bootstrap_codex_storage(&first),
         bootstrap_codex_storage(&second)
@@ -467,6 +535,10 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
     let id = "00000000-0000-0000-0000-000000000123";
     let path = r"C:\origin-host\rollouts\thread.jsonl";
     let cwd = r"C:\origin-host\project";
+    sqlx::query("INSERT INTO codex_storage.thread_sections (id, name) VALUES ('section-with-catalog', 'Fixture')")
+        .execute(&mut *connection)
+        .await
+        .expect("create section required by v5 foreign key");
     #[expect(clippy::type_complexity, reason = "compare the probe row as one record")]
     let record: (String, String, i64, i64, i64, Option<i64>, Option<String>, Option<String>) =
         sqlx::query_as(
@@ -479,7 +551,7 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
         .bind(1_700_000_000_789_i64)
         .bind(cwd)
         .bind(1_700_000_000_i64)
-        .bind("section-without-catalog-yet")
+        .bind("section-with-catalog")
         .bind("project-without-catalog-yet")
         .fetch_one(&mut *connection)
         .await
@@ -493,7 +565,7 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
             1_700_000_000_456,
             1_700_000_000_789,
             Some(1_700_000_000),
-            Some("section-without-catalog-yet".to_string()),
+            Some("section-with-catalog".to_string()),
             Some("project-without-catalog-yet".to_string())
         )
     );
@@ -573,6 +645,77 @@ async fn real_v4_upgrade_to_section_catalog_rejects_orphans_and_preserves_join()
         })
     );
 
+    owner_fixture_sql(
+        &first,
+        &[
+            "CREATE SCHEMA codex_inbound_probe AUTHORIZATION codex_owner",
+            "CREATE TABLE codex_inbound_probe.thread_ref (thread_id uuid REFERENCES codex_storage.threads(id))",
+        ],
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&first).await,
+        Err(BootstrapError::IncompatibleNamespace)
+    );
+    owner_fixture_sql(&first, &["DROP SCHEMA codex_inbound_probe CASCADE"]).await;
+
+    owner_fixture_sql(
+        &first,
+        &["CREATE POLICY legacy_probe ON codex_storage.threads USING (true)"],
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&first).await,
+        Err(BootstrapError::IncompatibleNamespace)
+    );
+    owner_fixture_sql(
+        &first,
+        &["DROP POLICY legacy_probe ON codex_storage.threads"],
+    )
+    .await;
+
+    let mut owner = first.acquire().await.expect("add hostile v4 table ACL");
+    let mut transaction = owner.begin().await.expect("begin hostile v4 table ACL");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for hostile v4 table ACL");
+    sqlx::query("GRANT SELECT ON codex_storage.threads TO PUBLIC")
+        .execute(&mut *transaction)
+        .await
+        .expect("grant public read on legacy thread table");
+    transaction
+        .commit()
+        .await
+        .expect("commit hostile v4 table ACL");
+    assert_eq!(
+        bootstrap_codex_storage(&first).await,
+        Err(BootstrapError::IncompatibleNamespace)
+    );
+    let mut transaction = owner.begin().await.expect("begin hostile v4 ACL repair");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for hostile v4 ACL repair");
+    sqlx::query("REVOKE SELECT ON codex_storage.threads FROM PUBLIC")
+        .execute(&mut *transaction)
+        .await
+        .expect("remove hostile public grant");
+    transaction
+        .commit()
+        .await
+        .expect("commit hostile v4 ACL repair");
+    drop(owner);
+
+    let mut owner = first.acquire().await.expect("read v4 protected ACLs");
+    let legacy_acls: Vec<(String, Vec<String>)> = sqlx::query_as(
+        "SELECT relname::text, relacl::text[] FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname IN ('codex_schema_meta', '_codex_pg_migrations') ORDER BY relname",
+    )
+    .fetch_all(&mut *owner)
+    .await
+    .expect("read v4 protected ACLs");
+    drop(owner);
+
     let orphan_id = "00000000-0000-0000-0000-000000000124";
     let mut runtime_connection = runtime.acquire().await.expect("runtime connection");
     sqlx::query("INSERT INTO codex_storage.threads (id, origin_rollout_path, created_at_ms, updated_at_ms, recency_at_ms, source, history_mode, model_provider, origin_cwd, cli_version, title, sandbox_policy, approval_mode, thread_section_id) VALUES ($1::uuid, 'origin', 1, 1, 1, 'cli', 'legacy', 'provider', 'cwd', '1', 'title', 'sandbox', 'approval', 'orphan')")
@@ -594,6 +737,13 @@ async fn real_v4_upgrade_to_section_catalog_rejects_orphans_and_preserves_join()
     let state: (i32, i64, bool) = sqlx::query_as("SELECT (SELECT format_version FROM codex_storage.codex_schema_meta), (SELECT COUNT(*) FROM codex_storage._codex_pg_migrations), to_regclass('codex_storage.thread_sections') IS NOT NULL")
         .fetch_one(&mut *inspection).await.expect("failed FK left v4 intact");
     assert_eq!(state, (4, 4, false));
+    let after_failed_upgrade: Vec<(String, Vec<String>)> = sqlx::query_as(
+        "SELECT relname::text, relacl::text[] FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname IN ('codex_schema_meta', '_codex_pg_migrations') ORDER BY relname",
+    )
+    .fetch_all(&mut *inspection)
+    .await
+    .expect("failed upgrade preserved protected ACLs");
+    assert_eq!(after_failed_upgrade, legacy_acls);
     sqlx::query("DELETE FROM codex_storage.threads WHERE id = $1::uuid")
         .bind(orphan_id)
         .execute(&mut *inspection)
