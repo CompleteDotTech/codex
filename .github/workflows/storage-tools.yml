@@ -128,6 +128,9 @@ jobs:
       - name: Test serializable transaction outcomes against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_TRANSACTION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_serializable_conflict_deadlock_and_cancelled_write
+      - name: Test inactive thread ownership against real server
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_OWNERSHIP_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_two_clients_reject_stale_thread_owners
       - name: Provision separate namespace roles in fixture
         run: python scripts/postgres/isolation_fixture.py --state "$CODEX_TEST_POSTGRES_STATE"
       - name: Test named namespace bootstrap against real server
