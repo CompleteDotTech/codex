@@ -28,9 +28,12 @@ class CoverageMatrixTests(unittest.TestCase):
         matrix = audit_coverage()["stores"]["state_5.sqlite"]
         root = Path(__file__).resolve().parents[2] / "codex-rs"
         for table, modules in PRIMARY_PROJECT_EDGES.items():
-            self.assertIn(table, matrix)
+            self.assertEqual(matrix[table]["observed_direct_sql"], modules)
             for module, operations in modules.items():
+                # Only check the production prefix: inline tests and test-only
+                # helpers may contain SQL that no runtime path executes.
                 source = (root / module).read_text(encoding="utf-8")
+                production = source.partition("#[cfg(test)]")[0]
                 for operation, clause in operations.items():
                     with self.subTest(table=table, module=module, operation=operation):
-                        self.assertIn(clause, source)
+                        self.assertIn(clause, production)
