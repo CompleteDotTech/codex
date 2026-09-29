@@ -175,14 +175,19 @@ async fn non_utf8_home_survives_archive_and_unarchive_replay()
     use std::os::unix::ffi::OsStringExt;
 
     let outer = tempfile::tempdir()?;
+    let initial_home = outer.path().join("codex-utf8");
+    fs::create_dir(&initial_home)?;
+    let uuid = Uuid::from_u128(532);
+    let thread_id = ThreadId::from_string(&uuid.to_string())?;
+    // The fixture serializes cwd into session JSON, which requires UTF-8. Move the
+    // already valid rollout into a native-path home before exercising recovery.
+    let initial_source = write_session_file(&initial_home, "2025-01-03T20-00-03", uuid)?;
     let home = outer
         .path()
         .join(std::ffi::OsString::from_vec(b"codex-\xff".to_vec()));
-    fs::create_dir(&home)?;
+    fs::rename(&initial_home, &home)?;
+    let source = home.join(initial_source.strip_prefix(&initial_home)?);
     let store = LocalThreadStore::new(test_config(&home), /*state_db*/ None);
-    let uuid = Uuid::from_u128(532);
-    let thread_id = ThreadId::from_string(&uuid.to_string())?;
-    let source = write_session_file(&home, "2025-01-03T20-00-03", uuid)?;
     let archive = home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
     fs::create_dir(&archive)?;
     let destination = archive.join(source.file_name().expect("rollout filename"));
