@@ -1,8 +1,7 @@
-"""Verify serialized fork package candidates before publishing their checksums."""
+"""Read-only verification of serialized fork package candidates."""
 
 import hashlib
 import json
-import os
 import stat
 import subprocess
 import tarfile
@@ -12,67 +11,20 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from .archive import archive_format_for_path
-from .archive import is_relative_to
 from .archive import resolve_zstd_command
-from .archive import write_archive
 from .fork_identity import MANIFEST_NAME
 from .fork_identity import safe_name
 from .fork_identity import verify_fork_package
 from .targets import TARGET_SPECS
 
 
-def publish_verified_fork_archives(
-    package_dir: Path, outputs: list[Path], *, force: bool
-) -> list[Path]:
-    """Stage and verify every archive before publishing any archive or checksum."""
+def verify_fork_archive(package_dir: Path, archive_path: Path) -> str:
+    """Check a sealed directory and archive, returning the archive's SHA-256."""
     verification = verify_fork_package(package_dir)
     manifest_bytes = (package_dir / MANIFEST_NAME).read_bytes()
     if json.loads(manifest_bytes) != verification.manifest:
         raise ValueError("fork manifest changed after directory verification")
-    package_root = package_dir.resolve()
-    destinations = [output.absolute() for output in outputs]
-    sidecars = [dest.with_name(dest.name + ".sha256") for dest in destinations]
-    if len(set(destinations + sidecars)) != len(destinations) * 2:
-        raise ValueError("fork archive outputs or checksum paths collide")
-    for dest, sidecar in zip(destinations, sidecars, strict=True):
-        archive_format_for_path(dest)
-        if is_relative_to(dest.resolve(), package_root) or is_relative_to(
-            sidecar.resolve(), package_root
-        ):
-            raise ValueError(
-                "fork archive output must be outside the package directory"
-            )
-        if dest.is_symlink() or sidecar.is_symlink():
-            raise ValueError("fork archive output or checksum is a link")
-        if not force and (dest.exists() or sidecar.exists()):
-            raise ValueError("fork archive output or checksum already exists")
-
-    staged = []
-    with ExitStack() as stack:
-        for dest, sidecar in zip(destinations, sidecars, strict=True):
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            staging_dir = Path(
-                stack.enter_context(
-                    tempfile.TemporaryDirectory(prefix=".codex-fork-", dir=dest.parent)
-                )
-            )
-            archive_path = staging_dir / dest.name
-            write_archive(package_dir, archive_path, force=False)
-            digest = verify_fork_archive(archive_path, manifest_bytes)
-            staged_sidecar = staging_dir / sidecar.name
-            staged_sidecar.write_text(f"{digest}  {dest.name}\n", encoding="ascii")
-            staged.append((archive_path, staged_sidecar, dest, sidecar, digest))
-        for archive_path, staged_sidecar, dest, sidecar, digest in staged:
-            if file_digest(archive_path) != digest:
-                raise ValueError("fork archive changed before publication")
-            os.replace(archive_path, dest)
-            os.replace(staged_sidecar, sidecar)
-    return destinations
-
-
-def verify_fork_archive(archive_path: Path, manifest_bytes: bytes) -> str:
-    """Validate archive entries and return the SHA-256 of those exact archive bytes."""
-    manifest = json.loads(manifest_bytes)
+    manifest = verification.manifest
     expected_files = manifest["files"]
     expected_directories = manifest["directories"]
     target = TARGET_SPECS[manifest["target"]]

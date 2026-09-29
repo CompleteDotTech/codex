@@ -4,18 +4,17 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from codex_package.archive import write_archive
 from codex_package.archive import resolve_zstd_command
-from codex_package.fork_archive import publish_verified_fork_archives
 from codex_package.fork_archive import verify_fork_archive
 from codex_package.fork_identity import MANIFEST_NAME
 from codex_package.fork_identity import OWNER
@@ -62,85 +61,61 @@ class ForkArchiveTest(unittest.TestCase):
             path.write_bytes(name.encode())
             path.chmod(0o755)
         seal_fork_package(self.package, IDENTITY)
-        self.manifest_bytes = (self.package / MANIFEST_NAME).read_bytes()
 
-    def test_publishes_verified_zip_and_tar_with_checksums(self) -> None:
+    def test_verifies_existing_zip_and_tar_without_writing_sidecars(self) -> None:
         outputs = [self.root / "candidate.zip", self.root / "candidate.tar.gz"]
-        self.assertEqual(
-            publish_verified_fork_archives(self.package, outputs, force=False), outputs
-        )
         for output in outputs:
-            digest = verify_fork_archive(output, self.manifest_bytes)
-            self.assertEqual(
-                output.with_name(output.name + ".sha256").read_text(),
-                f"{digest}  {output.name}\n",
-            )
+            write_archive(self.package, output, force=False)
+            self.assertEqual(len(verify_fork_archive(self.package, output)), 64)
+            self.assertFalse(output.with_name(output.name + ".sha256").exists())
 
-    def test_publishes_verified_zstd_tar_when_available(self) -> None:
+    def test_read_only_cli_reports_archive_digest_from_any_cwd(self) -> None:
+        output = self.root / "candidate.zip"
+        write_archive(self.package, output, force=False)
+        script = Path(__file__).resolve().parents[1] / "verify_fork_archive.py"
+        environment = os.environ.copy()
+        environment.pop("CODEX_REPO_ROOT", None)
+        result = subprocess.run(
+            [sys.executable, str(script), str(self.package), str(output)],
+            cwd=self.root,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        self.assertEqual(
+            result.stdout.strip(),
+            f"sha256:{verify_fork_archive(self.package, output)}  {output}",
+        )
+        self.assertFalse(output.with_name(output.name + ".sha256").exists())
+
+    def test_verifies_existing_zstd_tar_when_available(self) -> None:
         try:
             resolve_zstd_command()
         except RuntimeError:
             self.skipTest("zstd and DotSlash are unavailable")
         output = self.root / "candidate.tar.zst"
-        publish_verified_fork_archives(self.package, [output], force=False)
-        digest = verify_fork_archive(output, self.manifest_bytes)
-        self.assertEqual(
-            output.with_name(output.name + ".sha256").read_text(),
-            f"{digest}  {output.name}\n",
-        )
+        write_archive(self.package, output, force=False)
+        self.assertEqual(len(verify_fork_archive(self.package, output)), 64)
 
-    def test_rejects_directory_added_between_check_and_archive(self) -> None:
+    def test_rejects_serialized_directory_added_after_candidate_check(self) -> None:
         output = self.root / "candidate.tar.gz"
-        original_write = write_archive
+        extra = self.package / "codex-resources/extra"
+        extra.mkdir()
+        write_archive(self.package, output, force=False)
+        extra.rmdir()
+        with self.assertRaisesRegex(ValueError, "directory set differs"):
+            verify_fork_archive(self.package, output)
 
-        def add_directory_then_write(package, archive, *, force):
-            (package / "codex-resources/extra").mkdir()
-            original_write(package, archive, force=force)
-
-        with patch(
-            "codex_package.fork_archive.write_archive",
-            side_effect=add_directory_then_write,
-        ):
-            with self.assertRaisesRegex(ValueError, "directory set differs"):
-                publish_verified_fork_archives(self.package, [output], force=False)
-        self.assertFalse(output.exists())
-
-    def test_rejects_source_mutation_between_directory_check_and_archive(self) -> None:
+    def test_rejects_serialized_bytes_changed_after_candidate_check(self) -> None:
         output = self.root / "candidate.zip"
-        original_write = write_archive
-
-        def mutate_then_write(package, archive, *, force):
-            (package / "bin/codex.exe").write_bytes(b"mutated")
-            original_write(package, archive, force=force)
-
-        with patch(
-            "codex_package.fork_archive.write_archive", side_effect=mutate_then_write
-        ):
-            with self.assertRaisesRegex(ValueError, "byte mismatch"):
-                publish_verified_fork_archives(self.package, [output], force=False)
-        self.assertFalse(output.exists())
-        self.assertFalse(output.with_name(output.name + ".sha256").exists())
-
-    def test_later_archive_failure_publishes_nothing(self) -> None:
-        outputs = [self.root / "candidate.zip", self.root / "candidate.tar.gz"]
-        original_write = write_archive
-        calls = 0
-
-        def mutate_on_second(package, archive, *, force):
-            nonlocal calls
-            calls += 1
-            if calls == 2:
-                (package / "bin/codex.exe").write_bytes(b"mutated")
-            original_write(package, archive, force=force)
-
-        with patch(
-            "codex_package.fork_archive.write_archive", side_effect=mutate_on_second
-        ):
-            with self.assertRaisesRegex(ValueError, "byte mismatch"):
-                publish_verified_fork_archives(self.package, outputs, force=False)
-        for output in outputs:
-            self.assertFalse(output.exists())
-            self.assertFalse(output.with_name(output.name + ".sha256").exists())
+        runtime = self.package / "bin/codex.exe"
+        original = runtime.read_bytes()
+        runtime.write_bytes(b"mutated")
+        write_archive(self.package, output, force=False)
+        runtime.write_bytes(original)
+        with self.assertRaisesRegex(ValueError, "byte mismatch"):
+            verify_fork_archive(self.package, output)
 
     def test_rejects_zip_traversal_symlink_and_duplicate(self) -> None:
         for name, mode in (
@@ -157,7 +132,7 @@ class ForkArchiveTest(unittest.TestCase):
                 with zipfile.ZipFile(output, "a") as archive:
                     archive.writestr(info, b"extra")
                 with self.assertRaisesRegex(ValueError, "unsafe|link|duplicate"):
-                    verify_fork_archive(output, self.manifest_bytes)
+                    verify_fork_archive(self.package, output)
 
     def test_rejects_tar_hardlink(self) -> None:
         output = self.root / "candidate.tar.gz"
@@ -171,26 +146,40 @@ class ForkArchiveTest(unittest.TestCase):
             link.linkname = "bin/codex.exe"
             archive.addfile(link)
         with self.assertRaisesRegex(ValueError, "link, special"):
-            verify_fork_archive(output, self.manifest_bytes)
+            verify_fork_archive(self.package, output)
 
     @unittest.skipIf(os.name == "nt", "Unix mode archive check requires Unix")
     def test_rejects_serialized_unix_mode_change(self) -> None:
-        manifest = json.loads(self.manifest_bytes)
-        manifest["target"] = "x86_64-unknown-linux-gnu"
-        for name in manifest["directories"]:
-            manifest["directories"][name] = format(
-                stat.S_IMODE((self.package / name).stat().st_mode), "04o"
-            )
-        for name in manifest["files"]:
-            manifest["files"][name]["unixMode"] = format(
-                stat.S_IMODE((self.package / name).stat().st_mode), "04o"
-            )
-        # A conflicting Unix claim exercises serialized mode validation.
-        manifest["files"]["bin/codex.exe"]["unixMode"] = "0644"
+        (self.package / MANIFEST_NAME).unlink()
+        for name in (
+            "bin/codex.exe",
+            "bin/codex-code-mode-host.exe",
+            "codex-path/rg.exe",
+            "codex-resources/codex-command-runner.exe",
+            "codex-resources/codex-windows-sandbox-setup.exe",
+        ):
+            (self.package / name).unlink()
+        metadata = json.loads((self.package / "codex-package.json").read_text())
+        metadata["target"] = "x86_64-unknown-linux-gnu"
+        metadata["entrypoint"] = "bin/codex"
+        (self.package / "codex-package.json").write_text(json.dumps(metadata))
+        for name in (
+            "bin/codex",
+            "bin/codex-code-mode-host",
+            "codex-path/rg",
+            "codex-resources/bwrap",
+        ):
+            path = self.package / name
+            path.write_bytes(name.encode())
+            path.chmod(0o755)
+        seal_fork_package(self.package, IDENTITY)
         output = self.root / "candidate.tar.gz"
+        runtime = self.package / "bin/codex"
+        runtime.chmod(0o644)
         write_archive(self.package, output, force=False)
+        runtime.chmod(0o755)
         with self.assertRaisesRegex(ValueError, "Unix mode differs"):
-            verify_fork_archive(output, json.dumps(manifest).encode())
+            verify_fork_archive(self.package, output)
 
 
 if __name__ == "__main__":

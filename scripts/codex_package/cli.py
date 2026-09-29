@@ -10,7 +10,6 @@ from .cargo import build_source_binaries
 from .fork_identity import seal_fork_package
 from .fork_identity import source_identity
 from .fork_identity import verify_fork_package
-from .fork_archive import publish_verified_fork_archives
 from .layout import build_package_dir
 from .layout import prepare_package_dir
 from .layout import validate_package_dir
@@ -192,6 +191,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.fork_base_commit is not None:
+        if args.archive_output:
+            raise ValueError("fork candidate archives are not yet qualified")
         overrides = (
             args.entrypoint_bin,
             args.code_mode_host_bin,
@@ -270,15 +271,11 @@ def main() -> int:
             raise ValueError("fork candidate source changed during package build")
         seal_fork_package(package_dir, fork_identity)
         verify_fork_package(package_dir)
-        for archive_path in publish_verified_fork_archives(
-            package_dir, args.archive_output, force=args.force
-        ):
-            print(f"Built verified fork package archive at {archive_path}")
-    else:
-        for archive_output in args.archive_output:
-            archive_path = archive_output.resolve()
-            write_archive(package_dir, archive_path, force=args.force)
-            print(f"Built Codex package archive at {archive_path}")
+
+    for archive_output in args.archive_output:
+        archive_path = archive_output.resolve()
+        write_archive(package_dir, archive_path, force=args.force)
+        print(f"Built Codex package archive at {archive_path}")
 
     print(f"Built Codex package directory at {package_dir}")
     return 0
