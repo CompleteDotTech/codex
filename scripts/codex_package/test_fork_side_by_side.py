@@ -162,6 +162,126 @@ class SideBySideStageTest(unittest.TestCase):
         finally:
             os.close(parent_fd)
 
+    def test_fifo_manifest_fails_without_blocking(self) -> None:
+        manifest = self.package / "codex-fork-package.json"
+        manifest.unlink()
+        os.mkfifo(manifest)
+        program = (
+            "import sys; from pathlib import Path; "
+            "from codex_package.fork_side_by_side import stage_fork_package; "
+            "stage_fork_package(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3])"
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                program,
+                str(self.package),
+                str(self.install),
+                self.digest,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a regular file", result.stderr)
+
+    def test_source_file_swapped_to_fifo_before_copy_fails(self) -> None:
+        program = """
+import os
+import sys
+from pathlib import Path
+from unittest.mock import patch
+from codex_package.fork_identity import verify_fork_package
+from codex_package.fork_side_by_side import stage_fork_package
+package, install, digest = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+source = package / 'bin' / 'codex.exe'
+def swap(*args, **kwargs):
+    verification = verify_fork_package(*args, **kwargs)
+    source.unlink()
+    os.mkfifo(source)
+    return verification
+with patch('codex_package.fork_side_by_side.verify_fork_package', side_effect=swap):
+    stage_fork_package(package, install, digest)
+"""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                program,
+                str(self.package),
+                str(self.install),
+                self.digest,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not regular", result.stderr)
+        self.assertEqual(list((self.install / "fork-receipts").iterdir()), [])
+
+    def test_missing_or_modified_receipt_blocks_readback(self) -> None:
+        slot = stage_fork_package(self.package, self.install, self.digest)
+        receipt = self.install / "fork-receipts" / (slot.name + ".json")
+        original = receipt.read_text()
+        receipt.write_text(original.replace('"active": false', '"active": true'))
+        with self.assertRaisesRegex(ValueError, "receipt"):
+            verify_staged_fork_package(self.install, slot.name)
+        receipt.unlink()
+        with self.assertRaises(FileNotFoundError):
+            verify_staged_fork_package(self.install, slot.name)
+
+    def test_linux_modes_and_nested_zsh_survive_staging(self) -> None:
+        package = self.package.parent / "linux-package"
+        package.mkdir()
+        metadata = {
+            "layoutVersion": 1,
+            "version": "1.2.3",
+            "target": "x86_64-unknown-linux-gnu",
+            "variant": "codex",
+            "entrypoint": "bin/codex",
+            "resourcesDir": "codex-resources",
+            "pathDir": "codex-path",
+        }
+        (package / "codex-package.json").write_text(json.dumps(metadata))
+        for name in (
+            "bin/codex",
+            "bin/codex-code-mode-host",
+            "codex-path/rg",
+            "codex-resources/bwrap",
+            "codex-resources/zsh/bin/zsh",
+        ):
+            path = package / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(name.encode())
+            path.chmod(0o755)
+        for name in (
+            "bin",
+            "codex-path",
+            "codex-resources",
+            "codex-resources/zsh",
+            "codex-resources/zsh/bin",
+        ):
+            (package / name).chmod(0o755)
+        seal_fork_package(package, IDENTITY)
+        digest = hashlib.sha256(
+            (package / "codex-fork-package.json").read_bytes()
+        ).hexdigest()
+        slot = stage_fork_package(package, self.install, digest)
+        verify_staged_fork_package(self.install, digest)
+        self.assertEqual(
+            (slot / "codex-resources/zsh/bin").stat().st_mode & 0o777, 0o755
+        )
+        self.assertEqual(
+            (slot / "codex-resources/zsh/bin/zsh").stat().st_mode & 0o777, 0o755
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -67,7 +67,7 @@ def seal_fork_package(package_dir: Path, identity: dict[str, object]) -> None:
     if manifest_path.exists() or manifest_path.is_symlink():
         raise ValueError("fork package manifest already exists")
     files, directories = package_tree(package_dir)
-    package_metadata = json.loads((package_dir / "codex-package.json").read_text())
+    package_metadata = json.loads(read_regular_file(package_dir / "codex-package.json"))
     target = package_metadata["target"]
     if target not in TARGET_SPECS:
         raise ValueError("unsupported fork package target")
@@ -119,7 +119,7 @@ def verify_fork_package(
     actual, directories = package_tree(
         package_dir, exclude_manifest=True, pinned_root_fd=pinned_root_fd
     )
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest = json.loads(read_regular_file(manifest_path))
     if (
         not isinstance(manifest, dict)
         or set(manifest)
@@ -142,7 +142,7 @@ def verify_fork_package(
     ):
         raise ValueError("unsupported fork package manifest")
     validate_identity(manifest)
-    metadata = json.loads(actual["codex-package.json"].read_text())
+    metadata = json.loads(read_regular_file(actual["codex-package.json"]))
     if not isinstance(metadata, dict):
         raise ValueError("invalid canonical package metadata")
     for key, metadata_key in (
@@ -358,7 +358,23 @@ def safe_name(name: str) -> bool:
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
+    with open_regular_file(path) as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def open_regular_file(path: Path):
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise ValueError("fork package file is not regular")
+    return os.fdopen(descriptor, "rb")
+
+
+def read_regular_file(path: Path) -> bytes:
+    with open_regular_file(path) as stream:
+        return stream.read()

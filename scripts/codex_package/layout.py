@@ -1,6 +1,7 @@
 """Canonical Codex package directory layout."""
 
 import json
+import os
 import shutil
 import stat
 from pathlib import Path
@@ -116,7 +117,13 @@ def validate_package_dir(
     if not metadata_path.is_file():
         raise RuntimeError("Missing package metadata: codex-package.json")
 
-    with open(metadata_path, encoding="utf-8") as fh:
+    metadata_fd = os.open(
+        metadata_path,
+        os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    with os.fdopen(metadata_fd, "r", encoding="utf-8") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise RuntimeError("Package metadata is not a regular file")
         metadata = json.load(fh)
 
     expected_metadata = {
