@@ -10,6 +10,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -68,6 +69,43 @@ class ForkArchiveTest(unittest.TestCase):
             write_archive(self.package, output, force=False)
             self.assertEqual(len(verify_fork_archive(self.package, output)), 64)
             self.assertFalse(output.with_name(output.name + ".sha256").exists())
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO required")
+    def test_rejects_fifo_manifest_and_archive_without_blocking(self) -> None:
+        output = self.root / "candidate.zip"
+        write_archive(self.package, output, force=False)
+        manifest = self.package / MANIFEST_NAME
+        manifest.unlink()
+        os.mkfifo(manifest)
+        with self.assertRaisesRegex(ValueError, "regular fork package manifest"):
+            verify_fork_archive(self.package, output)
+        manifest.unlink()
+        seal_fork_package(self.package, IDENTITY)
+        output.unlink()
+        os.mkfifo(output)
+        with self.assertRaisesRegex(ValueError, "not regular"):
+            verify_fork_archive(self.package, output)
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO required")
+    def test_archive_path_swap_after_open_keeps_verified_descriptor(self) -> None:
+        output = self.root / "candidate.zip"
+        moved = self.root / "candidate-original.zip"
+        write_archive(self.package, output, force=False)
+        from codex_package import fork_archive
+
+        real_open = fork_archive.open_regular_file
+
+        def swap_after_open(path):
+            stream = real_open(path)
+            if path == output:
+                output.rename(moved)
+                os.mkfifo(output)
+            return stream
+
+        with patch.object(
+            fork_archive, "open_regular_file", side_effect=swap_after_open
+        ):
+            self.assertEqual(len(verify_fork_archive(self.package, output)), 64)
 
     def test_read_only_cli_reports_archive_digest_from_any_cwd(self) -> None:
         output = self.root / "candidate.zip"
