@@ -50,6 +50,12 @@ pub use named_compatibility::check_named_namespace_compatibility;
 mod transaction;
 pub use transaction::PostgresTransaction;
 pub use transaction::TransactionError;
+mod verified_target;
+pub use verified_target::TargetVerificationError;
+pub use verified_target::VerifiedTarget;
+pub use verified_target::check_verified_named_target_compatibility;
+pub use verified_target::check_verified_target_compatibility;
+pub use verified_target::verify_target_artifact;
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_CONNECTIONS: u32 = 32;
