@@ -111,7 +111,12 @@ def publish_verified_fork_archive_linux(
 def verify_publication_receipt(
     destination_dir_fd: int, receipt: PublicationReceipt
 ) -> None:
-    """Recheck the pinned directory, final inode, and bytes before later use."""
+    """Check the pinned entry's inode and bytes at one point in time.
+
+    This closes its file descriptor before returning. A later pathname open is
+    not bound by this check; a future consumer needs an owned descriptor or an
+    exclusive publication fence before trusting the entry for execution.
+    """
     require_linux_publication()
     directory = os.fstat(destination_dir_fd)
     if (directory.st_dev, directory.st_ino) != (

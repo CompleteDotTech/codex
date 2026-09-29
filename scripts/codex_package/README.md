@@ -56,9 +56,11 @@ descriptor. It binds the final entry to that directory's inode and the verified
 bytes, and uses `renameat2(RENAME_NOREPLACE)` to avoid replacing a competing
 entry. The destination must be on a different filesystem from the sealed
 package, preventing a directory rename into that package during publication.
-The returned receipt must be rechecked through the same descriptor
-before later use; it makes no claim that a pathname remains stable. Failed
-attempts may leave a staged or final file for explicit reconciliation. There is
+The returned receipt can be rechecked through the same descriptor only as a
+point-in-time observation. It does not authorize a later pathname open or
+execution; a future consumer needs an owned verified descriptor or an exclusive
+publication fence. Failed attempts may leave a staged or final file for
+explicit reconciliation. There is
 no multi-archive or checksum transaction. Other platforms and release-channel
 authentication remain unimplemented; the builder continues to refuse fork
 archive output everywhere.
