@@ -123,7 +123,9 @@ class RolloutCapturePreviewTest(unittest.TestCase):
                 "storage_contract.rollout_capture_preview.subprocess.run",
                 side_effect=respond,
             ):
-                result = preview(home, compressed_header_helper=sys.executable)
+                result = preview(
+                    home, compressed_header_helper=Path(sys.executable).resolve()
+                )
             self.assertEqual(result["compressed_header_status"], "processed")
             self.assertEqual(result["compressed_headers_unknown"], 0)
             self.assertEqual(
@@ -170,7 +172,9 @@ class RolloutCapturePreviewTest(unittest.TestCase):
                 "storage_contract.rollout_capture_preview.subprocess.run",
                 side_effect=respond,
             ):
-                result = preview(home, compressed_header_helper=sys.executable)
+                result = preview(
+                    home, compressed_header_helper=Path(sys.executable).resolve()
+                )
             self.assertEqual(result["compressed_header_status"], "unavailable")
             self.assertEqual(result["compressed_header_code"], "helper_protocol")
             self.assertEqual(result["compressed_headers_unknown"], 2)
@@ -189,7 +193,9 @@ class RolloutCapturePreviewTest(unittest.TestCase):
                 "storage_contract.rollout_capture_preview.subprocess.run",
                 side_effect=subprocess.TimeoutExpired("helper", 30),
             ):
-                result = preview(home, compressed_header_helper=sys.executable)
+                result = preview(
+                    home, compressed_header_helper=Path(sys.executable).resolve()
+                )
             self.assertEqual(
                 (
                     result["compressed_header_code"],
@@ -199,7 +205,7 @@ class RolloutCapturePreviewTest(unittest.TestCase):
             )
             candidates = [("archived_sessions/x", thread_id, thread_id)] * 1025
             self.assertEqual(
-                _compressed_headers(home, sys.executable, candidates),
+                _compressed_headers(home, Path(sys.executable).resolve(), candidates),
                 (None, "request_limit"),
             )
 
@@ -221,7 +227,9 @@ class RolloutCapturePreviewTest(unittest.TestCase):
                 "storage_contract.rollout_capture_preview.subprocess.run",
                 side_effect=respond,
             ):
-                result = preview(home, compressed_header_helper=sys.executable)
+                result = preview(
+                    home, compressed_header_helper=Path(sys.executable).resolve()
+                )
             self.assertEqual(
                 (
                     result["compressed_header_code"],
