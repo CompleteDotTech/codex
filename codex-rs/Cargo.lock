@@ -4622,12 +4622,14 @@ dependencies = [
 name = "codex-storage-authority"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "pretty_assertions",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "tempfile",
  "uuid",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
