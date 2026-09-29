@@ -4232,9 +4232,12 @@ dependencies = [
 name = "codex-postgres-runtime"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
  "pretty_assertions",
  "rustls",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "sqlx-macros",
  "sqlx-postgres",
