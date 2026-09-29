@@ -6,17 +6,37 @@
 //! a server-enforced fence. Old clients and local rollout files are outside
 //! this primitive. Privileged enforcement belongs to a later stage.
 
+use crate::NamedNamespace;
 use crate::PostgresPool;
 use crate::TransactionError;
+use sqlx::AssertSqlSafe;
 use std::fmt;
 use std::time::Duration;
 use tokio::time::timeout;
 
 const MAX_LEASE: Duration = Duration::from_secs(30);
 
+/// The exact preprovisioned namespace containing a thread ownership row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ThreadOwnershipNamespace {
+    Default,
+    Named(NamedNamespace),
+}
+
+impl ThreadOwnershipNamespace {
+    fn table(&self) -> String {
+        let schema = match self {
+            Self::Default => "\"codex_storage\"".to_owned(),
+            Self::Named(namespace) => namespace.quoted_schema(),
+        };
+        format!("{schema}.\"thread_writer_ownership\"")
+    }
+}
+
 /// A durable claim returned after its PostgreSQL transaction commits.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ThreadOwnership {
+    pub namespace: ThreadOwnershipNamespace,
     pub thread_id: String,
     pub owner_id: String,
     pub token: i64,
@@ -44,7 +64,7 @@ impl From<TransactionError> for ThreadOwnershipError {
 }
 
 fn lease_millis(duration: Duration) -> Result<i64, ThreadOwnershipError> {
-    if duration.is_zero() || duration > MAX_LEASE {
+    if duration < Duration::from_millis(1) || duration > MAX_LEASE {
         return Err(ThreadOwnershipError::InvalidLease);
     }
     Ok(duration.as_millis() as i64)
@@ -56,15 +76,17 @@ impl PostgresPool {
     /// Contention yields `None` or a serialization conflict.
     pub async fn claim_thread_ownership(
         &self,
+        namespace: ThreadOwnershipNamespace,
         thread_id: &str,
         owner_id: &str,
         lease: Duration,
     ) -> Result<Option<ThreadOwnership>, ThreadOwnershipError> {
         let millis = lease_millis(lease)?;
+        let table = namespace.table();
         let mut transaction = self.begin_serializable().await?;
         timeout(
             self.acquire_timeout,
-            sqlx::query("INSERT INTO codex_storage.thread_writer_ownership (thread_id, token) VALUES ($1::uuid, 0) ON CONFLICT (thread_id) DO NOTHING")
+            sqlx::query(AssertSqlSafe(format!("INSERT INTO {table} (thread_id, token) VALUES ($1::uuid, 0) ON CONFLICT (thread_id) DO NOTHING")))
                 .bind(thread_id)
                 .execute(transaction.connection()),
         )
@@ -73,14 +95,14 @@ impl PostgresPool {
         .map_err(|error| TransactionError::classify_statement(&error))?;
         let token: Option<i64> = timeout(
             self.acquire_timeout,
-            sqlx::query_scalar(
-                "UPDATE codex_storage.thread_writer_ownership \
+            sqlx::query_scalar(AssertSqlSafe(format!(
+                "UPDATE {table} \
                  SET token = token + 1, owner_id = $2::uuid, \
                      lease_until = clock_timestamp() + ($3::bigint * interval '1 millisecond') \
                  WHERE thread_id = $1::uuid AND token < 9223372036854775807 \
                    AND (owner_id IS NULL OR lease_until <= clock_timestamp()) \
-                 RETURNING token",
-            )
+                 RETURNING token"
+            )))
             .bind(thread_id)
             .bind(owner_id)
             .bind(millis)
@@ -91,6 +113,7 @@ impl PostgresPool {
         .map_err(|error| TransactionError::classify_statement(&error))?;
         transaction.commit().await?;
         Ok(token.map(|token| ThreadOwnership {
+            namespace,
             thread_id: thread_id.to_owned(),
             owner_id: owner_id.to_owned(),
             token,
@@ -104,15 +127,16 @@ impl PostgresPool {
         lease: Duration,
     ) -> Result<bool, ThreadOwnershipError> {
         let millis = lease_millis(lease)?;
+        let table = claim.namespace.table();
         let mut transaction = self.begin_serializable().await?;
         let updated = timeout(
             self.acquire_timeout,
-            sqlx::query(
-                "UPDATE codex_storage.thread_writer_ownership \
+            sqlx::query(AssertSqlSafe(format!(
+                "UPDATE {table} \
                  SET lease_until = clock_timestamp() + ($4::bigint * interval '1 millisecond') \
                  WHERE thread_id = $1::uuid AND owner_id = $2::uuid AND token = $3 \
-                   AND lease_until > clock_timestamp()",
-            )
+                   AND lease_until > clock_timestamp()"
+            )))
             .bind(&claim.thread_id)
             .bind(&claim.owner_id)
             .bind(claim.token)
@@ -131,15 +155,16 @@ impl PostgresPool {
         &self,
         claim: &ThreadOwnership,
     ) -> Result<bool, ThreadOwnershipError> {
+        let table = claim.namespace.table();
         let mut transaction = self.begin_serializable().await?;
         let updated = timeout(
             self.acquire_timeout,
-            sqlx::query(
-                "UPDATE codex_storage.thread_writer_ownership \
+            sqlx::query(AssertSqlSafe(format!(
+                "UPDATE {table} \
                  SET owner_id = NULL, lease_until = NULL \
                  WHERE thread_id = $1::uuid AND owner_id = $2::uuid AND token = $3 \
-                   AND lease_until > clock_timestamp()",
-            )
+                   AND lease_until > clock_timestamp()"
+            )))
             .bind(&claim.thread_id)
             .bind(&claim.owner_id)
             .bind(claim.token)
@@ -157,6 +182,7 @@ impl PostgresPool {
         &self,
         claim: &ThreadOwnership,
     ) -> Result<bool, ThreadOwnershipError> {
+        let table = claim.namespace.table();
         let mut connection = self.acquire().await.map_err(|error| {
             ThreadOwnershipError::Transaction(match error {
                 crate::PoolError::Timeout => TransactionError::Timeout,
@@ -165,11 +191,11 @@ impl PostgresPool {
         })?;
         timeout(
             self.acquire_timeout,
-            sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM codex_storage.thread_writer_ownership \
+            sqlx::query_scalar(AssertSqlSafe(format!(
+                "SELECT EXISTS (SELECT 1 FROM {table} \
                  WHERE thread_id = $1::uuid AND owner_id = $2::uuid AND token = $3 \
-                   AND lease_until > clock_timestamp())",
-            )
+                   AND lease_until > clock_timestamp())"
+            )))
             .bind(&claim.thread_id)
             .bind(&claim.owner_id)
             .bind(claim.token)
@@ -185,9 +211,11 @@ impl PostgresPool {
     /// This readback is not write authorization or proof of a prior mutation.
     pub async fn recover_thread_ownership(
         &self,
+        namespace: ThreadOwnershipNamespace,
         thread_id: &str,
         owner_id: &str,
     ) -> Result<Option<ThreadOwnership>, ThreadOwnershipError> {
+        let table = namespace.table();
         let mut connection = self.acquire().await.map_err(|error| {
             ThreadOwnershipError::Transaction(match error {
                 crate::PoolError::Timeout => TransactionError::Timeout,
@@ -196,11 +224,11 @@ impl PostgresPool {
         })?;
         let token = timeout(
             self.acquire_timeout,
-            sqlx::query_scalar(
-                "SELECT token FROM codex_storage.thread_writer_ownership \
+            sqlx::query_scalar(AssertSqlSafe(format!(
+                "SELECT token FROM {table} \
                  WHERE thread_id = $1::uuid AND owner_id = $2::uuid \
-                   AND lease_until > clock_timestamp()",
-            )
+                   AND lease_until > clock_timestamp()"
+            )))
             .bind(thread_id)
             .bind(owner_id)
             .fetch_optional(&mut *connection),
@@ -209,6 +237,7 @@ impl PostgresPool {
         .map_err(|_| TransactionError::Timeout)?
         .map_err(|error| TransactionError::classify_statement(&error))?;
         Ok(token.map(|token| ThreadOwnership {
+            namespace,
             thread_id: thread_id.to_owned(),
             owner_id: owner_id.to_owned(),
             token,

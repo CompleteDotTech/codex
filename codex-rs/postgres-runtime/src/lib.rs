@@ -54,6 +54,7 @@ pub use transaction::TransactionError;
 mod thread_ownership;
 pub use thread_ownership::ThreadOwnership;
 pub use thread_ownership::ThreadOwnershipError;
+pub use thread_ownership::ThreadOwnershipNamespace;
 mod verified_target;
 pub use verified_target::TargetVerificationError;
 pub use verified_target::VerifiedTarget;
