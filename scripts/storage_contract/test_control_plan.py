@@ -77,7 +77,29 @@ class ControlPlanTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, "manifest_digest_mismatch"):
             self.preview()
 
+    def test_changed_plan_bytes_reject_the_original_trusted_digest(self):
+        original = encoded(self.plan)
+        expected_digest = hashlib.sha256(original).hexdigest()
+        self.plan["owner_host_id"] = str(uuid.uuid4())
+        for name, changed in (
+            ("owner_host", encoded(self.plan)),
+            ("whitespace", original + b"\n"),
+        ):
+            with self.subTest(change=name):
+                with self.assertRaisesRegex(ContractError, "^plan_digest_mismatch$"):
+                    preview_plan(
+                        changed,
+                        expected_digest,
+                        encoded(self.inventory),
+                        encoded(self.manifest),
+                    )
+
     def test_initialize_and_attach_preserve_local_history_without_import(self):
+        not_imported = sorted(
+            rule["id"]
+            for rule in self.inventory["domains"]
+            if rule["treatment"] == "migrate"
+        )
         self.plan["source"] = None
         self.plan["manifest_sha256"] = None
         self.plan["operation"] = "initialize_new"
@@ -86,8 +108,7 @@ class ControlPlanTests(unittest.TestCase):
         self.assertEqual(initialized["local_history_action"], "preserved_not_imported")
         self.assertTrue(initialized["local_history_present_assertion"])
         self.assertEqual(initialized["planned_migrate_domains"], 0)
-        self.assertIn("rollouts.active", initialized["not_imported_domains"])
-        self.assertIn("state", initialized["not_imported_domains"])
+        self.assertEqual(initialized["not_imported_domains"], not_imported)
         self.assertEqual(initialized["verified_migrated_records"], 0)
 
         self.plan["operation"] = "attach_existing"
@@ -97,11 +118,28 @@ class ControlPlanTests(unittest.TestCase):
         self.assertEqual(attached["destination_generation"], 7)
         self.assertEqual(attached["local_history_action"], "preserved_not_imported")
         self.assertEqual(attached["planned_migrate_domains"], 0)
-        self.assertIn("rollouts.active", attached["not_imported_domains"])
+        self.assertEqual(attached["not_imported_domains"], not_imported)
 
         self.plan["source"] = self.manifest["source"]
         with self.assertRaisesRegex(ContractError, "implicit_source_import"):
             self.preview(include_manifest=False)
+
+    def test_operation_specific_destination_constraints(self):
+        self.plan["source"] = None
+        self.plan["manifest_sha256"] = None
+        for operation, occupancy, generation, error in (
+            ("initialize_new", "existing", 1, "destination_not_empty"),
+            ("initialize_new", "empty", 2, "invalid_initial_generation"),
+            ("attach_existing", "empty", 7, "remote_dataset_missing"),
+        ):
+            with self.subTest(
+                operation=operation, occupancy=occupancy, generation=generation
+            ):
+                self.plan["operation"] = operation
+                self.plan["destination_occupancy"] = occupancy
+                self.plan["destination"]["generation"] = generation
+                with self.assertRaisesRegex(ContractError, f"^{error}$"):
+                    self.preview(include_manifest=False)
 
     def test_occupied_destination_and_hidden_manifest_are_rejected(self):
         self.plan["destination_occupancy"] = "existing"
