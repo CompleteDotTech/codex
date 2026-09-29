@@ -13,6 +13,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from codex_package.fork_identity import OWNER
+from codex_package.fork_identity import open_regular_file
+from codex_package.fork_identity import read_regular_file
 from codex_package.fork_identity import seal_fork_package
 from codex_package.fork_side_by_side import stage_fork_package
 from codex_package.fork_side_by_side import verify_staged_fork_package
@@ -187,7 +189,7 @@ class SideBySideStageTest(unittest.TestCase):
             env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("not a regular file", result.stderr)
+        self.assertIn("not regular", result.stderr)
 
     def test_source_file_swapped_to_fifo_before_copy_fails(self) -> None:
         program = """
@@ -236,6 +238,21 @@ with patch('codex_package.fork_side_by_side.verify_fork_package', side_effect=sw
         receipt.unlink()
         with self.assertRaises(FileNotFoundError):
             verify_staged_fork_package(self.install, slot.name)
+
+    def test_regular_file_read_uses_bound_on_opened_descriptor(self) -> None:
+        oversized = self.package / "oversized"
+        oversized.write_bytes(b"x" * (4 * 1024 * 1024 + 1))
+        with self.assertRaisesRegex(ValueError, "size limit"):
+            read_regular_file(oversized, 4 * 1024 * 1024)
+
+    def test_regular_file_open_closes_descriptor_on_fstat_failure(self) -> None:
+        before = len(list(Path("/proc/self/fd").iterdir()))
+        with patch(
+            "codex_package.fork_identity.os.fstat", side_effect=OSError("fstat failed")
+        ):
+            with self.assertRaisesRegex(OSError, "fstat failed"):
+                open_regular_file(self.package / "codex-package.json")
+        self.assertEqual(len(list(Path("/proc/self/fd").iterdir())), before)
 
     def test_linux_modes_and_nested_zsh_survive_staging(self) -> None:
         package = self.package.parent / "linux-package"

@@ -67,7 +67,9 @@ def seal_fork_package(package_dir: Path, identity: dict[str, object]) -> None:
     if manifest_path.exists() or manifest_path.is_symlink():
         raise ValueError("fork package manifest already exists")
     files, directories = package_tree(package_dir)
-    package_metadata = json.loads(read_regular_file(package_dir / "codex-package.json"))
+    package_metadata = json.loads(
+        read_regular_file(package_dir / "codex-package.json", 1024 * 1024)
+    )
     target = package_metadata["target"]
     if target not in TARGET_SPECS:
         raise ValueError("unsupported fork package target")
@@ -119,7 +121,7 @@ def verify_fork_package(
     actual, directories = package_tree(
         package_dir, exclude_manifest=True, pinned_root_fd=pinned_root_fd
     )
-    manifest = json.loads(read_regular_file(manifest_path))
+    manifest = json.loads(read_regular_file(manifest_path, 4 * 1024 * 1024))
     if (
         not isinstance(manifest, dict)
         or set(manifest)
@@ -142,7 +144,7 @@ def verify_fork_package(
     ):
         raise ValueError("unsupported fork package manifest")
     validate_identity(manifest)
-    metadata = json.loads(read_regular_file(actual["codex-package.json"]))
+    metadata = json.loads(read_regular_file(actual["codex-package.json"], 1024 * 1024))
     if not isinstance(metadata, dict):
         raise ValueError("invalid canonical package metadata")
     for key, metadata_key in (
@@ -369,12 +371,18 @@ def open_regular_file(path: Path):
         path,
         os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0),
     )
-    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("fork package file is not regular")
+        return os.fdopen(descriptor, "rb")
+    except BaseException:
         os.close(descriptor)
-        raise ValueError("fork package file is not regular")
-    return os.fdopen(descriptor, "rb")
+        raise
 
 
-def read_regular_file(path: Path) -> bytes:
+def read_regular_file(path: Path, max_bytes: int) -> bytes:
     with open_regular_file(path) as stream:
-        return stream.read()
+        content = stream.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise ValueError("fork package file exceeds size limit")
+    return content

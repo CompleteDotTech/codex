@@ -21,7 +21,6 @@ from .fork_archive_publication import is_descendant
 SLOTS = "fork-slots"
 RECEIPTS = "fork-receipts"
 DIR_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
 
 
 def stage_fork_package(
@@ -43,17 +42,17 @@ def stage_fork_package(
         ):
             raise ValueError("fork package and install root must not overlap")
         package_path = fd_path(package_fd)
-        manifest_fd = os.open(MANIFEST_NAME, FILE_FLAGS, dir_fd=package_fd)
-        with os.fdopen(manifest_fd, "rb") as manifest_file:
-            if not stat.S_ISREG(os.fstat(manifest_file.fileno()).st_mode):
-                raise ValueError("fork package manifest is not a regular file")
+        with open_regular_file(fd_path(package_fd) / MANIFEST_NAME) as manifest_file:
             manifest_bytes = manifest_file.read(4 * 1024 * 1024 + 1)
         if hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest_sha256:
             raise ValueError("fork package manifest differs from authenticated digest")
         verification = verify_fork_package(package_path, pinned_root_fd=package_fd)
         if verification.unix_mode_status == "unavailable":
             raise ValueError("Unix package modes could not be verified")
-        if read_regular_file(fd_path(package_fd) / MANIFEST_NAME) != manifest_bytes:
+        if (
+            read_regular_file(fd_path(package_fd) / MANIFEST_NAME, 4 * 1024 * 1024)
+            != manifest_bytes
+        ):
             raise ValueError("fork package manifest changed during verification")
         slots_fd = owned_child_directory(root_fd, SLOTS)
         receipts_fd = None
@@ -172,15 +171,19 @@ def verify_staged_fork_package(install_root: Path, slot_id: str) -> None:
             receipts_fd = owned_child_directory(root_fd, RECEIPTS, create=False)
             slot_fd = os.open(slot_id, DIR_FLAGS, dir_fd=slots_fd)
             try:
-                receipt_fd = os.open(slot_id + ".json", FILE_FLAGS, dir_fd=receipts_fd)
-                with os.fdopen(receipt_fd, "r", encoding="utf-8") as reader:
-                    if not stat.S_ISREG(os.fstat(reader.fileno()).st_mode):
-                        raise ValueError("fork package receipt is not a regular file")
-                    payload = json.load(reader)
+                with open_regular_file(
+                    fd_path(receipts_fd) / (slot_id + ".json")
+                ) as reader:
+                    receipt_bytes = reader.read(1024 * 1024 + 1)
+                if len(receipt_bytes) > 1024 * 1024:
+                    raise ValueError("fork package receipt exceeds size limit")
+                payload = json.loads(receipt_bytes)
                 verification = verify_fork_package(
                     fd_path(slot_fd), pinned_root_fd=slot_fd
                 )
-                manifest = read_regular_file(fd_path(slot_fd) / MANIFEST_NAME)
+                manifest = read_regular_file(
+                    fd_path(slot_fd) / MANIFEST_NAME, 4 * 1024 * 1024
+                )
                 expected = {
                     "receiptVersion": 1,
                     "slot": slot_id,
