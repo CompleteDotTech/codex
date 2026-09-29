@@ -165,6 +165,9 @@ pub(super) async fn read_config_from_path(
                 Ok(Some(value))
             }
             Err(err) => {
+                if let Some(redacted) = crate::storage_candidate::redacted_parse_error(&contents) {
+                    return Err(redacted);
+                }
                 tracing::error!("Failed to parse {}: {err}", path.as_path().display());
                 let config_error = config_error_from_toml(path.as_path(), &contents, err.clone());
                 Err(io_error_from_config_error(
@@ -194,6 +197,7 @@ fn validate_config_toml_strictly(
     contents: &str,
     value: &TomlValue,
 ) -> io::Result<()> {
+    crate::storage_candidate::validate_storage_candidate_value(value)?;
     let Some(base_dir) = path.as_path().parent() else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
