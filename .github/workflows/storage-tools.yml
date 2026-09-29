@@ -136,6 +136,9 @@ jobs:
       - name: Test named namespace bootstrap against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles
+      - name: Test named thread ownership against real server
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_named_thread_ownership_is_namespace_scoped
       - name: Test PostgreSQL graph adapter and role isolation
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_GRAPH_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-agent-graph-store real_postgres_graph_adapter_preserves_order_and_edge_semantics
