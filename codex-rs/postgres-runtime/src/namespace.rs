@@ -15,6 +15,11 @@ pub struct NamedNamespace {
 pub struct InvalidNamespace;
 
 impl NamedNamespace {
+    /// Login required for read-only namespace compatibility preflight.
+    pub fn migrator_login(&self) -> &str {
+        &self.migrator
+    }
+
     /// Accept `codex_storage_<stem>` with a short, lowercase ASCII stem.
     /// Roles are derived as `codex_<stem>_{owner,migrator,runtime}`.
     pub fn new(schema: &str) -> Result<Self, InvalidNamespace> {
