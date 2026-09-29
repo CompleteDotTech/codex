@@ -22,7 +22,7 @@ const MIGRATIONS_TABLE: &str = "codex_storage._codex_pg_migrations";
 pub(crate) static BASE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
 
 pub(crate) fn history_matches(rows: &[PgRow], migrations: &[Migration], format: i32) -> bool {
-    if !matches!(format, 1..=5) || rows.len() != format as usize || rows.len() > migrations.len() {
+    if !matches!(format, 1..=6) || rows.len() != format as usize || rows.len() > migrations.len() {
         return false;
     }
     rows.iter().zip(migrations).all(|(row, migration)| {
