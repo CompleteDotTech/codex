@@ -10,7 +10,10 @@ use codex_postgres_runtime::TransactionError;
 use serde_json::Value;
 use sqlx::Acquire;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
@@ -41,7 +44,40 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
     let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_TRANSACTION_STATE") else {
         return;
     };
-    let state = Path::new(&state);
+    let state = PathBuf::from(state);
+    let exercise_state = state.clone();
+    let created = Arc::new(AtomicBool::new(false));
+    let exercise_created = Arc::clone(&created);
+    let outcome = tokio::spawn(async move {
+        exercise_transaction_outcomes(&exercise_state, &exercise_created).await;
+    })
+    .await;
+
+    // The next qualification step reuses this fixed namespace. Clean up even when an
+    // assertion in the exercise panics, then propagate that failure to the test runner.
+    if created.load(Ordering::Acquire) {
+        let migrator = PostgresPool::connect(settings(&state, "migrator"))
+            .await
+            .expect("cleanup migrator pool");
+        let mut connection = migrator.acquire().await.expect("acquire cleanup migrator");
+        let mut owner = connection.begin().await.expect("begin cleanup transaction");
+        sqlx::query("SET LOCAL ROLE codex_owner")
+            .execute(&mut *owner)
+            .await
+            .expect("assume owner for cleanup");
+        sqlx::query("DROP TABLE IF EXISTS codex_storage.transaction_probe")
+            .execute(&mut *owner)
+            .await
+            .expect("remove transaction probe");
+        owner
+            .commit()
+            .await
+            .expect("commit transaction probe cleanup");
+    }
+    outcome.expect("transaction exercise must complete without panic");
+}
+
+async fn exercise_transaction_outcomes(state: &Path, created: &AtomicBool) {
     let migrator = PostgresPool::connect(settings(state, "migrator"))
         .await
         .expect("migrator pool");
@@ -60,6 +96,7 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
         .await
         .expect("seed transaction probe");
     owner.commit().await.expect("commit transaction probe");
+    created.store(true, Ordering::Release);
     drop(connection);
     let pool = Arc::new(
         PostgresPool::connect(settings(state, "runtime"))
