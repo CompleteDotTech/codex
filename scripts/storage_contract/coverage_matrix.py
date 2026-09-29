@@ -134,9 +134,9 @@ PRIMARY_PROJECT_EDGES = {
     "thread_sections": {
         "state/src/runtime/threads.rs": {
             "read": "FROM thread_sections",
-            "write": "INSERT INTO thread_sections",
         },
         "state/src/runtime/thread_sections.rs": {
+            "insert": "INSERT INTO thread_sections",
             "write": "UPDATE thread_sections",
         },
         "state/src/runtime/thread_section_order.rs": {
@@ -154,8 +154,7 @@ PRIMARY_PROJECT_EDGES = {
     },
     "thread_dynamic_tools": {
         "state/src/runtime/threads.rs": {
-            "read": "FROM thread_dynamic_tools",
-            "write": "INSERT INTO thread_dynamic_tools",
+            "write": "DELETE FROM thread_dynamic_tools",
         },
     },
     "thread_spawn_edges": {
@@ -229,10 +228,10 @@ QUEUE_EDGES = {
             "delete": "DELETE FROM queued_items",
         },
         "thread-store/src/queue_store.rs": {
-            "adapter": ".enqueue(thread_id, &payload)",
+            "adapter": "self.queue().list_page(thread_id, offset, limit)",
         },
         "ext/queue/src/service.rs": {
-            "consumer": "self.queue.enqueue(thread_id, payload).await?",
+            "consumer": ".list_page(thread_id, offset, limit)",
         },
         "app-server/src/message_processor.rs": {
             "factory": "LocalQueueStore::new(Arc::clone(state_db))",
@@ -251,9 +250,11 @@ QUEUE_EDGES = {
         },
         "thread-store/src/queue_store.rs": {
             "adapter": "self.queue().changes_since(revision, thread_ids)",
+            "commit_observation": "self.queue().change_version()",
         },
         "ext/queue/src/service.rs": {
             "watcher": ".changes_since(last_revision, &thread_ids)",
+            "commit_observation": "service.queue.change_version().await",
         },
         "app-server/src/message_processor.rs": {
             "factory": "LocalQueueStore::new(Arc::clone(state_db))",
