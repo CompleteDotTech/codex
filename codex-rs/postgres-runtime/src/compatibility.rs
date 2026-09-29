@@ -117,7 +117,7 @@ pub async fn check_codex_storage_compatibility(
         }
 
         let unexpected_objects: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey', 'thread_spawn_edges', 'thread_spawn_edges_pkey', 'idx_thread_spawn_edges_parent_status', 'external_agent_config_imports', 'external_agent_config_imports_pkey', 'idx_external_agent_config_imports_history', 'threads', 'threads_pkey', 'idx_threads_recency_id', 'thread_sections', 'thread_sections_pkey', 'idx_threads_section_recency', 'idx_threads_section_position')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'codex_storage'::regnamespace AND typtype <> 'b' AND typrelid = 0)",
+            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey', 'thread_spawn_edges', 'thread_spawn_edges_pkey', 'idx_thread_spawn_edges_parent_status', 'external_agent_config_imports', 'external_agent_config_imports_pkey', 'idx_external_agent_config_imports_history', 'threads', 'threads_pkey', 'idx_threads_recency_id', 'thread_sections', 'thread_sections_pkey', 'idx_threads_section_recency', 'idx_threads_section_position', 'thread_writer_ownership', 'thread_writer_ownership_pkey')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'codex_storage'::regnamespace AND typtype <> 'b' AND typrelid = 0)",
         )
         .fetch_one(&mut *transaction)
         .await
@@ -149,7 +149,7 @@ pub async fn check_codex_storage_compatibility(
         {
             return Err(CompatibilityError::DirtyMigration);
         }
-        if !matches!(schema_format, 1..=5) {
+        if !matches!(schema_format, 1..=6) {
             return Err(CompatibilityError::UnsupportedSchema);
         }
         if !history_matches(&history, BASE_MIGRATOR.migrations.as_ref(), schema_format) {
