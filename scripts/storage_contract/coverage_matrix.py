@@ -173,24 +173,29 @@ GOAL_EDGES = {
             "schema": "CREATE TABLE thread_goals (",
         },
         "state/src/runtime/goals.rs": {
-            "read": "FROM thread_goals",
-            "write": "INSERT INTO thread_goals (",
-            "update": "UPDATE thread_goals",
-            "delete": "DELETE FROM thread_goals",
+            "get_thread_goal": "FROM thread_goals",
+            "replace_thread_goal_snapshot": "INSERT INTO thread_goals (",
+            "replace_thread_goal": "INSERT INTO thread_goals (",
+            "insert_thread_goal": "INSERT INTO thread_goals (",
+            "update_thread_goal": "UPDATE thread_goals",
+            "update_active_thread_goal_status": "UPDATE thread_goals",
+            "account_thread_goal_usage": "UPDATE thread_goals",
+            "delete_thread_goal": "DELETE FROM thread_goals",
         },
         "ext/goal/src/api.rs": {
-            "external_update": ".update_thread_goal(",
-            "external_clear": ".delete_thread_goal(thread_id)",
+            "set_thread_goal": ".update_thread_goal(",
+            "clear_thread_goal": ".delete_thread_goal(thread_id)",
         },
         "ext/goal/src/runtime.rs": {
-            "turn_usage": ".account_thread_goal_usage(",
+            "account_active_goal_progress": ".account_thread_goal_usage(",
+            "account_idle_goal_progress": ".account_thread_goal_usage(",
         },
         "app-server/src/request_processors/thread_goal_processor.rs": {
             "api_set": ".set_thread_goal(",
             "canonical_event": "outcome.thread_goal_updated_item()",
         },
         "app-server/src/request_processors/thread_fork_goal.rs": {
-            "fork_snapshot": ".replace_thread_goal_snapshot(&goal)",
+            "inherit_thread_goal_snapshot": ".replace_thread_goal_snapshot(&goal)",
         },
     },
     "thread_goal_continuation_deferrals": {
@@ -199,15 +204,15 @@ GOAL_EDGES = {
             "cascade": "REFERENCES thread_goals(thread_id) ON DELETE CASCADE",
         },
         "state/src/runtime/goals.rs": {
-            "write": "INSERT INTO thread_goal_continuation_deferrals (thread_id)",
-            "read": "FROM thread_goal_continuation_deferrals",
-            "clear": "DELETE FROM thread_goal_continuation_deferrals WHERE thread_id = ?",
+            "replace_thread_goal_snapshot": "INSERT INTO thread_goal_continuation_deferrals (thread_id)",
+            "has_thread_goal_continuation_deferral": "FROM thread_goal_continuation_deferrals",
+            "clear_thread_goal_continuation_deferral": "DELETE FROM thread_goal_continuation_deferrals WHERE thread_id = ?",
         },
         "ext/goal/src/runtime.rs": {
-            "continuation_gate": ".has_thread_goal_continuation_deferral(self.thread_id())",
+            "continue_if_idle": ".has_thread_goal_continuation_deferral(self.thread_id())",
         },
         "ext/goal/src/extension.rs": {
-            "turn_start_clear": ".clear_thread_goal_continuation_deferral(runtime.thread_id())",
+            "on_turn_start": ".clear_thread_goal_continuation_deferral(runtime.thread_id())",
         },
     },
 }
@@ -222,10 +227,12 @@ QUEUE_EDGES = {
             "constraint": "CREATE UNIQUE INDEX queued_items_thread_order_idx",
         },
         "state/src/runtime/queued_items.rs": {
-            "insert": "INSERT INTO queued_items (",
-            "read": "FROM queued_items",
+            "enqueue": "INSERT INTO queued_items (",
+            "list_page": "FROM queued_items",
             "update": "UPDATE queued_items",
             "delete": "DELETE FROM queued_items",
+            "reorder": "UPDATE queued_items SET queue_order = ?, updated_at_ms = ?",
+            "delete_thread_queue": "DELETE FROM queued_items WHERE thread_id = ?",
         },
         "thread-store/src/queue_store.rs": {
             "adapter": "self.queue().list_page(thread_id, offset, limit)",
@@ -240,9 +247,30 @@ QUEUE_EDGES = {
     "queued_thread_revisions": {
         "state/queue_migrations/0002_queued_thread_revisions.sql": {
             "schema": "CREATE TABLE queued_thread_revisions (",
-            "insert_trigger": "CREATE TRIGGER queued_items_revision_after_insert\nAFTER INSERT ON queued_items",
-            "update_trigger": "CREATE TRIGGER queued_items_revision_after_update\nAFTER UPDATE ON queued_items",
-            "delete_trigger": "CREATE TRIGGER queued_items_revision_after_delete\nAFTER DELETE ON queued_items",
+            "insert_trigger": """CREATE TRIGGER queued_items_revision_after_insert
+AFTER INSERT ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (NEW.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
+            "update_trigger": """CREATE TRIGGER queued_items_revision_after_update
+AFTER UPDATE ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (NEW.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
+            "delete_trigger": """CREATE TRIGGER queued_items_revision_after_delete
+AFTER DELETE ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (OLD.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
         },
         "state/src/runtime/queued_items.rs": {
             "revision_read": "SELECT thread_id, revision FROM queued_thread_revisions WHERE revision > ",
