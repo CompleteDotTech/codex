@@ -33,24 +33,28 @@ class RestoreQualificationTests(unittest.TestCase):
         cleanup.assert_called_once_with(Path("destination"))
 
     def test_wrapper_preserves_primary_failure_when_cleanup_fails(self):
+        failure = KeyboardInterrupt()
+
         def fail_after_roles(source, destination, owned_roles):
             owned_roles.append(True)
-            raise ServiceError("qualification_failed")
+            raise failure
 
-        with (
-            patch.object(
-                qualification, "_qualify_restore_access", side_effect=fail_after_roles
-            ),
-            patch.object(
-                qualification,
-                "_cleanup_roles",
-                side_effect=ServiceError("cleanup_failed"),
-            ),
-        ):
-            with self.assertRaisesRegex(ServiceError, "qualification_failed"):
-                qualification.qualify_restore_access(
-                    Path("source"), Path("destination")
-                )
+        for cleanup_failure in (ServiceError(), RuntimeError(), KeyboardInterrupt()):
+            with (
+                patch.object(
+                    qualification,
+                    "_qualify_restore_access",
+                    side_effect=fail_after_roles,
+                ),
+                patch.object(
+                    qualification, "_cleanup_roles", side_effect=cleanup_failure
+                ),
+            ):
+                with self.assertRaises(BaseException) as raised:
+                    qualification.qualify_restore_access(
+                        Path("source"), Path("destination")
+                    )
+            self.assertIs(raised.exception, failure)
 
     def test_wrapper_reports_cleanup_failure_after_success(self):
         cleanup_failure = ServiceError("cleanup_failed")

@@ -1,7 +1,9 @@
 //! A bounded PostgreSQL connection pool for host-resolved credentials.
 //!
-//! This crate does not create tables, select the active storage backend, or
-//! grant authority to a candidate configuration.
+//! The pool does not select the active storage backend or grant authority to a
+//! candidate configuration. Callers that need the preprovisioned storage
+//! schema must explicitly invoke the transactional `bootstrap_codex_storage`
+//! entry point.
 
 #![expect(
     clippy::disallowed_methods,

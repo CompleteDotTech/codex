@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from qualification_checks import checked_backup, command, sql, verify_endpoint
+from qualification_mutations import temporary_sql
 from restore_archive_cases import qualify_archive_shapes
 from state import ServiceError, publish_json
 
@@ -38,7 +39,7 @@ def qualify_restore_access(source, destination):
         if owned_roles:
             try:
                 _cleanup_roles(destination)
-            except ServiceError:
+            except BaseException:
                 if failure is None:
                     raise
     report["safe_retry_passed"] = True
@@ -60,22 +61,12 @@ def _qualify_restore_access(source, destination, owned_roles):
     sequence_name = "codex_storage.codex_restore_qualification_seq"
     if sql(source, f"SELECT to_regclass('{sequence_name}') IS NOT NULL") != "f":
         raise ServiceError("protected_restore_source_sequence_already_exists")
-    sql(
+    with temporary_sql(
         source,
-        f"SET ROLE codex_owner; CREATE SEQUENCE {sequence_name}; RESET ROLE",
-    )
-    backup_failure = None
-    try:
+        f"SET LOCAL ROLE codex_owner; CREATE SEQUENCE {sequence_name}",
+        f"DROP SEQUENCE IF EXISTS {sequence_name}",
+    ):
         backup, archive = checked_backup(source)
-    except BaseException as error:
-        backup_failure = error
-        raise
-    finally:
-        try:
-            sql(source, f"DROP SEQUENCE IF EXISTS {sequence_name}")
-        except ServiceError:
-            if backup_failure is None:
-                raise
     command(destination, "up")
     verify_endpoint(destination)
     if (
@@ -95,6 +86,8 @@ def _qualify_restore_access(source, destination, owned_roles):
         != "f"
     ):
         raise ServiceError("protected_restore_fixture_roles_already_exist")
+    # The names were absent above; a lost COMMIT reply must still trigger cleanup.
+    owned_roles.append(True)
     sql(
         destination,
         "BEGIN; CREATE ROLE codex_restore_inherited; CREATE ROLE codex_restore_assumable; "
@@ -104,7 +97,6 @@ def _qualify_restore_access(source, destination, owned_roles):
         "GRANT codex_restore_inherited TO codex_backup WITH INHERIT TRUE, SET FALSE; "
         "GRANT codex_restore_assumable TO codex_backup WITH INHERIT FALSE, SET TRUE; COMMIT",
     )
-    owned_roles.append(True)
     if (
         sql(
             destination,
@@ -139,9 +131,7 @@ def _qualify_restore_access(source, destination, owned_roles):
     report = {"scope": "protected_metadata_restore_only", "steps": []}
 
     def reject_and_revert(name, setup, cleanup, captured=None):
-        sql(destination, setup)
-        primary_failure = None
-        try:
+        with temporary_sql(destination, setup, cleanup):
             before = json.loads(sql(destination, snapshot))
             selected_restore_args = restore_args
             if captured is not None:
@@ -161,15 +151,6 @@ def _qualify_restore_access(source, destination, owned_roles):
             )
             if json.loads(sql(destination, snapshot)) != before:
                 raise ServiceError("unsafe_restore_changed_empty_destination")
-        except Exception as error:
-            primary_failure = error
-            raise
-        finally:
-            try:
-                sql(destination, cleanup)
-            except Exception:
-                if primary_failure is None:
-                    raise
         report["steps"].append({"name": name, "rejected_and_rolled_back": True})
         publish_json(destination / "restore-qualification.json", report)
 
@@ -230,12 +211,33 @@ def _qualify_restore_access(source, destination, owned_roles):
     )
     reject_and_revert(
         "backup_assumable_runtime_role_escalation",
-        "BEGIN; CREATE ROLE codex_restore_bridge; "
+        "CREATE ROLE codex_restore_bridge; "
         "GRANT codex_restore_bridge TO codex_backup WITH INHERIT FALSE, SET TRUE; "
-        "GRANT codex_runtime TO codex_restore_bridge WITH INHERIT TRUE, SET FALSE; COMMIT",
-        "BEGIN; REVOKE codex_restore_bridge FROM codex_backup; "
+        "GRANT codex_runtime TO codex_restore_bridge WITH INHERIT TRUE, SET FALSE",
+        "REVOKE codex_restore_bridge FROM codex_backup; "
         "REVOKE codex_runtime FROM codex_restore_bridge; "
-        "DROP ROLE codex_restore_bridge; COMMIT",
+        "DROP ROLE codex_restore_bridge",
+    )
+    reject_and_revert(
+        "backup_admin_runtime_role_escalation",
+        "GRANT codex_runtime TO codex_backup WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
+        "REVOKE codex_runtime FROM codex_backup",
+    )
+    reject_and_revert(
+        "backup_admin_bridge_role_escalation",
+        "CREATE ROLE codex_restore_bridge; "
+        "GRANT codex_runtime TO codex_restore_bridge WITH INHERIT FALSE, SET TRUE; "
+        "GRANT codex_restore_bridge TO codex_backup WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
+        "REVOKE codex_restore_bridge FROM codex_backup; "
+        "REVOKE codex_runtime FROM codex_restore_bridge; DROP ROLE codex_restore_bridge",
+    )
+    reject_and_revert(
+        "backup_alias_admin_runtime_role_escalation",
+        "CREATE ROLE codex_restore_bridge; "
+        "GRANT codex_restore_bridge TO codex_backup WITH INHERIT FALSE, SET TRUE; "
+        "GRANT codex_runtime TO codex_restore_bridge WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
+        "REVOKE codex_restore_bridge FROM codex_backup; "
+        "REVOKE codex_runtime FROM codex_restore_bridge; DROP ROLE codex_restore_bridge",
     )
     reject_and_revert(
         "public_function_execute_default",
@@ -260,7 +262,44 @@ def _qualify_restore_access(source, destination, owned_roles):
             "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
             f"REVOKE SELECT ON TABLES FROM {grantee}",
         )
-    qualify_archive_shapes(source, reject_and_revert)
+    ordinary_backup, ordinary_archive = qualify_archive_shapes(
+        source, reject_and_revert
+    )
+    with temporary_sql(
+        destination,
+        "SELECT 1",
+        "DROP TABLE IF EXISTS codex_storage.restore_shape_probe",
+    ):
+        command(
+            destination,
+            "restore",
+            "--archive",
+            str(ordinary_archive),
+            "--sha256",
+            ordinary_backup["sha256"],
+            "--confirm-empty-destination",
+        )
+        sql(
+            destination,
+            "INSERT INTO codex_storage.restore_shape_probe VALUES (1)",
+            role="runtime",
+        )
+        if (
+            sql(
+                destination,
+                "SELECT id FROM codex_storage.restore_shape_probe",
+                role="backup",
+            )
+            != "1"
+        ):
+            raise ServiceError("ordinary_restore_backup_read_mismatch")
+        sql(
+            destination,
+            "UPDATE codex_storage.restore_shape_probe SET id=2",
+            role="backup",
+            expected_sqlstate="42501",
+        )
+    report["ordinary_archive_safe_retry_passed"] = True
     if json.loads(sql(source, protected_rows)) != expected:
         raise ServiceError("protected_restore_source_changed")
 
@@ -291,22 +330,13 @@ def _qualify_restore_access(source, destination, owned_roles):
         "AND has_schema_privilege(oid, 'codex_storage', 'CREATE'))"
     )
     for grantee in ("PUBLIC", "codex_restore_inherited", "codex_restore_assumable"):
-        sql(destination, f"GRANT CREATE ON SCHEMA codex_storage TO {grantee}")
-        primary_failure = None
-        try:
+        with temporary_sql(
+            destination,
+            f"GRANT CREATE ON SCHEMA codex_storage TO {grantee}",
+            f"REVOKE CREATE ON SCHEMA codex_storage FROM {grantee}",
+        ):
             if sql(destination, schema_create_probe) != "t":
                 raise ServiceError("schema_create_effective_privilege_not_observed")
-        except Exception as error:
-            primary_failure = error
-            raise
-        finally:
-            try:
-                sql(
-                    destination, f"REVOKE CREATE ON SCHEMA codex_storage FROM {grantee}"
-                )
-            except Exception:
-                if primary_failure is None:
-                    raise
     if json.loads(sql(destination, protected_rows)) != expected:
         raise ServiceError("protected_restore_content_mismatch")
     if (
@@ -340,4 +370,33 @@ def _qualify_restore_access(source, destination, owned_roles):
         "SET ROLE codex_restore_assumable; UPDATE codex_storage.codex_schema_meta SET format_version=99",
     ):
         sql(destination, statement, role="runtime", expected_sqlstate="42501")
+    for role, history_read in (("codex_runtime", False), ("codex_backup", True)):
+        writes = "INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN"
+        history_access = writes if history_read else f"SELECT,{writes}"
+        columns = "INSERT,UPDATE,REFERENCES"
+        history_columns = columns if history_read else f"SELECT,{columns}"
+        observed = json.loads(
+            sql(
+                destination,
+                "SELECT json_build_object('metadata_read', "
+                f"has_table_privilege('{role}', 'codex_storage.codex_schema_meta', 'SELECT'), "
+                f"'history_read', has_table_privilege('{role}', 'codex_storage._codex_pg_migrations', 'SELECT'), "
+                "'unsafe', EXISTS (SELECT 1 FROM pg_roles candidate WHERE "
+                f"(pg_has_role('{role}', candidate.oid, 'USAGE') OR pg_has_role('{role}', candidate.oid, 'SET')) AND ("
+                "has_schema_privilege(candidate.oid, 'codex_storage', 'CREATE') OR "
+                f"has_table_privilege(candidate.oid, 'codex_storage.codex_schema_meta', '{writes}') OR "
+                f"has_any_column_privilege(candidate.oid, 'codex_storage.codex_schema_meta', '{columns}') OR "
+                f"has_table_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', '{history_access}') OR "
+                "has_table_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', 'SELECT WITH GRANT OPTION') OR "
+                "has_any_column_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', 'SELECT WITH GRANT OPTION') OR "
+                f"has_any_column_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', '{history_columns}'))))::text",
+            )
+        )
+        if observed != {
+            "metadata_read": True,
+            "history_read": history_read,
+            "unsafe": False,
+        }:
+            raise ServiceError("protected_restore_effective_acl_mismatch")
+    report["effective_acl_audit_passed"] = True
     return report
