@@ -60,6 +60,22 @@ async fn owner_query(pool: &PostgresPool, sql: &'static str) {
         .expect("commit owner fixture SQL");
 }
 
+async fn migrator_query(pool: &PostgresPool, sql: &'static str) {
+    let mut connection = pool.acquire().await.expect("acquire migrator connection");
+    sqlx::raw_sql(sql)
+        .execute(&mut *connection)
+        .await
+        .expect("execute migrator fixture SQL");
+}
+
+async fn role_query(pool: &PostgresPool, sql: &'static str) {
+    let mut connection = pool.acquire().await.expect("acquire role connection");
+    sqlx::raw_sql(sql)
+        .execute(&mut *connection)
+        .await
+        .expect("execute role fixture SQL");
+}
+
 async fn reject_namespace_objects(pool: &PostgresPool) {
     for (create, drop) in [
         (
@@ -105,6 +121,54 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     let backup = PostgresPool::connect(settings(state, "backup"))
         .await
         .expect("backup pool");
+
+    migrator_query(
+        &migrator_a,
+        "REVOKE codex_bootstrap_graph_bridge FROM codex_bootstrap_graph_principal",
+    )
+    .await;
+    migrator_query(
+        &migrator_a,
+        "GRANT codex_bootstrap_graph_bridge TO codex_bootstrap_graph_principal WITH INHERIT FALSE, SET FALSE, ADMIN TRUE",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    migrator_query(
+        &migrator_a,
+        "REVOKE codex_bootstrap_graph_bridge FROM codex_bootstrap_graph_principal",
+    )
+    .await;
+    migrator_query(
+        &migrator_a,
+        "GRANT codex_bootstrap_graph_bridge TO codex_backup WITH INHERIT FALSE, SET FALSE, ADMIN TRUE",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    migrator_query(
+        &migrator_a,
+        "REVOKE codex_bootstrap_graph_bridge FROM codex_backup",
+    )
+    .await;
+    migrator_query(
+        &migrator_a,
+        "GRANT codex_bootstrap_graph_bridge TO codex_backup WITH INHERIT FALSE, SET TRUE",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    migrator_query(
+        &migrator_a,
+        "REVOKE codex_bootstrap_graph_bridge FROM codex_backup",
+    )
+    .await;
 
     owner_query(
         &migrator_a,
@@ -220,6 +284,11 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
             "REVOKE CREATE ON SCHEMA codex_storage FROM codex_backup",
             "SELECT has_schema_privilege('codex_backup', 'codex_storage', 'CREATE')",
         ),
+        (
+            "GRANT UPDATE (format_version) ON codex_storage.codex_schema_meta TO codex_bootstrap_graph_principal",
+            "REVOKE UPDATE (format_version) ON codex_storage.codex_schema_meta FROM codex_bootstrap_graph_principal",
+            "SELECT has_column_privilege('codex_bootstrap_graph_principal', 'codex_storage.codex_schema_meta', 'format_version', 'UPDATE')",
+        ),
     ] {
         owner_query(&migrator_a, grant).await;
         assert_eq!(
@@ -236,6 +305,144 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
         owner_query(&migrator_a, revoke).await;
         assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
     }
+
+    owner_query(
+        &migrator_a,
+        "CREATE SCHEMA codex_view_fixture AUTHORIZATION codex_owner; CREATE VIEW codex_view_fixture.metadata_proxy_base AS SELECT singleton, format_version, min_reader_version, min_writer_version FROM codex_storage.codex_schema_meta; CREATE VIEW codex_view_fixture.metadata_proxy AS SELECT singleton, format_version, min_reader_version, min_writer_version FROM codex_view_fixture.metadata_proxy_base; GRANT USAGE ON SCHEMA codex_view_fixture TO codex_runtime; GRANT UPDATE ON codex_view_fixture.metadata_proxy TO codex_runtime",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    owner_query(&migrator_a, "DROP SCHEMA codex_view_fixture CASCADE").await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+
+    owner_query(
+        &migrator_a,
+        "CREATE SCHEMA codex_reporting_fixture AUTHORIZATION codex_owner; CREATE VIEW codex_reporting_fixture.metadata_report AS SELECT singleton, format_version FROM codex_storage.codex_schema_meta; CREATE VIEW codex_reporting_fixture.security_invoker_report WITH (security_invoker = true) AS SELECT singleton, format_version FROM codex_storage.codex_schema_meta; GRANT USAGE ON SCHEMA codex_reporting_fixture TO codex_runtime; GRANT SELECT ON codex_reporting_fixture.metadata_report, codex_reporting_fixture.security_invoker_report TO codex_runtime",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    owner_query(
+        &migrator_a,
+        "CREATE VIEW codex_reporting_fixture.history_report AS SELECT version FROM codex_storage._codex_pg_migrations; GRANT SELECT ON codex_reporting_fixture.history_report TO codex_runtime",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    owner_query(&migrator_a, "DROP SCHEMA codex_reporting_fixture CASCADE").await;
+
+    owner_query(
+        &migrator_a,
+        "CREATE SCHEMA codex_rewrite_fixture AUTHORIZATION codex_owner; CREATE TABLE codex_rewrite_fixture.proxy (id INTEGER); CREATE RULE proxy_update AS ON UPDATE TO codex_rewrite_fixture.proxy DO ALSO UPDATE codex_storage.codex_schema_meta SET format_version = 1; GRANT USAGE ON SCHEMA codex_rewrite_fixture TO codex_runtime; GRANT UPDATE ON codex_rewrite_fixture.proxy TO codex_runtime",
+    )
+    .await;
+    role_query(
+        &runtime,
+        "BEGIN; UPDATE codex_rewrite_fixture.proxy SET id = 1; ROLLBACK",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    owner_query(&migrator_a, "DROP SCHEMA codex_rewrite_fixture CASCADE").await;
+
+    owner_query(
+        &migrator_a,
+        "CREATE SCHEMA codex_backup_view_fixture AUTHORIZATION codex_owner; GRANT USAGE, CREATE ON SCHEMA codex_backup_view_fixture TO codex_backup",
+    )
+    .await;
+    role_query(
+        &backup,
+        "CREATE VIEW codex_backup_view_fixture.history_proxy AS SELECT version FROM codex_storage._codex_pg_migrations",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    owner_query(&migrator_a, "DROP SCHEMA codex_backup_view_fixture CASCADE").await;
+
+    owner_query(
+        &migrator_a,
+        "ALTER TABLE codex_storage._codex_pg_migrations ALTER COLUMN installed_on SET DEFAULT NULL",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::IncompatibleNamespace)
+    );
+    owner_query(
+        &migrator_a,
+        "ALTER TABLE codex_storage._codex_pg_migrations ALTER COLUMN installed_on SET DEFAULT CURRENT_TIMESTAMP",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; DROP SCHEMA IF EXISTS codex_security_definer_fixture CASCADE; CREATE SCHEMA codex_security_definer_fixture; CREATE FUNCTION codex_security_definer_fixture.write_metadata() RETURNS void LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, codex_storage AS $$ BEGIN UPDATE codex_storage.codex_schema_meta SET format_version = 1; END $$; REVOKE ALL ON FUNCTION codex_security_definer_fixture.write_metadata() FROM PUBLIC; GRANT USAGE ON SCHEMA codex_security_definer_fixture TO codex_runtime, codex_backup; GRANT EXECUTE ON FUNCTION codex_security_definer_fixture.write_metadata() TO codex_runtime, codex_backup; RESET ROLE",
+    )
+    .await;
+    role_query(
+        &runtime,
+        "BEGIN; SELECT codex_security_definer_fixture.write_metadata(); ROLLBACK",
+    )
+    .await;
+    role_query(
+        &backup,
+        "BEGIN; SELECT codex_security_definer_fixture.write_metadata(); ROLLBACK",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; REVOKE EXECUTE ON FUNCTION codex_security_definer_fixture.write_metadata() FROM codex_runtime, codex_backup; RESET ROLE",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; DROP SCHEMA codex_security_definer_fixture CASCADE; RESET ROLE",
+    )
+    .await;
+
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; DROP ROLE IF EXISTS codex_bootstrap_graph_inert; CREATE ROLE codex_bootstrap_graph_inert NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS; GRANT codex_bootstrap_graph_principal TO codex_bootstrap_graph_inert WITH INHERIT FALSE, SET FALSE, ADMIN TRUE; GRANT codex_bootstrap_graph_principal TO codex_backup WITH INHERIT FALSE, SET TRUE; GRANT codex_bootstrap_graph_inert TO codex_runtime WITH INHERIT FALSE, SET FALSE, ADMIN FALSE; RESET ROLE",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; REVOKE codex_bootstrap_graph_principal FROM codex_backup; DROP ROLE codex_bootstrap_graph_inert; RESET ROLE",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; CREATE SCHEMA codex_superuser_view_fixture; CREATE VIEW codex_superuser_view_fixture.metadata_proxy AS SELECT singleton, format_version, min_reader_version, min_writer_version FROM codex_storage.codex_schema_meta; GRANT USAGE ON SCHEMA codex_superuser_view_fixture TO codex_runtime; GRANT UPDATE(format_version) ON codex_superuser_view_fixture.metadata_proxy TO codex_runtime; RESET ROLE",
+    )
+    .await;
+    role_query(
+        &runtime,
+        "BEGIN; UPDATE codex_superuser_view_fixture.metadata_proxy SET format_version = 1; ROLLBACK",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::Privilege)
+    );
+    migrator_query(
+        &migrator_a,
+        "SET ROLE codex_bootstrap_graph_superuser; DROP SCHEMA codex_superuser_view_fixture CASCADE; RESET ROLE",
+    )
+    .await;
 
     for (raise_minimum, reset_minimum) in [
         (
@@ -316,6 +523,76 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     .await;
     assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
 
+    for (drop, repair) in [
+        (
+            "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_format_version_check",
+            "ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0)",
+        ),
+        (
+            "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_min_reader_version_check",
+            "ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0)",
+        ),
+        (
+            "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_min_writer_version_check",
+            "ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT codex_schema_meta_min_writer_version_check CHECK (min_writer_version > 0)",
+        ),
+    ] {
+        owner_query(&migrator_a, drop).await;
+        assert_eq!(
+            bootstrap_codex_storage(&migrator_a).await,
+            Err(BootstrapError::IncompatibleNamespace)
+        );
+        owner_query(&migrator_a, repair).await;
+        assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+    }
+    owner_query(
+        &migrator_a,
+        "ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT metadata_extra_check CHECK (format_version >= 1)",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::IncompatibleNamespace)
+    );
+    owner_query(
+        &migrator_a,
+        "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT metadata_extra_check",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+
+    owner_query(
+        &migrator_a,
+        "CREATE SCHEMA codex_typed_fixture AUTHORIZATION codex_owner; CREATE TYPE codex_typed_fixture.codex_meta_type AS (singleton BOOLEAN, format_version INTEGER, min_reader_version INTEGER, min_writer_version INTEGER); DROP TABLE codex_storage.codex_schema_meta; CREATE TABLE codex_storage.codex_schema_meta OF codex_typed_fixture.codex_meta_type (CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (singleton), CONSTRAINT codex_schema_meta_singleton_check CHECK (singleton), CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0), CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0), CONSTRAINT codex_schema_meta_min_writer_version_check CHECK (min_writer_version > 0)); INSERT INTO codex_storage.codex_schema_meta VALUES (TRUE, 1, 1, 1)",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::IncompatibleNamespace)
+    );
+    owner_query(
+        &migrator_a,
+        "DROP TABLE codex_storage.codex_schema_meta; DROP SCHEMA codex_typed_fixture CASCADE; CREATE TABLE codex_storage.codex_schema_meta (singleton BOOLEAN DEFAULT TRUE, format_version INTEGER NOT NULL, min_reader_version INTEGER NOT NULL, min_writer_version INTEGER NOT NULL, CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (singleton), CONSTRAINT codex_schema_meta_singleton_check CHECK (singleton), CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0), CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0), CONSTRAINT codex_schema_meta_min_writer_version_check CHECK (min_writer_version > 0)); INSERT INTO codex_storage.codex_schema_meta VALUES (TRUE, 1, 1, 1); REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime, codex_backup; GRANT SELECT ON codex_storage.codex_schema_meta TO codex_runtime, codex_backup",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+
+    owner_query(
+        &migrator_a,
+        "CREATE SCHEMA codex_typed_history_fixture AUTHORIZATION codex_owner; CREATE TYPE codex_typed_history_fixture.codex_history_type AS (version BIGINT, description TEXT, installed_on TIMESTAMPTZ, success BOOLEAN, checksum BYTEA, execution_time BIGINT); CREATE TABLE codex_typed_history_fixture.history_saved AS TABLE codex_storage._codex_pg_migrations; DROP TABLE codex_storage._codex_pg_migrations; CREATE TABLE codex_storage._codex_pg_migrations OF codex_typed_history_fixture.codex_history_type (version WITH OPTIONS NOT NULL, description WITH OPTIONS NOT NULL, installed_on WITH OPTIONS DEFAULT CURRENT_TIMESTAMP NOT NULL, success WITH OPTIONS NOT NULL, checksum WITH OPTIONS NOT NULL, execution_time WITH OPTIONS NOT NULL, CONSTRAINT _codex_pg_migrations_pkey PRIMARY KEY (version)); INSERT INTO codex_storage._codex_pg_migrations SELECT * FROM codex_typed_history_fixture.history_saved",
+    )
+    .await;
+    assert_eq!(
+        bootstrap_codex_storage(&migrator_a).await,
+        Err(BootstrapError::IncompatibleNamespace)
+    );
+    owner_query(
+        &migrator_a,
+        "DROP TABLE codex_storage._codex_pg_migrations; CREATE TABLE codex_storage._codex_pg_migrations (version BIGINT NOT NULL PRIMARY KEY, description TEXT NOT NULL, installed_on TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, success BOOLEAN NOT NULL, checksum BYTEA NOT NULL, execution_time BIGINT NOT NULL); INSERT INTO codex_storage._codex_pg_migrations SELECT * FROM codex_typed_history_fixture.history_saved; DROP SCHEMA codex_typed_history_fixture CASCADE; REVOKE ALL ON codex_storage._codex_pg_migrations FROM codex_runtime, codex_backup; GRANT SELECT ON codex_storage._codex_pg_migrations TO codex_backup",
+    )
+    .await;
+    assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
+
     owner_query(
         &migrator_a,
         "REVOKE USAGE ON SCHEMA codex_storage FROM codex_runtime, codex_backup",
@@ -364,6 +641,11 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     )
     .await;
     for (damage, repair, expected_error) in [
+        (
+            "ALTER TABLE codex_storage._codex_pg_migrations ADD COLUMN required_probe TEXT NOT NULL DEFAULT 'present'; ALTER TABLE codex_storage._codex_pg_migrations ALTER COLUMN required_probe DROP DEFAULT",
+            "ALTER TABLE codex_storage._codex_pg_migrations DROP COLUMN required_probe",
+            BootstrapError::IncompatibleNamespace,
+        ),
         (
             "ALTER TABLE codex_storage._codex_pg_migrations ADD CONSTRAINT history_version_limit CHECK (version <= 1)",
             "ALTER TABLE codex_storage._codex_pg_migrations DROP CONSTRAINT history_version_limit",
