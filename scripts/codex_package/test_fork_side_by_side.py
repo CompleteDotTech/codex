@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -26,6 +27,7 @@ IDENTITY = {
 }
 
 
+@unittest.skipUnless(sys.platform == "linux", "Linux descriptor-pinned stage")
 class SideBySideStageTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -56,15 +58,18 @@ class SideBySideStageTest(unittest.TestCase):
             file.parent.mkdir(exist_ok=True)
             file.write_bytes(name.encode())
         seal_fork_package(self.package, IDENTITY)
+        self.digest = hashlib.sha256(
+            (self.package / "codex-fork-package.json").read_bytes()
+        ).hexdigest()
 
     def test_stage_is_inactive_and_external_receipt_matches(self) -> None:
-        slot = stage_fork_package(self.package, self.install)
+        slot = stage_fork_package(self.package, self.install, self.digest)
         verify_staged_fork_package(self.install, slot.name)
         self.assertFalse((slot / "receipt.json").exists())
         receipt = self.install / "fork-receipts" / (slot.name + ".json")
         self.assertFalse(json.loads(receipt.read_text())["active"])
         with self.assertRaises(FileExistsError):
-            stage_fork_package(self.package, self.install)
+            stage_fork_package(self.package, self.install, self.digest)
         (slot / "bin/codex.exe").write_bytes(b"tampered")
         with self.assertRaisesRegex(ValueError, "checksum"):
             verify_staged_fork_package(self.install, slot.name)
@@ -75,24 +80,36 @@ class SideBySideStageTest(unittest.TestCase):
             side_effect=OSError("interrupted"),
         ):
             with self.assertRaisesRegex(OSError, "interrupted"):
-                stage_fork_package(self.package, self.install)
+                stage_fork_package(self.package, self.install, self.digest)
         with self.assertRaises(FileExistsError):
-            stage_fork_package(self.package, self.install)
+            stage_fork_package(self.package, self.install, self.digest)
         self.assertEqual(list((self.install / "fork-receipts").iterdir()), [])
 
     def test_existing_unknown_install_is_preserved(self) -> None:
-        slot = stage_fork_package(self.package, self.install)
+        slot = stage_fork_package(self.package, self.install, self.digest)
         sentinel = slot / "sentinel"
         sentinel.write_text("keep")
         with self.assertRaises(FileExistsError):
-            stage_fork_package(self.package, self.install)
+            stage_fork_package(self.package, self.install, self.digest)
         self.assertEqual(sentinel.read_text(), "keep")
 
     @unittest.skipUnless(os.name == "posix", "POSIX permissions")
     def test_shared_root_is_rejected(self) -> None:
         self.install.chmod(0o755)
         with self.assertRaisesRegex(ValueError, "owner-private"):
-            stage_fork_package(self.package, self.install)
+            stage_fork_package(self.package, self.install, self.digest)
+
+    def test_rejects_unpinned_manifest_and_overlapping_root(self) -> None:
+        with self.assertRaisesRegex(ValueError, "authenticated digest"):
+            stage_fork_package(self.package, self.install, "0" * 64)
+        self.package.chmod(0o700)
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            stage_fork_package(self.package, self.package, self.digest)
+
+    def test_readback_does_not_create_missing_receipt_directory(self) -> None:
+        with self.assertRaises(FileNotFoundError):
+            verify_staged_fork_package(self.install, self.digest)
+        self.assertFalse((self.install / "fork-receipts").exists())
 
 
 if __name__ == "__main__":
