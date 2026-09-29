@@ -65,6 +65,18 @@ no multi-archive or checksum transaction. Other platforms and release-channel
 authentication remain unimplemented; the builder continues to refuse fork
 archive output everywhere.
 
+`fork_side_by_side.py` also provides an inactive staging primitive for a
+caller-authenticated package directory. The caller supplies an existing private
+install root. Staging reserves a content-named slot under `fork-slots`, copies
+and re-verifies the package, and writes an inactive ownership receipt under
+`fork-receipts`. Neither directory is added to PATH or selected by Codex. Any
+existing slot or receipt, including one left by interruption, blocks another
+attempt until a future reconciler handles it explicitly. The receipt records
+integrity and ownership intent, not release authentication, operating-system
+ACL proof, or permission to execute the package. On Unix, the root must be
+owner-private and package modes must be verifiable. This stage does not provide
+upgrade, activation, uninstall, or a release installer entry point.
+
 If `--target` is omitted, the builder uses the release target for the current
 host platform. On Linux, that default is a musl target to match Codex release
 artifacts; pass a GNU Linux target explicitly for native glibc local builds. If
