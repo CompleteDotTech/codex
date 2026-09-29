@@ -7,6 +7,9 @@ from pathlib import Path
 
 from .archive import write_archive
 from .cargo import build_source_binaries
+from .fork_identity import seal_fork_package
+from .fork_identity import source_identity
+from .fork_identity import verify_fork_package
 from .layout import build_package_dir
 from .layout import prepare_package_dir
 from .layout import validate_package_dir
@@ -87,6 +90,19 @@ def parse_args() -> argparse.Namespace:
             "Optional archive output path. May be repeated. Supported suffixes: "
             ".tar.gz, .tgz, .tar.zst, .zip."
         ),
+    )
+    parser.add_argument(
+        "--fork-base-commit",
+        help=(
+            "Opt in to a CompleteDotTech directory candidate using a full "
+            "caller-declared ancestor commit. This does not authenticate upstream."
+        ),
+    )
+    parser.add_argument(
+        "--fork-channel",
+        choices=("preview", "stable"),
+        default="preview",
+        help="Identity label for an opt-in fork package; not an update selector.",
     )
     parser.add_argument(
         "--force",
@@ -174,6 +190,28 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.fork_base_commit is not None:
+        if args.archive_output:
+            raise ValueError("fork candidate archives are not yet qualified")
+        overrides = (
+            args.entrypoint_bin,
+            args.code_mode_host_bin,
+            args.bwrap_bin,
+            args.codex_command_runner_bin,
+            args.codex_windows_sandbox_setup_bin,
+            args.rg_bin,
+            args.zsh_bin,
+            args.zsh_manifest,
+        )
+        if any(value is not None for value in overrides):
+            raise ValueError(
+                "fork candidates require source-built and pinned package inputs"
+            )
+    fork_identity = (
+        source_identity(args.fork_base_commit, args.fork_channel)
+        if args.fork_base_commit is not None
+        else None
+    )
     spec = TARGET_SPECS[getattr(args, "target", None) or default_target()]
     variant = PACKAGE_VARIANTS[args.variant]
     package_dir_arg = getattr(args, "package_dir", None)
@@ -228,6 +266,11 @@ def main() -> int:
     validate_package_dir(
         package_dir, variant, spec, include_zsh=inputs.zsh_bin is not None
     )
+    if fork_identity is not None:
+        if source_identity(args.fork_base_commit, args.fork_channel) != fork_identity:
+            raise ValueError("fork candidate source changed during package build")
+        seal_fork_package(package_dir, fork_identity)
+        verify_fork_package(package_dir)
 
     for archive_output in args.archive_output:
         archive_path = archive_output.resolve()
