@@ -63,8 +63,15 @@ class ForkArchivePublicationTest(unittest.TestCase):
         seal_fork_package(self.package, IDENTITY)
         self.source = self.root / "source.zip"
         write_archive(self.package, self.source, force=False)
-        self.parent = self.root / "output"
-        self.parent.mkdir()
+        cross_device_root = Path("/dev/shm")
+        if (
+            not cross_device_root.is_dir()
+            or os.stat(cross_device_root).st_dev == os.stat(self.package).st_dev
+        ):
+            self.skipTest("distinct writable filesystem unavailable")
+        output_temporary = tempfile.TemporaryDirectory(dir=cross_device_root)
+        self.addCleanup(output_temporary.cleanup)
+        self.parent = Path(output_temporary.name)
         self.directory_fd = os.open(self.parent, os.O_RDONLY | os.O_DIRECTORY)
         self.addCleanup(os.close, self.directory_fd)
         self.name = "candidate.zip"
@@ -110,7 +117,7 @@ class ForkArchivePublicationTest(unittest.TestCase):
         from codex_package import fork_archive_publication
 
         real_rename = fork_archive_publication.rename_noreplace
-        moved = self.root / "moved-output"
+        moved = self.parent.with_name(self.parent.name + "-moved")
         hijack = self.root / "hijack"
         hijack.mkdir()
 
@@ -126,17 +133,55 @@ class ForkArchivePublicationTest(unittest.TestCase):
         self.assertFalse((hijack / self.name).exists())
         self.assertEqual((moved / self.name).read_bytes(), self.source.read_bytes())
         verify_publication_receipt(self.directory_fd, receipt)
+        self.parent.unlink()
+        moved.rename(self.parent)
 
     def test_rejects_destination_inside_sealed_package(self) -> None:
         inside_fd = os.open(self.package / "bin", os.O_RDONLY | os.O_DIRECTORY)
         try:
-            with self.assertRaisesRegex(ValueError, "inside the sealed package"):
+            with self.assertRaisesRegex(ValueError, "different filesystem"):
                 publish_verified_fork_archive_linux(
                     self.package, self.source, inside_fd, self.name
                 )
         finally:
             os.close(inside_fd)
         self.assertFalse((self.package / "bin" / self.name).exists())
+
+    def test_rejects_same_filesystem_even_outside_package(self) -> None:
+        sibling = self.root / "same-device-output"
+        sibling.mkdir()
+        same_fd = os.open(sibling, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with self.assertRaisesRegex(ValueError, "different filesystem"):
+                publish_verified_fork_archive_linux(
+                    self.package, self.source, same_fd, self.name
+                )
+        finally:
+            os.close(same_fd)
+        self.assertFalse((sibling / self.name).exists())
+
+    def test_cross_device_parent_cannot_move_into_package_before_publish(self) -> None:
+        from codex_package import fork_archive_publication
+
+        real_rename = fork_archive_publication.rename_noreplace
+        attempted = False
+
+        def try_move_into_package(*args):
+            nonlocal attempted
+            attempted = True
+            with self.assertRaises(OSError) as context:
+                self.parent.rename(self.package / "bin/output")
+            self.assertEqual(context.exception.errno, errno.EXDEV)
+            return real_rename(*args)
+
+        with patch.object(
+            fork_archive_publication,
+            "rename_noreplace",
+            side_effect=try_move_into_package,
+        ):
+            receipt = self.publish()
+        self.assertTrue(attempted)
+        verify_publication_receipt(self.directory_fd, receipt)
 
     def test_receipt_detects_late_replacement(self) -> None:
         receipt = self.publish()

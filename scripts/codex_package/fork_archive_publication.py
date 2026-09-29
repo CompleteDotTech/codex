@@ -46,7 +46,13 @@ def publish_verified_fork_archive_linux(
 
     package_fd = os.open(package_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        if is_descendant(destination_dir_fd, os.fstat(package_fd)):
+        package_identity = os.fstat(package_fd)
+        if directory.st_dev == package_identity.st_dev:
+            raise ValueError(
+                "fork archive destination must be on a different filesystem "
+                "from the sealed package"
+            )
+        if is_descendant(destination_dir_fd, package_identity):
             raise ValueError("fork archive destination is inside the sealed package")
         expected_digest = verify_fork_archive(package_dir, source_archive)
         source_fd = os.open(source_archive, os.O_RDONLY | os.O_NOFOLLOW)
@@ -80,7 +86,7 @@ def publish_verified_fork_archive_linux(
                 )
                 if not same_inode(staged, named_stage):
                     raise ValueError("fork archive staging name changed")
-                if is_descendant(destination_dir_fd, os.fstat(package_fd)):
+                if is_descendant(destination_dir_fd, package_identity):
                     raise ValueError("fork archive destination moved inside package")
                 rename_noreplace(destination_dir_fd, stage_name, name)
                 os.fsync(destination_dir_fd)
