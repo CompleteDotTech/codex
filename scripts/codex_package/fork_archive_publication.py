@@ -41,7 +41,7 @@ def publish_verified_fork_archive_linux(
     directory = os.fstat(destination_dir_fd)
     if not stat.S_ISDIR(directory.st_mode):
         raise ValueError("fork archive destination descriptor is not a directory")
-    if directory.st_uid != os.getuid() or directory.st_mode & 0o022:
+    if directory.st_uid != os.getuid() or directory.st_mode & 0o077:
         raise ValueError("fork archive destination directory must be owner-private")
 
     package_fd = os.open(package_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -54,7 +54,10 @@ def publish_verified_fork_archive_linux(
             )
         if is_descendant(destination_dir_fd, package_identity):
             raise ValueError("fork archive destination is inside the sealed package")
-        expected_digest = verify_fork_archive(package_dir, source_archive)
+        pinned_package_dir = Path(f"/proc/self/fd/{package_fd}")
+        expected_digest = verify_fork_archive(
+            pinned_package_dir, source_archive, pinned_root_fd=package_fd
+        )
         source_fd = os.open(source_archive, os.O_RDONLY | os.O_NOFOLLOW)
         try:
             if not stat.S_ISREG(os.fstat(source_fd).st_mode):

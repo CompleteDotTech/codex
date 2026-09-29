@@ -18,9 +18,11 @@ from .fork_identity import verify_fork_package
 from .targets import TARGET_SPECS
 
 
-def verify_fork_archive(package_dir: Path, archive_path: Path) -> str:
+def verify_fork_archive(
+    package_dir: Path, archive_path: Path, *, pinned_root_fd: int | None = None
+) -> str:
     """Check a sealed directory and archive, returning the archive's SHA-256."""
-    verification = verify_fork_package(package_dir)
+    verification = verify_fork_package(package_dir, pinned_root_fd=pinned_root_fd)
     manifest_bytes = (package_dir / MANIFEST_NAME).read_bytes()
     if json.loads(manifest_bytes) != verification.manifest:
         raise ValueError("fork manifest changed after directory verification")

@@ -97,14 +97,28 @@ def seal_fork_package(package_dir: Path, identity: dict[str, object]) -> None:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
-def verify_fork_package(package_dir: Path) -> ForkPackageVerification:
+def verify_fork_package(
+    package_dir: Path, *, pinned_root_fd: int | None = None
+) -> ForkPackageVerification:
     """Reject incomplete, extended, or byte-modified packages without executing them."""
+    if pinned_root_fd is not None:
+        if os.name != "posix" or package_dir != Path(f"/proc/self/fd/{pinned_root_fd}"):
+            raise ValueError("fork package pinned root descriptor is invalid")
+        pinned = os.fstat(pinned_root_fd)
+        root = os.stat(package_dir)
+        if not stat.S_ISDIR(pinned.st_mode) or (
+            root.st_dev,
+            root.st_ino,
+        ) != (pinned.st_dev, pinned.st_ino):
+            raise ValueError("fork package pinned root descriptor is invalid")
     manifest_path = package_dir / MANIFEST_NAME
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ValueError("missing regular fork package manifest")
     if manifest_path.stat().st_size > 4 * 1024 * 1024:
         raise ValueError("fork package manifest exceeds size limit")
-    actual, directories = package_tree(package_dir, exclude_manifest=True)
+    actual, directories = package_tree(
+        package_dir, exclude_manifest=True, pinned_root_fd=pinned_root_fd
+    )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if (
         not isinstance(manifest, dict)
@@ -279,9 +293,14 @@ def check_package_shape(
 
 
 def package_tree(
-    package_dir: Path, *, exclude_manifest: bool = False
+    package_dir: Path,
+    *,
+    exclude_manifest: bool = False,
+    pinned_root_fd: int | None = None,
 ) -> tuple[dict[str, Path], dict[str, Path]]:
-    if package_dir.is_symlink() or not package_dir.is_dir():
+    if (
+        package_dir.is_symlink() and pinned_root_fd is None
+    ) or not package_dir.is_dir():
         raise ValueError("fork package root is not a regular directory")
     files = {}
     directories = {}

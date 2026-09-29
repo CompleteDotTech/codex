@@ -4,6 +4,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
 import tempfile
@@ -137,6 +138,7 @@ class ForkArchivePublicationTest(unittest.TestCase):
         moved.rename(self.parent)
 
     def test_rejects_destination_inside_sealed_package(self) -> None:
+        (self.package / "bin").chmod(0o700)
         inside_fd = os.open(self.package / "bin", os.O_RDONLY | os.O_DIRECTORY)
         try:
             with self.assertRaisesRegex(ValueError, "different filesystem"):
@@ -150,6 +152,7 @@ class ForkArchivePublicationTest(unittest.TestCase):
     def test_rejects_same_filesystem_even_outside_package(self) -> None:
         sibling = self.root / "same-device-output"
         sibling.mkdir()
+        sibling.chmod(0o700)
         same_fd = os.open(sibling, os.O_RDONLY | os.O_DIRECTORY)
         try:
             with self.assertRaisesRegex(ValueError, "different filesystem"):
@@ -215,8 +218,8 @@ class ForkArchivePublicationTest(unittest.TestCase):
 
         real_verify = verify_fork_archive
 
-        def mutate_after_verification(package, archive):
-            digest = real_verify(package, archive)
+        def mutate_after_verification(package, archive, **kwargs):
+            digest = real_verify(package, archive, **kwargs)
             archive.write_bytes(b"mutated")
             return digest
 
@@ -230,14 +233,57 @@ class ForkArchivePublicationTest(unittest.TestCase):
         self.assertFalse((self.parent / self.name).exists())
 
     def test_rejects_shared_directory_and_invalid_name(self) -> None:
-        self.parent.chmod(0o777)
-        with self.assertRaisesRegex(ValueError, "owner-private"):
-            self.publish()
-        self.parent.chmod(0o755)
+        for mode in (0o755, 0o777):
+            with self.subTest(mode=mode):
+                self.parent.chmod(mode)
+                with self.assertRaisesRegex(ValueError, "owner-private"):
+                    self.publish()
+        self.parent.chmod(0o700)
         with self.assertRaisesRegex(ValueError, "single filename"):
             publish_verified_fork_archive_linux(
                 self.package, self.source, self.directory_fd, "../candidate.zip"
             )
+
+    def test_package_path_swap_cannot_verify_other_package(self) -> None:
+        from codex_package import fork_archive_publication
+
+        # B lives on the destination filesystem; A remains open through its fd.
+        shutil.copytree(self.package, self.parent, dirs_exist_ok=True)
+        self.parent.chmod(0o700)
+        (self.parent / "codex-fork-package.json").unlink()
+        (self.parent / "bin/codex.exe").write_bytes(b"alternate binary")
+        seal_fork_package(self.parent, IDENTITY)
+        alternate_archive = self.root / "alternate.zip"
+        write_archive(self.parent, alternate_archive, force=False)
+        original_package = self.package
+        moved_package = self.root / "package-moved"
+        real_verify = verify_fork_archive
+
+        def swap_before_verify(package, archive, **kwargs):
+            original_package.rename(moved_package)
+            original_package.symlink_to(self.parent, target_is_directory=True)
+            return real_verify(package, archive, **kwargs)
+
+        try:
+            with patch.object(
+                fork_archive_publication,
+                "verify_fork_archive",
+                side_effect=swap_before_verify,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError, "byte mismatch|checksum differs"
+                ):
+                    publish_verified_fork_archive_linux(
+                        original_package,
+                        alternate_archive,
+                        self.directory_fd,
+                        self.name,
+                    )
+            self.assertFalse((self.parent / self.name).exists())
+        finally:
+            if original_package.is_symlink():
+                original_package.unlink()
+                moved_package.rename(original_package)
 
 
 class UnsupportedPlatformTest(unittest.TestCase):
