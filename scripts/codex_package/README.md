@@ -50,6 +50,21 @@ overrides remain refused by the builder. A future release channel must
 authenticate the manifest before downloads or installation can trust it. This
 option does not activate the fork installer, updater, or PostgreSQL storage.
 
+`fork_archive_publication.py` contains an inactive Linux helper for publishing
+one already verified archive into a caller-held, owner-private directory
+descriptor. It binds the final entry to that directory's inode and the verified
+bytes, and uses `renameat2(RENAME_NOREPLACE)` to avoid replacing a competing
+entry. The destination must be on a different filesystem from the sealed
+package, preventing a directory rename into that package during publication.
+The returned receipt can be rechecked through the same descriptor only as a
+point-in-time observation. It does not authorize a later pathname open or
+execution; a future consumer needs an owned verified descriptor or an exclusive
+publication fence. Failed attempts may leave a staged or final file for
+explicit reconciliation. There is
+no multi-archive or checksum transaction. Other platforms and release-channel
+authentication remain unimplemented; the builder continues to refuse fork
+archive output everywhere.
+
 If `--target` is omitted, the builder uses the release target for the current
 host platform. On Linux, that default is a musl target to match Codex release
 artifacts; pass a GNU Linux target explicitly for native glibc local builds. If
