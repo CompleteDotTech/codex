@@ -5,6 +5,26 @@ use super::*;
 const MAX_RETAINED_BLANK_SESSIONS: usize = 8;
 
 impl App {
+    pub(in crate::app) async fn finish_blank_session_attachment<T>(
+        &mut self,
+        app_server: &mut AppServerSession,
+        started: &crate::app_server_session::AppServerStartedThread,
+        result: Result<T>,
+    ) -> Result<T> {
+        if result.is_err() {
+            let thread_id = started.session.thread_id;
+            self.agents_overview.blank_sessions.remove(&thread_id);
+            self.agents_overview
+                .blank_session_order
+                .retain(|id| *id != thread_id);
+            let _ = app_server.thread_unsubscribe(thread_id).await;
+            if started.persisted_on_start {
+                let _ = app_server.thread_archive(thread_id).await;
+            }
+        }
+        result
+    }
+
     pub(in crate::app) async fn retain_blank_session(
         &mut self,
         app_server: &mut AppServerSession,

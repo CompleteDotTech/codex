@@ -1,10 +1,104 @@
 use super::*;
 use crate::app::test_support::make_test_app;
+use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ThreadListParams;
+use codex_app_server_protocol::ThreadListResponse;
+use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadUnsubscribeParams;
 use codex_app_server_protocol::ThreadUnsubscribeResponse;
 use codex_app_server_protocol::ThreadUnsubscribeStatus;
 use pretty_assertions::assert_eq;
+
+#[tokio::test]
+async fn failed_attachment_archives_new_durable_session_without_losing_previous_draft() -> Result<()>
+{
+    let mut app = make_test_app().await;
+    let mut server = Box::pin(crate::start_embedded_app_server_for_picker(&app.config)).await?;
+    let previous = server.start_thread(&app.config).await?;
+    let previous_id = previous.session.thread_id;
+    app.retain_blank_session(&mut server, previous).await;
+    app.chat_widget
+        .apply_external_edit("previous draft".to_string());
+    let failed = server.start_thread(&app.config).await?;
+    let failed_id = failed.session.thread_id;
+    assert!(failed.persisted_on_start);
+    app.retain_blank_session(&mut server, failed.clone()).await;
+
+    // Both attachment entry points pass their fallible terminal result through this boundary.
+    // Inject an I/O error without replacing the process-wide stdout used by other tests.
+    let attachment: Result<()> = Err(std::io::Error::other("attachment failed").into());
+    let error = app
+        .finish_blank_session_attachment(&mut server, &failed, attachment)
+        .await
+        .expect_err("attachment failure must still propagate");
+    assert_eq!(error.to_string(), "attachment failed");
+    assert_eq!(
+        app.agents_overview
+            .blank_sessions
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![previous_id]
+    );
+    assert_eq!(
+        app.agents_overview
+            .blank_session_order
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![previous_id]
+    );
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "previous draft"
+    );
+    let loaded = server
+        .thread_loaded_list(ThreadLoadedListParams {
+            cursor: None,
+            limit: None,
+        })
+        .await?;
+    assert!(loaded.data.contains(&previous_id.to_string()));
+    assert!(!loaded.data.contains(&failed_id.to_string()));
+    let archived: ThreadListResponse = server
+        .request_handle()
+        .request_typed(ClientRequest::ThreadList {
+            request_id: RequestId::String("verify-failed-attachment-archive".to_string()),
+            params: ThreadListParams {
+                originators: None,
+                cursor: None,
+                limit: Some(100),
+                sort_key: None,
+                sort_direction: None,
+                model_providers: Some(Vec::new()),
+                source_kinds: None,
+                archived: Some(true),
+                section_id: None,
+                project_id: None,
+                parent_thread_id: None,
+                ancestor_thread_id: None,
+                cwd: None,
+                use_state_db_only: false,
+                search_term: None,
+            },
+        })
+        .await?;
+    assert!(
+        archived
+            .data
+            .iter()
+            .any(|thread| thread.id == failed_id.to_string())
+    );
+    assert!(
+        !archived
+            .data
+            .iter()
+            .any(|thread| thread.id == previous_id.to_string())
+    );
+    server.shutdown().await?;
+    Ok(())
+}
 
 #[tokio::test]
 async fn older_server_rejects_persistence_then_accepts_retry() -> Result<()> {
