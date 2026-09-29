@@ -4244,6 +4244,7 @@ dependencies = [
  "sqlx-sqlite",
  "tempfile",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -4681,8 +4682,10 @@ dependencies = [
  "codex-keyring-store",
  "codex-postgres-runtime",
  "codex-storage-authority",
+ "ed25519-dalek",
  "pretty_assertions",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "toml 0.9.11+spec-1.1.0",

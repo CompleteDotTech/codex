@@ -5,19 +5,47 @@ use codex_config::ConfigRequirements;
 use codex_config::ConfigRequirementsToml;
 use codex_keyring_store::KeyringStore;
 use codex_keyring_store::tests::MockKeyringStore;
+use codex_postgres_runtime::verify_target_artifact;
+use ed25519_dalek::Signer as _;
+use ed25519_dalek::SigningKey;
 use pretty_assertions::assert_eq;
+use serde_json::json;
+use sha2::Digest as _;
+use sha2::Sha256;
 use std::path::Path;
 
 const SERVICE: &str = "codex-postgres-storage";
 const ACCOUNT: &str = "bridge_fixture";
 
-fn capabilities() -> ClientCapabilities {
-    ClientCapabilities {
-        min_schema_format: 1,
-        max_schema_format: 5,
-        reader_version: 5,
-        writer_version: 5,
-    }
+fn signed_target() -> (tempfile::TempDir, VerifiedTarget) {
+    let directory = tempfile::tempdir().unwrap();
+    let artifact = directory.path().join("fixture-codex");
+    let contents = b"test-only codex binary";
+    std::fs::write(&artifact, contents).unwrap();
+    let digest = Sha256::digest(contents);
+    let manifest = serde_json::to_vec(&json!({
+        "kind": "codex-storage-target-v1",
+        "product": "CompleteDotTech/codex",
+        "release": "fixture-v5",
+        "artifact_sha256": format!("{digest:x}"),
+        "min_schema_format": 5,
+        "max_schema_format": 5,
+        "reader_version": 5,
+        "writer_version": 5,
+    }))
+    .unwrap();
+    let key = SigningKey::from_bytes(&[7_u8; 32]);
+    let mut signed = b"codex-storage-target-manifest-v1\0".to_vec();
+    signed.extend_from_slice(&manifest);
+    let signature = key.sign(&signed).to_bytes();
+    let target = verify_target_artifact(
+        &manifest,
+        &signature,
+        &artifact,
+        &key.verifying_key().to_bytes(),
+    )
+    .unwrap();
+    (directory, target)
 }
 
 fn remote(port: u16, namespace: &str, ca: Option<&Path>) -> String {
@@ -52,6 +80,7 @@ fn user_source() -> ConfigLayerSource {
 
 #[tokio::test]
 async fn unsupported_and_missing_inputs_fail_before_secret_lookup_or_network() {
+    let (_artifact, target) = signed_target();
     let keyring = MockKeyringStore::default();
     let resolver = HostCredentialResolver::new(&keyring);
     let ca = tempfile::tempdir().unwrap();
@@ -60,7 +89,7 @@ async fn unsupported_and_missing_inputs_fail_before_secret_lookup_or_network() {
         preflight_trusted_candidate(
             &stack(&candidate, user_source()).unwrap(),
             &resolver,
-            capabilities()
+            &target
         )
         .await,
         Err(CandidatePreflightError::UnsupportedNamespace)
@@ -70,7 +99,7 @@ async fn unsupported_and_missing_inputs_fail_before_secret_lookup_or_network() {
         preflight_trusted_candidate(
             &stack(&candidate, user_source()).unwrap(),
             &resolver,
-            capabilities()
+            &target
         )
         .await,
         Err(CandidatePreflightError::ExplicitCaRequired)
@@ -80,7 +109,7 @@ async fn unsupported_and_missing_inputs_fail_before_secret_lookup_or_network() {
         preflight_trusted_candidate(
             &stack(&candidate, user_source()).unwrap(),
             &resolver,
-            capabilities()
+            &target
         )
         .await,
         Err(CandidatePreflightError::Credential(
@@ -99,7 +128,7 @@ async fn unsupported_and_missing_inputs_fail_before_secret_lookup_or_network() {
             )
             .unwrap(),
             &resolver,
-            capabilities(),
+            &target,
         )
         .await,
         Err(CandidatePreflightError::NoRemoteCandidate)
@@ -112,6 +141,7 @@ async fn wrong_credential_reports_only_a_redacted_connection_error() {
         return;
     };
     let state = Path::new(&state);
+    let (_artifact, target) = signed_target();
     let receipt: serde_json::Value =
         serde_json::from_slice(&std::fs::read(state.join("receipt.json")).unwrap()).unwrap();
     let port = receipt["port"].as_u64().unwrap() as u16;
@@ -128,7 +158,7 @@ async fn wrong_credential_reports_only_a_redacted_connection_error() {
     let error = preflight_trusted_candidate(
         &stack(&candidate, user_source()).unwrap(),
         &resolver,
-        capabilities(),
+        &target,
     )
     .await
     .unwrap_err();
@@ -145,6 +175,7 @@ async fn preprovisioned_named_namespace_is_checked_without_activation() {
         return;
     };
     let state = Path::new(&state);
+    let (_artifact, target) = signed_target();
     let receipt: serde_json::Value =
         serde_json::from_slice(&std::fs::read(state.join("receipt.json")).unwrap()).unwrap();
     let port = receipt["port"].as_u64().unwrap() as u16;
@@ -161,7 +192,7 @@ async fn preprovisioned_named_namespace_is_checked_without_activation() {
     let result = preflight_trusted_candidate(
         &stack(&candidate, user_source()).unwrap(),
         &resolver,
-        capabilities(),
+        &target,
     )
     .await
     .unwrap();

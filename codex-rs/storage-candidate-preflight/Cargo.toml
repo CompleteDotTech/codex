@@ -17,8 +17,10 @@ codex-storage-authority = { workspace = true }
 
 [dev-dependencies]
 codex-keyring-store = { workspace = true }
+ed25519-dalek = { workspace = true }
 pretty_assertions = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 toml = { workspace = true }

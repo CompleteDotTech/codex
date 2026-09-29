@@ -27,6 +27,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::timeout;
+use zeroize::Zeroizing;
 
 mod bootstrap;
 pub use bootstrap::BootstrapError;
@@ -64,9 +65,37 @@ pub struct ConnectionSettings {
     pub port: u16,
     pub database: String,
     pub username: String,
-    pub password: String,
+    pub password: SecretPassword,
     pub ca_certificate: PathBuf,
     pub limits: PoolLimits,
+}
+
+/// A zeroizing owner for a host-resolved password. SQLx may retain its own
+/// driver-managed copy after connection options are constructed.
+pub struct SecretPassword(Zeroizing<String>);
+
+impl SecretPassword {
+    fn expose(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl From<String> for SecretPassword {
+    fn from(value: String) -> Self {
+        Self(Zeroizing::new(value))
+    }
+}
+
+impl From<Zeroizing<String>> for SecretPassword {
+    fn from(value: Zeroizing<String>) -> Self {
+        Self(value)
+    }
+}
+
+impl fmt::Debug for SecretPassword {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SecretPassword([redacted])")
+    }
 }
 
 impl fmt::Debug for ConnectionSettings {
@@ -155,7 +184,7 @@ impl PostgresPool {
         if !valid_host
             || settings.database.is_empty()
             || settings.username.is_empty()
-            || settings.password.is_empty()
+            || settings.password.expose().is_empty()
             || !settings.ca_certificate.is_absolute()
             || settings.port == 0
             || limits.max_connections == 0
@@ -172,7 +201,7 @@ impl PostgresPool {
             .port(settings.port)
             .database(&settings.database)
             .username(&settings.username)
-            .password(&settings.password)
+            .password(settings.password.expose())
             .ssl_mode(PgSslMode::VerifyFull)
             .ssl_root_cert(&settings.ca_certificate)
             .disable_statement_logging();
