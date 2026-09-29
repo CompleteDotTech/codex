@@ -20,6 +20,9 @@ from .fork_identity import verify_fork_package
 from .targets import TARGET_SPECS
 
 
+MAX_DECOMPRESSED_TAR_BYTES = 4 * 1024 * 1024 * 1024
+
+
 def verify_fork_archive(
     package_dir: Path, archive_path: Path, *, pinned_root_fd: int | None = None
 ) -> str:
@@ -87,12 +90,27 @@ def check_archive_stream(
                 )
                 tar_path = Path(temporary) / "archive.tar"
                 with tar_path.open("wb") as out:
-                    subprocess.run(
+                    with subprocess.Popen(
                         [*resolve_zstd_command(), "-d", "-q", "-c"],
                         stdin=archive_stream,
-                        stdout=out,
-                        check=True,
-                    )
+                        stdout=subprocess.PIPE,
+                    ) as process:
+                        assert process.stdout is not None
+                        written = 0
+                        while chunk := process.stdout.read(
+                            min(1024 * 1024, MAX_DECOMPRESSED_TAR_BYTES - written + 1)
+                        ):
+                            written += len(chunk)
+                            if written > MAX_DECOMPRESSED_TAR_BYTES:
+                                process.kill()
+                                raise ValueError(
+                                    "fork archive decompressed size exceeds limit"
+                                )
+                            out.write(chunk)
+                        if process.wait() != 0:
+                            raise subprocess.CalledProcessError(
+                                process.returncode, process.args
+                            )
                 tar_stream = stack.enter_context(tar_path.open("rb"))
             archive = stack.enter_context(tarfile.open(fileobj=tar_stream, mode="r:*"))
             entries = (

@@ -136,6 +136,19 @@ class ForkArchiveTest(unittest.TestCase):
         write_archive(self.package, output, force=False)
         self.assertEqual(len(verify_fork_archive(self.package, output)), 64)
 
+    def test_rejects_zstd_tar_expansion_over_limit(self) -> None:
+        try:
+            resolve_zstd_command()
+        except RuntimeError:
+            self.skipTest("zstd and DotSlash are unavailable")
+        output = self.root / "candidate.tar.zst"
+        write_archive(self.package, output, force=False)
+        from codex_package import fork_archive
+
+        with patch.object(fork_archive, "MAX_DECOMPRESSED_TAR_BYTES", 512):
+            with self.assertRaisesRegex(ValueError, "decompressed size exceeds limit"):
+                verify_fork_archive(self.package, output)
+
     def test_rejects_serialized_directory_added_after_candidate_check(self) -> None:
         output = self.root / "candidate.tar.gz"
         extra = self.package / "codex-resources/extra"
