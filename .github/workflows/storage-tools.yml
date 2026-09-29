@@ -68,9 +68,63 @@ jobs:
           python scripts/postgres/manage.py --state "$state" init --project "codex-pg-rust-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 56081
           python scripts/postgres/manage.py --state "$state" pin
           python scripts/postgres/manage.py --state "$state" up
+      - name: Provision PostgreSQL integration-test role graph
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts/postgres")
+          from qualification_checks import sql
+
+          state = Path(os.environ["CODEX_TEST_POSTGRES_STATE"])
+          sql(state, Path("scripts/postgres/container/real-bootstrap-test-roles.sql").read_text())
+          PY
       - name: Test PostgreSQL connection pool against real server
         working-directory: codex-rs
         run: just test -p codex-postgres-runtime
+      - name: Verify bootstrap and preflight serialize with restore
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_LOCK_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_restore_lock_serializes_bootstrap_and_preflight
+      - name: Verify archive cleanup after uncertain source mutations
+        run: python -m unittest discover -s scripts/postgres/tests -p test_restore_archive_cleanup_live.py -v
+      - name: Qualify transactional restore guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/codex-pg-focused-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE=%s\n' "$state" >> "$GITHUB_ENV"
+          python scripts/postgres/manage.py --state "$state" init --project "codex-pg-focused-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 16481
+          python scripts/postgres/manage.py --state "$state" pin
+          CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE="$state" python -m unittest discover -s scripts/postgres/tests -p test_restore_access_live.py -v
+          CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE="$state" python -m unittest discover -s scripts/postgres/tests -p test_restore_indirect_access_live.py -v
+          CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE="$state" python -m unittest discover -s scripts/postgres/tests -p test_restore_routine_access_live.py -v
+          CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE="$state" python -m unittest discover -s scripts/postgres/tests -p test_restore_transitive_definers_live.py -v
+      - name: Qualify restore ACLs and fixture cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/codex-pg-rust-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'CODEX_TEST_POSTGRES_RESTORE_STATE=%s\n' "$state" >> "$GITHUB_ENV"
+          python scripts/postgres/manage.py --state "$state" init --project "codex-pg-rust-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 16482
+          python scripts/postgres/manage.py --state "$state" pin
+          python scripts/postgres/manage.py --state "$state" up
+          CODEX_TEST_POSTGRES_RESTORE_STATE="$state" python -m unittest discover -s scripts/postgres/tests -p test_restore_qualification_cleanup_live.py -v
+          RESTORE_STATE="$state" python - <<'PY'
+          import os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "scripts/postgres")
+          from qualification_checks import sql
+          from restore_qualification import qualify_restore_access
+          qualify_restore_access(Path(os.environ["CODEX_TEST_POSTGRES_STATE"]), Path(os.environ["RESTORE_STATE"]))
+          sql(Path(os.environ["RESTORE_STATE"]), Path("scripts/postgres/container/real-bootstrap-test-roles.sql").read_text())
+          PY
+      - name: Verify restored metadata with the real Rust bootstrap
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_STATE="$CODEX_TEST_POSTGRES_RESTORE_STATE" just test -p codex-postgres-runtime real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent
       - name: Test serializable transaction outcomes against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_TRANSACTION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_serializable_conflict_deadlock_and_cancelled_write
@@ -95,9 +149,13 @@ jobs:
         if: always()
         shell: bash
         run: |
-          if [[ -n "${CODEX_TEST_POSTGRES_STATE:-}" && -f "$CODEX_TEST_POSTGRES_STATE/receipt.json" ]]; then
-            python scripts/postgres/manage.py --state "$CODEX_TEST_POSTGRES_STATE" down
-          fi
+          cleanup_status=0
+          for state in "${CODEX_TEST_POSTGRES_STATE:-}" "${CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE:-}" "${CODEX_TEST_POSTGRES_RESTORE_STATE:-}"; do
+            if [[ -n "$state" && -f "$state/receipt.json" ]]; then
+              python scripts/postgres/manage.py --state "$state" down || cleanup_status=1
+            fi
+          done
+          exit "$cleanup_status"
       - name: Start isolated v1 to v2 upgrade fixture
         shell: bash
         run: |
