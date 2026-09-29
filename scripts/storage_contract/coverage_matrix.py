@@ -175,10 +175,12 @@ QUEUE_EDGES = {
             "constraint": "CREATE UNIQUE INDEX queued_items_thread_order_idx",
         },
         "state/src/runtime/queued_items.rs": {
-            "insert": "INSERT INTO queued_items (",
-            "read": "FROM queued_items",
+            "enqueue": "INSERT INTO queued_items (",
+            "list_page": "FROM queued_items",
             "update": "UPDATE queued_items",
             "delete": "DELETE FROM queued_items",
+            "reorder": "UPDATE queued_items SET queue_order = ?, updated_at_ms = ?",
+            "delete_thread_queue": "DELETE FROM queued_items WHERE thread_id = ?",
         },
         "thread-store/src/queue_store.rs": {
             "adapter": "self.queue().list_page(thread_id, offset, limit)",
@@ -193,9 +195,30 @@ QUEUE_EDGES = {
     "queued_thread_revisions": {
         "state/queue_migrations/0002_queued_thread_revisions.sql": {
             "schema": "CREATE TABLE queued_thread_revisions (",
-            "insert_trigger": "CREATE TRIGGER queued_items_revision_after_insert\nAFTER INSERT ON queued_items",
-            "update_trigger": "CREATE TRIGGER queued_items_revision_after_update\nAFTER UPDATE ON queued_items",
-            "delete_trigger": "CREATE TRIGGER queued_items_revision_after_delete\nAFTER DELETE ON queued_items",
+            "insert_trigger": """CREATE TRIGGER queued_items_revision_after_insert
+AFTER INSERT ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (NEW.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
+            "update_trigger": """CREATE TRIGGER queued_items_revision_after_update
+AFTER UPDATE ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (NEW.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
+            "delete_trigger": """CREATE TRIGGER queued_items_revision_after_delete
+AFTER DELETE ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (OLD.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
         },
         "state/src/runtime/queued_items.rs": {
             "revision_read": "SELECT thread_id, revision FROM queued_thread_revisions WHERE revision > ",
