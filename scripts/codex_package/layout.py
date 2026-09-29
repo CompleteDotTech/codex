@@ -100,6 +100,7 @@ def validate_package_dir(
     spec: TargetSpec,
     *,
     include_zsh: bool,
+    check_executable_permissions: bool = True,
 ) -> None:
     required_dirs = [
         Path("bin"),
@@ -162,7 +163,7 @@ def validate_package_dir(
         if not path.is_file():
             raise RuntimeError(f"Missing package file: {relative_file}")
 
-    if not spec.is_windows:
+    if not spec.is_windows and check_executable_permissions:
         for relative_file in executable_files:
             path = package_dir / relative_file
             if not is_executable(path):
