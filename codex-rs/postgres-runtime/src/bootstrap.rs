@@ -3,6 +3,7 @@
 use crate::PoolError;
 use crate::PostgresPool;
 use sqlx::Acquire;
+use sqlx::PgConnection;
 use sqlx::migrate::Migrator;
 use std::borrow::Cow;
 use std::fmt;
@@ -10,7 +11,8 @@ use std::time::Duration;
 use tokio::time::timeout;
 
 pub(crate) const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
-pub(crate) const LOCK_CLASS: i32 = 0x4344_5850; // CDXP; transaction-scoped, independent of SQLx's session lock.
+// The schema-wide lock must match scripts/postgres/container/restore-guard.sql.
+pub(crate) const LOCK_CLASS: i32 = 1_414_676_819;
 pub(crate) const LOCK_RESOURCE: i32 = 1; // Fixed codex_storage metadata namespace.
 const MIGRATIONS_TABLE: &str = "codex_storage._codex_pg_migrations";
 pub(crate) static BASE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
@@ -22,6 +24,7 @@ pub enum BootstrapError {
     Connection(PoolError),
     Privilege,
     IncompatibleNamespace,
+    Unavailable,
     Migration,
 }
 
@@ -40,6 +43,144 @@ fn classify_sqlx(error: &sqlx::Error) -> BootstrapError {
         }
         _ => BootstrapError::Migration,
     }
+}
+
+fn classify_namespace_validation(error: sqlx::Error) -> BootstrapError {
+    match &error {
+        sqlx::Error::Database(error)
+            if matches!(
+                error.code().as_deref(),
+                Some("42P01" | "42703" | "42804" | "42809")
+            ) =>
+        {
+            BootstrapError::IncompatibleNamespace
+        }
+        sqlx::Error::Database(error) if error.code().as_deref() == Some("42501") => {
+            BootstrapError::Privilege
+        }
+        _ => BootstrapError::Unavailable,
+    }
+}
+
+pub(crate) async fn namespace_has_unexpected_objects(
+    connection: &mut PgConnection,
+    permitted_relations: &[&str],
+) -> Result<bool, BootstrapError> {
+    sqlx::query_scalar(
+        "WITH expected_relations AS (
+            SELECT oid FROM pg_class
+            WHERE relnamespace = 'codex_storage'::regnamespace AND relname = ANY($1)
+        ), expected_types AS (
+            SELECT oid FROM pg_type WHERE typrelid IN (SELECT oid FROM expected_relations)
+            UNION SELECT typarray FROM pg_type WHERE typrelid IN (SELECT oid FROM expected_relations)
+        ), namespace_objects AS (
+            SELECT 'pg_class'::regclass AS classid, oid AS objid FROM pg_class
+            WHERE relnamespace = 'codex_storage'::regnamespace
+            UNION SELECT 'pg_type'::regclass, oid FROM pg_type
+            WHERE typnamespace = 'codex_storage'::regnamespace
+            UNION SELECT classid, objid FROM pg_depend
+            WHERE refclassid = 'pg_namespace'::regclass
+              AND refobjid = 'codex_storage'::regnamespace
+              AND NOT (classid = 'pg_default_acl'::regclass AND objid IN (
+                  SELECT oid FROM pg_default_acl
+                  WHERE defaclrole = 'codex_owner'::regrole AND defaclobjtype IN ('r', 'S')
+              ))
+        ) SELECT EXISTS (
+            SELECT 1 FROM namespace_objects
+            WHERE NOT (classid = 'pg_class'::regclass AND objid IN (SELECT oid FROM expected_relations))
+              AND NOT (classid = 'pg_type'::regclass AND objid IN (SELECT oid FROM expected_types))
+        )",
+    )
+    .bind(permitted_relations)
+    .fetch_one(connection)
+    .await
+    .map_err(|error| classify_sqlx(&error))
+}
+
+pub(crate) async fn require_safe_protected_privileges(
+    connection: &mut PgConnection,
+) -> Result<(), BootstrapError> {
+    // Check effective access, including column ACLs, PUBLIC, inherited roles,
+    // and roles either login could assume explicitly.
+    let unsafe_privileges: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM pg_roles
+            WHERE (pg_has_role('codex_runtime', oid, 'USAGE') OR pg_has_role('codex_runtime', oid, 'SET'))
+              AND (
+                has_schema_privilege(oid, 'codex_storage', 'CREATE')
+                OR has_table_privilege(oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,REFERENCES')
+                OR has_table_privilege(oid, 'codex_storage._codex_pg_migrations', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(oid, 'codex_storage._codex_pg_migrations', 'SELECT,INSERT,UPDATE,REFERENCES')
+              )
+        ) OR EXISTS (
+            SELECT 1 FROM pg_roles
+            WHERE (rolname = 'codex_backup'
+                   OR pg_has_role('codex_backup', oid, 'USAGE')
+                   OR pg_has_role('codex_backup', oid, 'SET'))
+              AND (
+                has_schema_privilege(oid, 'codex_storage', 'CREATE')
+                OR has_table_privilege(oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,REFERENCES')
+                OR has_table_privilege(oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,REFERENCES')
+              )
+        ) OR EXISTS (
+            SELECT 1 FROM pg_roles candidate
+            WHERE (candidate.rolname = 'codex_backup'
+                   OR pg_has_role('codex_backup', candidate.oid, 'USAGE')
+                   OR pg_has_role('codex_backup', candidate.oid, 'SET'))
+              AND (pg_has_role(candidate.oid, 'codex_runtime', 'USAGE')
+                   OR pg_has_role(candidate.oid, 'codex_runtime', 'SET'))
+        ) OR EXISTS (
+            SELECT 1 FROM pg_roles candidate
+            WHERE candidate.rolname NOT IN ('codex_owner', 'codex_migrator')
+              AND left(candidate.rolname, 3) <> 'pg_'
+              AND NOT candidate.rolsuper
+              AND (
+                pg_has_role(candidate.oid, 'codex_owner', 'USAGE')
+                OR pg_has_role(candidate.oid, 'codex_owner', 'SET')
+                OR has_schema_privilege(candidate.oid, 'codex_storage', 'CREATE')
+                OR has_table_privilege(candidate.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(candidate.oid, 'codex_storage.codex_schema_meta', 'INSERT,UPDATE,REFERENCES')
+                OR has_table_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER,MAINTAIN')
+                OR has_any_column_privilege(candidate.oid, 'codex_storage._codex_pg_migrations', 'INSERT,UPDATE,REFERENCES')
+              )
+        ) OR EXISTS (
+            WITH RECURSIVE owner_roles(roleid) AS (
+                SELECT 'codex_owner'::regrole
+                UNION
+                SELECT membership.member
+                FROM pg_auth_members membership
+                JOIN owner_roles parent ON parent.roleid = membership.roleid
+            )
+            SELECT 1 FROM pg_auth_members membership
+            JOIN owner_roles parent ON parent.roleid = membership.roleid
+            WHERE membership.admin_option
+              AND membership.member <> 'codex_migrator'::regrole
+        ) OR EXISTS (
+            SELECT 1 FROM pg_class history,
+                 LATERAL aclexplode(coalesce(history.relacl, acldefault('r', history.relowner))) acl
+            WHERE history.oid = 'codex_storage._codex_pg_migrations'::regclass
+              AND acl.privilege_type = 'SELECT'
+              AND acl.is_grantable
+              AND acl.grantee NOT IN ('codex_owner'::regrole, 'codex_migrator'::regrole)
+        ) OR EXISTS (
+            SELECT 1 FROM pg_attribute attribute,
+                 LATERAL aclexplode(attribute.attacl) acl
+            WHERE attribute.attrelid = 'codex_storage._codex_pg_migrations'::regclass
+              AND acl.privilege_type = 'SELECT'
+              AND acl.is_grantable
+              AND acl.grantee NOT IN ('codex_owner'::regrole, 'codex_migrator'::regrole)
+        )",
+    )
+    .fetch_one(connection)
+    .await
+    .map_err(|error| classify_sqlx(&error))?;
+    if unsafe_privileges {
+        return Err(BootstrapError::Privilege);
+    }
+    Ok(())
 }
 
 /// Bootstrap only the preprovisioned schema, using a separate migrator login.
@@ -69,12 +210,13 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             return Err(BootstrapError::IncompatibleNamespace);
         }
 
-        let unexpected_objects: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'codex_storage'::regnamespace AND typtype <> 'b' AND typrelid = 0)",
-        )
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(|error| classify_sqlx(&error))?;
+        // pg_depend covers namespace-scoped objects across catalogs, including
+        // operators, collations, and text search objects. The fixture's known
+        // default ACLs are policy; effective table privileges are checked below.
+        let unexpected_objects = namespace_has_unexpected_objects(
+            &mut transaction,
+            &["_codex_pg_migrations", "_codex_pg_migrations_pkey", "codex_schema_meta", "codex_schema_meta_pkey"],
+        ).await?;
         if unexpected_objects {
             return Err(BootstrapError::IncompatibleNamespace);
         }
@@ -86,22 +228,86 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         .await
         .map_err(|error| classify_sqlx(&error))?;
         if history_exists {
-            let format: Option<i32> = sqlx::query_scalar(
-                "SELECT format_version FROM codex_storage.codex_schema_meta WHERE singleton = TRUE",
-            )
-            .fetch_optional(&mut *transaction)
-            .await
-            .map_err(|_| BootstrapError::IncompatibleNamespace)?;
-            if format != Some(1) {
-                return Err(BootstrapError::IncompatibleNamespace);
-            }
-        } else {
-            let occupied: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = 'codex_storage'::regnamespace) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = 'codex_storage'::regnamespace)",
+            let known_schema_complete: bool = sqlx::query_scalar(
+                "SELECT NOT EXISTS (
+                    SELECT 1 FROM (VALUES
+                        ('codex_schema_meta', 'r'),
+                        ('_codex_pg_migrations', 'r'),
+                        ('codex_schema_meta_pkey', 'i'),
+                        ('_codex_pg_migrations_pkey', 'i')
+                    ) AS required(name, kind)
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM pg_class relation
+                        WHERE relation.relnamespace = 'codex_storage'::regnamespace
+                          AND relation.relname = required.name
+                          AND relation.relkind::text = required.kind
+                          AND relation.relowner = 'codex_owner'::regrole
+                          AND NOT relation.relrowsecurity
+                          AND relation.relpersistence = 'p'
+                    )
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_inherits inheritance
+                    WHERE inheritance.inhrelid IN (
+                        'codex_storage.codex_schema_meta'::regclass,
+                        'codex_storage._codex_pg_migrations'::regclass
+                    ) OR inheritance.inhparent IN (
+                        'codex_storage.codex_schema_meta'::regclass,
+                        'codex_storage._codex_pg_migrations'::regclass
+                    )
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_trigger row_trigger
+                    WHERE row_trigger.tgrelid IN (
+                        'codex_storage.codex_schema_meta'::regclass,
+                        'codex_storage._codex_pg_migrations'::regclass
+                    ) AND NOT row_trigger.tgisinternal
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM pg_rewrite rewrite
+                    WHERE rewrite.ev_class IN (
+                        'codex_storage.codex_schema_meta'::regclass,
+                        'codex_storage._codex_pg_migrations'::regclass
+                    )
+                ) AND EXISTS (
+                    SELECT 1 FROM pg_constraint cst
+                    WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
+                      AND cst.contype = 'p'
+                      AND cst.conindid = 'codex_storage.codex_schema_meta_pkey'::regclass
+                      AND cst.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = cst.conrelid AND attname = 'singleton')]
+                ) AND EXISTS (
+                    SELECT 1 FROM pg_constraint cst
+                    WHERE cst.conrelid = 'codex_storage._codex_pg_migrations'::regclass
+                      AND cst.contype = 'p'
+                      AND cst.conindid = 'codex_storage._codex_pg_migrations_pkey'::regclass
+                      AND cst.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = cst.conrelid AND attname = 'version')]
+                ) AND (SELECT count(*) FROM pg_constraint
+                       WHERE conrelid = 'codex_storage._codex_pg_migrations'::regclass) = 1
+                AND EXISTS (
+                    SELECT 1 FROM pg_constraint cst
+                    WHERE cst.conrelid = 'codex_storage.codex_schema_meta'::regclass
+                      AND cst.conname = 'codex_schema_meta_singleton_check'
+                      AND cst.contype = 'c'
+                      AND pg_get_constraintdef(cst.oid) = 'CHECK (singleton)'
+                )",
             )
             .fetch_one(&mut *transaction)
             .await
-            .map_err(|error| classify_sqlx(&error))?;
+            .map_err(classify_namespace_validation)?;
+            if !known_schema_complete {
+                return Err(BootstrapError::IncompatibleNamespace);
+            }
+            let version: Option<(i32, i32, i32)> = sqlx::query_as(
+                "SELECT format_version, min_reader_version, min_writer_version FROM codex_storage.codex_schema_meta WHERE singleton = TRUE",
+            )
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(classify_namespace_validation)?;
+            if version != Some((1, 1, 1)) {
+                return Err(BootstrapError::IncompatibleNamespace);
+            }
+            // Refuse privilege drift on an existing namespace before any ACL
+            // changes, so bootstrap cannot silently repair caller-owned policy.
+            require_safe_protected_privileges(&mut transaction).await?;
+        } else {
+            let occupied = namespace_has_unexpected_objects(&mut transaction, &[]).await?;
             if occupied {
                 return Err(BootstrapError::IncompatibleNamespace);
             }
@@ -127,6 +333,10 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .execute(&mut *transaction)
             .await
             .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("GRANT SELECT ON codex_storage.codex_schema_meta TO codex_backup")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
         sqlx::query("REVOKE ALL ON codex_storage._codex_pg_migrations FROM codex_runtime, codex_backup")
             .execute(&mut *transaction)
             .await
@@ -135,6 +345,19 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .execute(&mut *transaction)
             .await
             .map_err(|error| classify_sqlx(&error))?;
+        sqlx::query("GRANT USAGE ON SCHEMA codex_storage TO codex_runtime, codex_backup")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| classify_sqlx(&error))?;
+        require_safe_protected_privileges(&mut transaction).await?;
+        let unexpected_objects = namespace_has_unexpected_objects(
+            &mut transaction,
+            &["_codex_pg_migrations", "_codex_pg_migrations_pkey", "codex_schema_meta", "codex_schema_meta_pkey"],
+        )
+        .await?;
+        if unexpected_objects {
+            return Err(BootstrapError::IncompatibleNamespace);
+        }
         transaction.commit().await.map_err(|error| classify_sqlx(&error))?;
         Ok(())
     })
