@@ -13,6 +13,12 @@ anchor covers both the usage-count increment and last-use timestamp update;
 unrelated phase-2 updates cannot satisfy it. Checks exclude the pinned modules'
 top-level test-only suffixes and exercise mutations to these routing and update
 expressions; they are source-fragment checks, not a Rust parser.
+The audit independently pins the nested table/module/operation shapes, both
+version-selection entries and the generated-file mapping. Every Rust fragment
+is checked within its selected method's lexical declaration range, using the
+same selector as queue and goal audits. A SQL clause or file write in another
+method cannot satisfy that edge; selected edges remain partial and do not
+enumerate every producer, consumer, branch or failure transition.
 
 | Domain | Observed producer | Observed consumer or boundary |
 | --- | --- | --- |
