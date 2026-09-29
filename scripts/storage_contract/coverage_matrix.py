@@ -134,9 +134,9 @@ PRIMARY_PROJECT_EDGES = {
     "thread_sections": {
         "state/src/runtime/threads.rs": {
             "read": "FROM thread_sections",
-            "write": "INSERT INTO thread_sections",
         },
         "state/src/runtime/thread_sections.rs": {
+            "insert": "INSERT INTO thread_sections",
             "write": "UPDATE thread_sections",
         },
         "state/src/runtime/thread_section_order.rs": {
@@ -154,8 +154,7 @@ PRIMARY_PROJECT_EDGES = {
     },
     "thread_dynamic_tools": {
         "state/src/runtime/threads.rs": {
-            "read": "FROM thread_dynamic_tools",
-            "write": "INSERT INTO thread_dynamic_tools",
+            "write": "DELETE FROM thread_dynamic_tools",
         },
     },
     "thread_spawn_edges": {

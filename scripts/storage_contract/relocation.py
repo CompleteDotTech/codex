@@ -13,6 +13,19 @@ FLAVORS = {"windows": PureWindowsPath, "posix": PurePosixPath}
 MAX_ENTRIES = 256
 
 
+def _windows_components(parts):
+    for part in parts:
+        require(
+            not re.search(r'[<>:"|?*\x00-\x1f]', part)
+            and not part.endswith((" ", "."))
+            and not re.fullmatch(
+                r"CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³]",
+                part.split(".", 1)[0].rstrip(" ").upper(),
+            ),
+            "invalid_path",
+        )
+
+
 def _path(text, flavor):
     require(type(flavor) is str and flavor in FLAVORS, "invalid_path_flavor")
     require(type(text) is str and 0 < len(text) <= 4096, "invalid_path")
@@ -28,6 +41,7 @@ def _path(text, flavor):
     require(path.is_absolute(), "relative_path")
     if flavor == "windows":
         require(bool(re.fullmatch(r"[A-Za-z]:\\", path.anchor)), "invalid_path")
+        _windows_components(path.parts[1:])
     return path
 
 
@@ -135,11 +149,14 @@ def preview_relocation(
         for root, source_flavor, target, target_flavor in mappings:
             if source_flavor != record["flavor"]:
                 continue
-            try:
-                relative = source.relative_to(root)
-            except ValueError:
+            # PureWindowsPath containment folds case, which is not qualified here.
+            if source.parts[: len(root.parts)] != root.parts:
                 continue
-            candidate = target.joinpath(*relative.parts)
+            relative_parts = source.parts[len(root.parts) :]
+            if target_flavor == "windows":
+                # Check before joining: a drive-like POSIX component can reset it.
+                _windows_components(relative_parts)
+            candidate = target.joinpath(*relative_parts)
             _path(str(candidate), target_flavor)
             matches.append(candidate)
         require(len(matches) <= 1, "ambiguous_mapping")
