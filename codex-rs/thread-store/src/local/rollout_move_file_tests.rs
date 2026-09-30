@@ -145,6 +145,7 @@ fn prepare_move_intent(source: &Path, destination: &Path) -> io::Result<RolloutM
         stage_id,
         stage_digest,
         quarantine_path: quarantine_dir.join("quarantined-source"),
+        receipt_publication: None,
     };
     write_rollout_move_intent(&rollout_move_intent_path(destination), &intent)?;
     Ok(intent)

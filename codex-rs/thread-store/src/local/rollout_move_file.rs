@@ -4,7 +4,6 @@ use std::fs::FileTimes;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::Read;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -16,6 +15,8 @@ use super::rollout_move_identity::RolloutFileIdentity;
 use super::rollout_move_identity::rollout_file_digest;
 use super::rollout_move_identity::rollout_file_identity;
 use super::rollout_move_identity::rollout_file_identity_from_handle;
+#[path = "rollout_move_receipt_publication.rs"]
+mod receipt_publication;
 pub(super) fn touch_modified_time(path: &Path) -> std::io::Result<()> {
     let times = FileTimes::new().set_modified(SystemTime::now());
     OpenOptions::new().append(true).open(path)?.set_times(times)
@@ -176,12 +177,10 @@ fn move_rollout_with_hooks(
                 stage_id,
                 stage_digest: source_digest,
                 quarantine_path,
+                receipt_publication: None,
             };
-            if let Err(err) = write_rollout_move_intent(&intent_path, &intent) {
-                let _ = std::fs::remove_file(&intent.stage_path);
-                let _ = std::fs::remove_dir(quarantine_dir);
-                return Err(err);
-            }
+            // Publication errors can follow a durable receipt. Retain its resources.
+            write_rollout_move_intent(&intent_path, &intent)?;
             // The receipt must be durable before any rollout bytes enter the stage.
             // A crash before this point can leave only an empty, unowned tempfile.
             intent
@@ -372,7 +371,7 @@ fn stage_has_single_link(file: &std::fs::File) -> io::Result<bool> {
     Ok(info.NumberOfLinks == 1)
 }
 
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct RolloutMoveIntent {
     #[serde(with = "super::rollout_move_path_json")]
     source: PathBuf,
@@ -388,6 +387,8 @@ struct RolloutMoveIntent {
     stage_digest: [u8; 32],
     #[serde(with = "super::rollout_move_path_json")]
     quarantine_path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    receipt_publication: Option<receipt_publication::ReceiptPublication>,
 }
 
 fn quarantine_directory(intent: &RolloutMoveIntent) -> io::Result<&Path> {
@@ -456,21 +457,7 @@ fn rollout_move_intent_path(destination: &Path) -> PathBuf {
 }
 
 fn write_rollout_move_intent(path: &Path, intent: &RolloutMoveIntent) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("missing intent parent"))?;
-    let mut contents = serde_json::to_vec(intent).map_err(io::Error::other)?;
-    contents.push(b'\n');
-    if contents.len() > 4096 {
-        return Err(io::Error::other("rollout move intent is too large"));
-    }
-    let mut file = tempfile::Builder::new()
-        .prefix(".codex-move-intent-")
-        .tempfile_in(parent)?;
-    file.write_all(&contents)?;
-    file.as_file().sync_all()?;
-    file.persist_noclobber(path).map_err(|err| err.error)?;
-    sync_parent_directory(path)
+    receipt_publication::write(path, intent)
 }
 
 fn read_rollout_move_intent(path: &Path) -> io::Result<RolloutMoveIntent> {
@@ -487,7 +474,7 @@ fn read_rollout_move_intent(path: &Path) -> io::Result<RolloutMoveIntent> {
         return Err(io::Error::other("rollout move intent is incomplete"));
     }
     let mut lines = contents.lines();
-    let intent = serde_json::from_str(
+    let intent: RolloutMoveIntent = serde_json::from_str(
         lines
             .next()
             .ok_or_else(|| io::Error::other("empty intent"))?,
@@ -496,6 +483,7 @@ fn read_rollout_move_intent(path: &Path) -> io::Result<RolloutMoveIntent> {
     if lines.next().is_some() {
         return Err(io::Error::other("rollout move intent has extra records"));
     }
+    receipt_publication::validate(path, &intent)?;
     Ok(intent)
 }
 
@@ -534,6 +522,7 @@ pub(super) fn clear_rollout_move_intent(destination: &Path) -> io::Result<()> {
             "rollout stage and quarantined source coexist",
         ));
     }
+    receipt_publication::cleanup(&intent_path, &intent)?;
     finish_quarantined_source(&intent)?;
     match std::fs::symlink_metadata(&intent.stage_path) {
         Ok(_) => {
