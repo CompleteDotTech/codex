@@ -193,14 +193,17 @@ impl App {
         self.retain_blank_session(app_server, started.clone()).await;
         // Use the dashboard's existing attachment path, which preserves running agents
         // and unsent input in the previous session. Do not send an initial turn.
-        let control = Box::pin(self.attach_agents_overview_thread(
+        let attachment = Box::pin(self.attach_agents_overview_thread(
             tui,
             app_server,
             thread_id,
             Some((config, started.clone())),
             startup_draft,
         ))
-        .await?;
+        .await;
+        let control = self
+            .finish_blank_session_attachment(app_server, &started, attachment)
+            .await?;
         if self.current_displayed_thread_id() != Some(thread_id) {
             self.agents_overview.blank_sessions.remove(&thread_id);
             let _ = app_server.thread_unsubscribe(thread_id).await;

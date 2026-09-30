@@ -1027,22 +1027,23 @@ impl App {
                 } else {
                     None
                 };
-                let thread_id = started.session.thread_id;
                 if !self.config.ephemeral
                     && !matches!(self.app_server_target, AppServerTarget::Embedded)
                 {
                     self.retain_blank_session(app_server, started.clone()).await;
                 }
-                if let Err(err) = self
+                let attachment = self
                     .replace_chat_widget_with_app_server_thread(
                         tui,
-                        started,
+                        started.clone(),
                         ThreadAttachPresentation::Fresh,
                         initial_user_message,
                     )
+                    .await;
+                if let Err(err) = self
+                    .finish_blank_session_attachment(app_server, &started, attachment)
                     .await
                 {
-                    self.agents_overview.blank_sessions.remove(&thread_id);
                     self.chat_widget.add_error_message(format!(
                         "Failed to attach to fresh app-server thread: {err}"
                     ));
