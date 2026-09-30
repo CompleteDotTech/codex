@@ -134,9 +134,9 @@ PRIMARY_PROJECT_EDGES = {
     "thread_sections": {
         "state/src/runtime/threads.rs": {
             "read": "FROM thread_sections",
-            "write": "INSERT INTO thread_sections",
         },
         "state/src/runtime/thread_sections.rs": {
+            "insert": "INSERT INTO thread_sections",
             "write": "UPDATE thread_sections",
         },
         "state/src/runtime/thread_section_order.rs": {
@@ -154,8 +154,7 @@ PRIMARY_PROJECT_EDGES = {
     },
     "thread_dynamic_tools": {
         "state/src/runtime/threads.rs": {
-            "read": "FROM thread_dynamic_tools",
-            "write": "INSERT INTO thread_dynamic_tools",
+            "write": "DELETE FROM thread_dynamic_tools",
         },
     },
     "thread_spawn_edges": {
@@ -174,24 +173,29 @@ GOAL_EDGES = {
             "schema": "CREATE TABLE thread_goals (",
         },
         "state/src/runtime/goals.rs": {
-            "read": "FROM thread_goals",
-            "write": "INSERT INTO thread_goals (",
-            "update": "UPDATE thread_goals",
-            "delete": "DELETE FROM thread_goals",
+            "get_thread_goal": "FROM thread_goals",
+            "replace_thread_goal_snapshot": "INSERT INTO thread_goals (",
+            "replace_thread_goal": "INSERT INTO thread_goals (",
+            "insert_thread_goal": "INSERT INTO thread_goals (",
+            "update_thread_goal": "UPDATE thread_goals",
+            "update_active_thread_goal_status": "UPDATE thread_goals",
+            "account_thread_goal_usage": "UPDATE thread_goals",
+            "delete_thread_goal": "DELETE FROM thread_goals",
         },
         "ext/goal/src/api.rs": {
-            "external_update": ".update_thread_goal(",
-            "external_clear": ".delete_thread_goal(thread_id)",
+            "set_thread_goal": ".update_thread_goal(",
+            "clear_thread_goal": ".delete_thread_goal(thread_id)",
         },
         "ext/goal/src/runtime.rs": {
-            "turn_usage": ".account_thread_goal_usage(",
+            "account_active_goal_progress": ".account_thread_goal_usage(",
+            "account_idle_goal_progress": ".account_thread_goal_usage(",
         },
         "app-server/src/request_processors/thread_goal_processor.rs": {
             "api_set": ".set_thread_goal(",
             "canonical_event": "outcome.thread_goal_updated_item()",
         },
         "app-server/src/request_processors/thread_fork_goal.rs": {
-            "fork_snapshot": ".replace_thread_goal_snapshot(&goal)",
+            "inherit_thread_goal_snapshot": ".replace_thread_goal_snapshot(&goal)",
         },
     },
     "thread_goal_continuation_deferrals": {
@@ -200,15 +204,15 @@ GOAL_EDGES = {
             "cascade": "REFERENCES thread_goals(thread_id) ON DELETE CASCADE",
         },
         "state/src/runtime/goals.rs": {
-            "write": "INSERT INTO thread_goal_continuation_deferrals (thread_id)",
-            "read": "FROM thread_goal_continuation_deferrals",
-            "clear": "DELETE FROM thread_goal_continuation_deferrals WHERE thread_id = ?",
+            "replace_thread_goal_snapshot": "INSERT INTO thread_goal_continuation_deferrals (thread_id)",
+            "has_thread_goal_continuation_deferral": "FROM thread_goal_continuation_deferrals",
+            "clear_thread_goal_continuation_deferral": "DELETE FROM thread_goal_continuation_deferrals WHERE thread_id = ?",
         },
         "ext/goal/src/runtime.rs": {
-            "continuation_gate": ".has_thread_goal_continuation_deferral(self.thread_id())",
+            "continue_if_idle": ".has_thread_goal_continuation_deferral(self.thread_id())",
         },
         "ext/goal/src/extension.rs": {
-            "turn_start_clear": ".clear_thread_goal_continuation_deferral(runtime.thread_id())",
+            "on_turn_start": ".clear_thread_goal_continuation_deferral(runtime.thread_id())",
         },
     },
 }
@@ -223,11 +227,12 @@ MEMORY_EDGES = {
         "state/src/runtime/memories.rs": {
             "read": "FROM stage1_outputs",
             "write": "INSERT INTO stage1_outputs (",
-            "usage": "UPDATE stage1_outputs",
+            "usage": (
+                "UPDATE stage1_outputs\nSET\n"
+                "    usage_count = COALESCE(usage_count, 0) + 1,\n"
+                "    last_usage = ?\nWHERE thread_id = ?"
+            ),
             "delete": "DELETE FROM stage1_outputs",
-        },
-        "state/src/runtime/memory_versions.rs": {
-            "version_selection": "MemoryVersion::V2 => self",
         },
         "memories/write/src/runtime.rs": {
             "writer_selection": ".memories_for_version(self.version)",
@@ -242,12 +247,32 @@ MEMORY_EDGES = {
         },
         "state/src/runtime/memories.rs": {
             "claim": "INSERT INTO jobs (",
-            "lease": "UPDATE jobs",
+            "lease_claim": (
+                "ownership_token = excluded.ownership_token,\n"
+                "    started_at = excluded.started_at,\n"
+                "    finished_at = NULL,\n"
+                "    lease_until = excluded.lease_until"
+            ),
+            "lease_claim_guard": (
+                "(jobs.status != 'running' OR jobs.lease_until IS NULL "
+                "OR jobs.lease_until <= excluded.started_at)"
+            ),
+            "lease_start": (
+                "UPDATE jobs\nSET\n    status = 'running',\n"
+                "    worker_id = ?,\n    ownership_token = ?,\n"
+                "    started_at = ?,\n    finished_at = NULL,\n"
+                "    lease_until = ?"
+            ),
+            "lease_heartbeat": (
+                "UPDATE jobs\nSET lease_until = ?\n"
+                "WHERE kind = ? AND job_key = ?\n"
+                "  AND status = 'running' AND ownership_token = ?"
+            ),
+            "lease_start_guard": (
+                "AND (status != 'running' OR lease_until IS NULL OR lease_until <= ?)"
+            ),
             "read": "FROM jobs",
             "delete": "DELETE FROM jobs",
-        },
-        "state/src/runtime/memory_versions.rs": {
-            "version_selection": "MemoryVersion::V2 => self",
         },
     },
     "consolidation_progress": {
@@ -260,15 +285,31 @@ MEMORY_EDGES = {
         "state/src/runtime/memory_readiness.rs": {
             "read": "SELECT max_thread_count FROM consolidation_progress WHERE singleton = 1",
         },
-        "state/src/runtime/memory_versions.rs": {
-            "version_selection": "MemoryVersion::V2 => self",
-        },
+    },
+}
+
+MEMORY_VERSION_EDGES = {
+    "memories_1.sqlite": {
+        "version_selection": "MemoryVersion::V1 => Ok(self.memories.clone()),",
+    },
+    "memories_v2_1.sqlite": {
+        "version_selection": (
+            "MemoryVersion::V2 => self\n"
+            "                .memories_v2\n"
+            "                .get_or_try_init(|| async {\n"
+            "                    let pool = self.sqlite.open_memories_v2_db().await?;\n"
+            "                    Ok(MemoryStore::new(Arc::new(pool), Arc::clone(&self.pool)))"
+        ),
     },
 }
 
 MEMORY_FILE_EDGES = {
     "memories/write/src/storage.rs": {
-        "raw_summary_write": "tokio::fs::write(raw_memories_file(root), body)",
+        "raw_summary_write": (
+            "body.push_str(memory.raw_memory.trim());\n"
+            '        body.push_str("\\n\\n");\n'
+            "    }\n\n    tokio::fs::write(raw_memories_file(root), body)"
+        ),
         "rollout_summary_write": "tokio::fs::write(path, body)",
     },
     "memories/write/src/phase2.rs": {
@@ -287,16 +328,18 @@ QUEUE_EDGES = {
             "constraint": "CREATE UNIQUE INDEX queued_items_thread_order_idx",
         },
         "state/src/runtime/queued_items.rs": {
-            "insert": "INSERT INTO queued_items (",
-            "read": "FROM queued_items",
+            "enqueue": "INSERT INTO queued_items (",
+            "list_page": "FROM queued_items",
             "update": "UPDATE queued_items",
             "delete": "DELETE FROM queued_items",
+            "reorder": "UPDATE queued_items SET queue_order = ?, updated_at_ms = ?",
+            "delete_thread_queue": "DELETE FROM queued_items WHERE thread_id = ?",
         },
         "thread-store/src/queue_store.rs": {
-            "adapter": ".enqueue(thread_id, &payload)",
+            "adapter": "self.queue().list_page(thread_id, offset, limit)",
         },
         "ext/queue/src/service.rs": {
-            "consumer": "self.queue.enqueue(thread_id, payload).await?",
+            "consumer": ".list_page(thread_id, offset, limit)",
         },
         "app-server/src/message_processor.rs": {
             "factory": "LocalQueueStore::new(Arc::clone(state_db))",
@@ -305,9 +348,30 @@ QUEUE_EDGES = {
     "queued_thread_revisions": {
         "state/queue_migrations/0002_queued_thread_revisions.sql": {
             "schema": "CREATE TABLE queued_thread_revisions (",
-            "insert_trigger": "CREATE TRIGGER queued_items_revision_after_insert\nAFTER INSERT ON queued_items",
-            "update_trigger": "CREATE TRIGGER queued_items_revision_after_update\nAFTER UPDATE ON queued_items",
-            "delete_trigger": "CREATE TRIGGER queued_items_revision_after_delete\nAFTER DELETE ON queued_items",
+            "insert_trigger": """CREATE TRIGGER queued_items_revision_after_insert
+AFTER INSERT ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (NEW.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
+            "update_trigger": """CREATE TRIGGER queued_items_revision_after_update
+AFTER UPDATE ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (NEW.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
+            "delete_trigger": """CREATE TRIGGER queued_items_revision_after_delete
+AFTER DELETE ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (OLD.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
         },
         "state/src/runtime/queued_items.rs": {
             "revision_read": "SELECT thread_id, revision FROM queued_thread_revisions WHERE revision > ",
@@ -315,9 +379,11 @@ QUEUE_EDGES = {
         },
         "thread-store/src/queue_store.rs": {
             "adapter": "self.queue().changes_since(revision, thread_ids)",
+            "commit_observation": "self.queue().change_version()",
         },
         "ext/queue/src/service.rs": {
             "watcher": ".changes_since(last_revision, &thread_ids)",
+            "commit_observation": "service.queue.change_version().await",
         },
         "app-server/src/message_processor.rs": {
             "factory": "LocalQueueStore::new(Arc::clone(state_db))",
@@ -353,8 +419,11 @@ def audit_coverage() -> dict:
                 "observed_goal_edges": GOAL_EDGES.get(table, {})
                 if store == "goals_1.sqlite"
                 else {},
-                "observed_memory_edges": MEMORY_EDGES.get(table, {})
-                if store in {"memories_1.sqlite", "memories_v2_1.sqlite"}
+                "observed_memory_edges": {
+                    **MEMORY_EDGES.get(table, {}),
+                    "state/src/runtime/memory_versions.rs": MEMORY_VERSION_EDGES[store],
+                }
+                if store in MEMORY_VERSION_EDGES
                 else {},
             }
             for table, (issue, source) in entries.items()
