@@ -159,6 +159,11 @@ def stage_fork_package(
 
 def verify_staged_fork_package(install_root: Path, slot_id: str) -> None:
     """Read back a slot and receipt; this is a point-in-time check."""
+    read_staged_fork_receipt(install_root, slot_id)
+
+
+def read_staged_fork_receipt(install_root: Path, slot_id: str) -> dict[str, object]:
+    """Return only the verified inactive receipt, never activation authorization."""
     require_linux()
     if len(slot_id) != 64 or any(char not in "0123456789abcdef" for char in slot_id):
         raise ValueError("invalid fork slot identifier")
@@ -174,6 +179,7 @@ def verify_staged_fork_package(install_root: Path, slot_id: str) -> None:
                 with open_regular_file(
                     fd_path(receipts_fd) / (slot_id + ".json")
                 ) as reader:
+                    receipt_identity = os.fstat(reader.fileno())
                     receipt_bytes = reader.read(1024 * 1024 + 1)
                 if len(receipt_bytes) > 1024 * 1024:
                     raise ValueError("fork package receipt exceeds size limit")
@@ -206,6 +212,17 @@ def verify_staged_fork_package(install_root: Path, slot_id: str) -> None:
                     os.fstat(slot_fd),
                 ):
                     raise ValueError("fork package slot name changed")
+                with open_regular_file(
+                    fd_path(receipts_fd) / (slot_id + ".json")
+                ) as reader:
+                    if (
+                        not same_inode(receipt_identity, os.fstat(reader.fileno()))
+                        or reader.read(1024 * 1024 + 1) != receipt_bytes
+                    ):
+                        raise ValueError(
+                            "fork receipt changed during status verification"
+                        )
+                return expected
             finally:
                 os.close(slot_fd)
         finally:
