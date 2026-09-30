@@ -10,6 +10,7 @@ use codex_utils_stream_parser::strip_citations;
 use tokio_util::sync::CancellationToken;
 
 use crate::function_tool::FunctionCallError;
+use crate::memory_mode_pollution;
 use crate::parse_turn_item;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
@@ -27,7 +28,6 @@ use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_rollout::state_db;
 use codex_utils_stream_parser::strip_proposed_plan_blocks;
 use futures::Future;
 use tracing::debug;
@@ -176,8 +176,9 @@ pub(crate) async fn mark_thread_memory_mode_polluted_if_external_context(
     {
         return;
     }
-    state_db::mark_thread_memory_mode_polluted(
+    memory_mode_pollution::mark_thread_memory_mode_polluted(
         sess.services.state_db.as_deref(),
+        turn_context.config.memories.version,
         sess.thread_id,
         "record_completed_response_item",
     )
