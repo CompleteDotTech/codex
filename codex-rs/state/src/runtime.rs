@@ -100,6 +100,19 @@ enum GoalStoreSelection {
     Injected(Arc<dyn ThreadGoalStore>),
 }
 
+/// Stores for both versions of generated memory, supplied by the owning host.
+#[derive(Clone)]
+pub struct VersionedMemoryStores {
+    pub v1: Arc<dyn RuntimeMemoryStore>,
+    pub v2: Arc<dyn RuntimeMemoryStore>,
+}
+
+#[derive(Clone)]
+enum MemoryStoreSelection {
+    Local,
+    Injected(VersionedMemoryStores),
+}
+
 #[derive(Clone)]
 pub struct StateRuntime {
     sqlite: SqliteConfig,
@@ -110,6 +123,7 @@ pub struct StateRuntime {
     thread_goals: Arc<dyn ThreadGoalStore>,
     memories: MemoryStore,
     memories_v2: Arc<tokio::sync::OnceCell<MemoryStore>>,
+    memory_store_selection: MemoryStoreSelection,
     thread_queue: SqliteQueueStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
@@ -128,6 +142,7 @@ impl StateRuntime {
             sqlite,
             default_provider,
             GoalStoreSelection::Local,
+            MemoryStoreSelection::Local,
             /*telemetry_override*/ None,
         )
         .await
@@ -147,6 +162,29 @@ impl StateRuntime {
             sqlite,
             default_provider,
             GoalStoreSelection::Injected(goal_store),
+            MemoryStoreSelection::Local,
+            /*telemetry_override*/ None,
+        )
+        .await
+    }
+
+    /// Initialize an inactive runtime with host-supplied stores for both memory versions.
+    ///
+    /// Local SQLite databases still open and migrate. Other memory consumers
+    /// still read local SQLite, so this seam is not safe for live activation.
+    /// Future activation also requires storage authority and explicit handling
+    /// of existing local memory rows.
+    /// The injected stores remain caller-owned and are not closed by [`Self::close`].
+    pub async fn init_with_memory_stores(
+        sqlite: SqliteConfig,
+        default_provider: String,
+        stores: VersionedMemoryStores,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::init_inner(
+            sqlite,
+            default_provider,
+            GoalStoreSelection::Local,
+            MemoryStoreSelection::Injected(stores),
             /*telemetry_override*/ None,
         )
         .await
@@ -162,6 +200,7 @@ impl StateRuntime {
             sqlite,
             default_provider,
             GoalStoreSelection::Local,
+            MemoryStoreSelection::Local,
             Some(telemetry_override),
         )
         .await
@@ -171,6 +210,7 @@ impl StateRuntime {
         sqlite: SqliteConfig,
         default_provider: String,
         goal_store: GoalStoreSelection,
+        memory_store_selection: MemoryStoreSelection,
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<Arc<Self>> {
         tokio::fs::create_dir_all(sqlite.home()).await?;
@@ -310,6 +350,7 @@ impl StateRuntime {
             local_thread_goals,
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             memories_v2: Arc::new(tokio::sync::OnceCell::new()),
+            memory_store_selection,
             thread_queue: SqliteQueueStore::new(queue_pool),
             pool,
             logs_pool,

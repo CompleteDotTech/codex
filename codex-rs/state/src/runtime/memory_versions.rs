@@ -2,12 +2,28 @@
 //! Reset and thread deletion always cover every existing version.
 
 use super::MemoryStore;
+use super::MemoryStoreSelection;
+use super::RuntimeMemoryStore;
 use super::StateRuntime;
 use codex_protocol::MemoryVersion;
 use codex_protocol::ThreadId;
 use std::sync::Arc;
 
 impl StateRuntime {
+    /// Return the selected durable store for one memory version.
+    pub async fn memory_store_for_version(
+        &self,
+        version: MemoryVersion,
+    ) -> anyhow::Result<Arc<dyn RuntimeMemoryStore>> {
+        match &self.memory_store_selection {
+            MemoryStoreSelection::Local => Ok(Arc::new(self.memories_for_version(version).await?)),
+            MemoryStoreSelection::Injected(stores) => Ok(match version {
+                MemoryVersion::V1 => Arc::clone(&stores.v1),
+                MemoryVersion::V2 => Arc::clone(&stores.v2),
+            }),
+        }
+    }
+
     pub async fn memories_for_version(
         &self,
         version: MemoryVersion,
@@ -26,9 +42,16 @@ impl StateRuntime {
     }
 
     pub async fn clear_all_memory_data(&self) -> anyhow::Result<()> {
-        self.memories.clear_memory_data().await?;
-        if tokio::fs::try_exists(self.sqlite.memories_v2_db_path()).await? {
-            self.memories_for_version(MemoryVersion::V2)
+        self.memory_store_for_version(MemoryVersion::V1)
+            .await?
+            .clear_memory_data()
+            .await?;
+        if matches!(
+            &self.memory_store_selection,
+            MemoryStoreSelection::Injected(_)
+        ) || tokio::fs::try_exists(self.sqlite.memories_v2_db_path()).await?
+        {
+            self.memory_store_for_version(MemoryVersion::V2)
                 .await?
                 .clear_memory_data()
                 .await?;
@@ -40,9 +63,16 @@ impl StateRuntime {
         &self,
         thread_id: ThreadId,
     ) -> anyhow::Result<()> {
-        self.memories.delete_thread_memory(thread_id).await?;
-        if tokio::fs::try_exists(self.sqlite.memories_v2_db_path()).await? {
-            self.memories_for_version(MemoryVersion::V2)
+        self.memory_store_for_version(MemoryVersion::V1)
+            .await?
+            .delete_thread_memory(thread_id)
+            .await?;
+        if matches!(
+            &self.memory_store_selection,
+            MemoryStoreSelection::Injected(_)
+        ) || tokio::fs::try_exists(self.sqlite.memories_v2_db_path()).await?
+        {
+            self.memory_store_for_version(MemoryVersion::V2)
                 .await?
                 .delete_thread_memory(thread_id)
                 .await?;
@@ -54,3 +84,7 @@ impl StateRuntime {
 #[cfg(test)]
 #[path = "memory_versions_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "memory_store_injection_tests.rs"]
+mod injection_tests;
