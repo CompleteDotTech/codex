@@ -219,6 +219,27 @@ def _qualify_restore_access(source, destination, owned_roles):
         "DROP ROLE codex_restore_bridge",
     )
     reject_and_revert(
+        "backup_admin_runtime_role_escalation",
+        "GRANT codex_runtime TO codex_backup WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
+        "REVOKE codex_runtime FROM codex_backup",
+    )
+    reject_and_revert(
+        "backup_admin_bridge_role_escalation",
+        "CREATE ROLE codex_restore_bridge; "
+        "GRANT codex_runtime TO codex_restore_bridge WITH INHERIT FALSE, SET TRUE; "
+        "GRANT codex_restore_bridge TO codex_backup WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
+        "REVOKE codex_restore_bridge FROM codex_backup; "
+        "REVOKE codex_runtime FROM codex_restore_bridge; DROP ROLE codex_restore_bridge",
+    )
+    reject_and_revert(
+        "backup_alias_admin_runtime_role_escalation",
+        "CREATE ROLE codex_restore_bridge; "
+        "GRANT codex_restore_bridge TO codex_backup WITH INHERIT FALSE, SET TRUE; "
+        "GRANT codex_runtime TO codex_restore_bridge WITH ADMIN TRUE, INHERIT FALSE, SET FALSE",
+        "REVOKE codex_restore_bridge FROM codex_backup; "
+        "REVOKE codex_runtime FROM codex_restore_bridge; DROP ROLE codex_restore_bridge",
+    )
+    reject_and_revert(
         "public_function_execute_default",
         "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner GRANT EXECUTE ON FUNCTIONS TO PUBLIC",
         "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC",
@@ -241,7 +262,44 @@ def _qualify_restore_access(source, destination, owned_roles):
             "ALTER DEFAULT PRIVILEGES FOR ROLE codex_owner "
             f"REVOKE SELECT ON TABLES FROM {grantee}",
         )
-    qualify_archive_shapes(source, reject_and_revert)
+    ordinary_backup, ordinary_archive = qualify_archive_shapes(
+        source, reject_and_revert
+    )
+    with temporary_sql(
+        destination,
+        "SELECT 1",
+        "DROP TABLE IF EXISTS codex_storage.restore_shape_probe",
+    ):
+        command(
+            destination,
+            "restore",
+            "--archive",
+            str(ordinary_archive),
+            "--sha256",
+            ordinary_backup["sha256"],
+            "--confirm-empty-destination",
+        )
+        sql(
+            destination,
+            "INSERT INTO codex_storage.restore_shape_probe VALUES (1)",
+            role="runtime",
+        )
+        if (
+            sql(
+                destination,
+                "SELECT id FROM codex_storage.restore_shape_probe",
+                role="backup",
+            )
+            != "1"
+        ):
+            raise ServiceError("ordinary_restore_backup_read_mismatch")
+        sql(
+            destination,
+            "UPDATE codex_storage.restore_shape_probe SET id=2",
+            role="backup",
+            expected_sqlstate="42501",
+        )
+    report["ordinary_archive_safe_retry_passed"] = True
     if json.loads(sql(source, protected_rows)) != expected:
         raise ServiceError("protected_restore_source_changed")
 
