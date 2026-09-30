@@ -32,6 +32,54 @@ The builder creates a canonical Codex package directory:
 The package directory is the primary artifact. Archive formats such as
 `.tar.gz`, `.tar.zst`, and `.zip` are serializations of that directory.
 
+For an opt-in CompleteDotTech package directory candidate, pass
+`--fork-base-commit` with a full caller-declared ancestor commit. The builder
+requires a clean source tree and source-built inputs, then records the current
+fork commit, SHA-256 of the base-to-fork Git diff, preview/stable channel label,
+and the currently qualified SQLite-only storage capability in
+`codex-fork-package.json`. This does not authenticate the base as OpenAI upstream.
+Run `python scripts/verify_fork_package.py <package-dir>` to check the staged
+directory. The manifest inventories all files and directories, their byte hashes,
+and Unix mode claims. A Windows check of a Unix package reports
+`unixModeStatus=unavailable`; run that check on Unix before relying on modes.
+`python scripts/verify_fork_archive.py <package-dir> <archive>` checks an existing
+ZIP or TAR archive against the sealed candidate directory, including serialized
+entries, byte hashes, types, and Unix modes. It is read-only and returns the
+archive SHA-256 on success. Fork candidate archive outputs and prebuilt binary
+overrides remain refused by the builder. A future release channel must
+authenticate the manifest before downloads or installation can trust it. This
+option does not activate the fork installer, updater, or PostgreSQL storage.
+
+`fork_archive_publication.py` contains an inactive Linux helper for publishing
+one already verified archive into a caller-held, owner-private directory
+descriptor. It binds the final entry to that directory's inode and the verified
+bytes, and uses `renameat2(RENAME_NOREPLACE)` to avoid replacing a competing
+entry. The destination must be on a different filesystem from the sealed
+package, preventing a directory rename into that package during publication.
+The returned receipt can be rechecked through the same descriptor only as a
+point-in-time observation. It does not authorize a later pathname open or
+execution; a future consumer needs an owned verified descriptor or an exclusive
+publication fence. Failed attempts may leave a staged or final file for
+explicit reconciliation. There is
+no multi-archive or checksum transaction. Other platforms and release-channel
+authentication remain unimplemented; the builder continues to refuse fork
+archive output everywhere.
+
+`fork_side_by_side.py` also provides an inactive Linux-only staging primitive
+for a caller-authenticated package directory. The caller supplies an existing
+owner-private install root and the authenticated SHA-256 of the package manifest.
+Staging pins the package and install directories with descriptors, refuses
+overlap, reserves a content-named slot under `fork-slots`, copies
+and re-verifies the package, and writes an inactive ownership receipt under
+`fork-receipts`. Neither directory is added to PATH or selected by Codex. Any
+existing slot or receipt, including one left by interruption, blocks another
+attempt until a future reconciler handles it explicitly. The receipt records
+integrity and ownership intent, not release authentication, operating-system
+ACL proof, or permission to execute the package. This stage does not defend
+against other processes running as the same user that mutate its private root
+during staging. It does not provide
+upgrade, activation, uninstall, or a release installer entry point.
+
 If `--target` is omitted, the builder uses the release target for the current
 host platform. On Linux, that default is a musl target to match Codex release
 artifacts; pass a GNU Linux target explicitly for native glibc local builds. If
