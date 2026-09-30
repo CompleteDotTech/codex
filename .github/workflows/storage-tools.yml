@@ -74,13 +74,26 @@ jobs:
       - name: Seed owned restore metadata fixture without production bootstrap
         shell: bash
         run: python scripts/postgres/tests/seed_restore_metadata.py --state "$CODEX_TEST_POSTGRES_STATE" --owned-disposable
+      - name: Qualify transactional restore guard
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/codex-pg-focused-restore-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE=%s\n' "$state" >> "$GITHUB_ENV"
+          python scripts/postgres/manage.py --state "$state" init --project "codex-pg-focused-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 16481
+          python scripts/postgres/manage.py --state "$state" pin
+          CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE="$state" python -m unittest discover -s scripts/postgres/tests -p test_restore_access_live.py -v
       - name: Stop fixture and retain receipts
         if: always()
         shell: bash
         run: |
-          if [[ -n "${CODEX_TEST_POSTGRES_STATE:-}" && -f "$CODEX_TEST_POSTGRES_STATE/receipt.json" ]]; then
-            python scripts/postgres/manage.py --state "$CODEX_TEST_POSTGRES_STATE" down
-          fi
+          cleanup_status=0
+          for state in "${CODEX_TEST_POSTGRES_STATE:-}" "${CODEX_TEST_POSTGRES_FOCUSED_RESTORE_STATE:-}"; do
+            if [[ -n "$state" && -f "$state/receipt.json" ]]; then
+              python scripts/postgres/manage.py --state "$state" down || cleanup_status=1
+            fi
+          done
+          exit "$cleanup_status"
 
   offline:
     name: Offline tests (${{ matrix.os }}, Python ${{ matrix.python }})
