@@ -4,6 +4,12 @@ This checked inventory extends the current source coverage matrix for the two
 tables in `queue_1.sqlite`. The test runs the independently pinned queue SQL
 fixture and requires each listed SQL clause or caller anchor in its specific
 native source file. It does not call Rust or enumerate every RPC entry point.
+The test independently pins every nested module and operation key. Queue-store
+SQL is checked within the named public async method's lexical source range,
+so another method's read, update, or delete cannot supply its evidence. This
+is a source-boundary check, not Rust parsing or executed SQL. Trigger anchors
+include their revision-writing body, `NEW`/`OLD` thread identity, conflict update,
+and revision increment rather than their declaration alone.
 
 | Record | Observed producer | Observed consumer |
 | --- | --- | --- |

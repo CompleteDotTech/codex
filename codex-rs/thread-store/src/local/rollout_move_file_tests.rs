@@ -25,8 +25,71 @@ fn prepare_move_intent(source: &Path, destination: &Path) -> io::Result<RolloutM
         stage_id,
         stage_digest,
     };
-    write_rollout_move_intent(&rollout_move_intent_path(destination), &intent)?;
+    write_rollout_move_intent(
+        &rollout_move_intent_path(destination),
+        &intent,
+        sync_parent_directory,
+    )?;
     Ok(intent)
+}
+
+#[test]
+fn retry_preserves_stage_after_published_intent_sync_fails() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout contents")?;
+
+    let error = move_rollout_noclobber_retained_with_intent_sync(
+        &source,
+        &destination,
+        home.path(),
+        |path| {
+            assert!(path.exists(), "the intent must already be published");
+            Err(io::Error::other("injected intent directory sync failure"))
+        },
+    )
+    .expect_err("failed intent sync must be reported");
+    assert_eq!(error.to_string(), "injected intent directory sync failure");
+    let intent = read_rollout_move_intent(&rollout_move_intent_path(&destination))?;
+    assert_eq!(std::fs::read(&source)?, b"rollout contents");
+    assert_eq!(std::fs::read(&intent.stage_path)?, b"rollout contents");
+    assert!(!destination.exists());
+
+    move_rollout_noclobber(&source, &destination, home.path())?;
+    assert!(!source.exists());
+    assert!(!intent.stage_path.exists());
+    assert!(!rollout_move_intent_path(&destination).exists());
+    assert_eq!(std::fs::read(&destination)?, b"rollout contents");
+    Ok(())
+}
+
+#[test]
+fn oversized_intent_preserves_source_before_publication() -> io::Result<()> {
+    let root = tempfile::tempdir()?;
+    let mut home = root.path().to_path_buf();
+    for _ in 0..10 {
+        home.push("p".repeat(/*n*/ 140));
+    }
+    let sessions = home.join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir_all(&sessions)?;
+    std::fs::create_dir_all(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout contents")?;
+
+    let error = move_rollout_noclobber_retained(&source, &destination, &home)
+        .expect_err("oversized receipt must fail before source unlink");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(std::fs::read(&source)?, b"rollout contents");
+    assert!(!destination.exists());
+    assert!(!rollout_move_intent_path(&destination).exists());
+    Ok(())
 }
 
 #[test]
