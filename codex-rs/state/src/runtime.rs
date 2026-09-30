@@ -48,12 +48,14 @@ mod memories;
 mod memory_versions;
 mod projects;
 mod queued_items;
-mod recovery;
+pub(crate) mod reclamation;
+pub(crate) mod recovery;
 mod remote_control;
 mod rollout_migration;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod thread_attachments;
+mod thread_metadata;
 mod thread_section_order;
 mod thread_sections;
 mod threads;
@@ -70,8 +72,6 @@ pub use goals::GoalStore;
 pub use goals::GoalUpdate;
 pub use memories::MemoryStore;
 pub use queued_items::SqliteQueueStore;
-pub use recovery::RuntimeDbBackup;
-pub(super) use recovery::RuntimeDbInitError;
 pub use recovery::backup_runtime_db_for_fresh_start;
 pub use recovery::is_sqlite_corruption_error;
 pub use recovery::runtime_db_path_for_corruption_error;
@@ -107,6 +107,7 @@ pub struct StateRuntime {
     thread_queue: SqliteQueueStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
+    reclamation: Arc<reclamation::SqliteReclamationWorker>,
 }
 
 impl StateRuntime {
@@ -295,6 +296,7 @@ impl StateRuntime {
         let thread_recency_at_millis = thread_recency_at_millis.unwrap_or(0);
         let local_thread_goals = GoalStore::new(goals_pool);
         let runtime = Arc::new(Self {
+            reclamation: reclamation::SqliteReclamationWorker::spawn(sqlite.clone()),
             thread_goals: match goal_store {
                 GoalStoreSelection::Local => Arc::new(local_thread_goals.clone()),
                 GoalStoreSelection::Injected(store) => store,
@@ -349,6 +351,7 @@ impl StateRuntime {
 
     /// Close all SQLite pools and wait for outstanding pool workers to exit.
     pub async fn close(&self) {
+        self.reclamation.close().await;
         self.thread_queue.close().await;
         self.memories.close().await;
         if let Some(memories) = self.memories_v2.get() {
