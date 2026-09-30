@@ -164,6 +164,17 @@ def verify_staged_fork_package(install_root: Path, slot_id: str) -> None:
 
 def read_staged_fork_receipt(install_root: Path, slot_id: str) -> dict[str, object]:
     """Return only the verified inactive receipt, never activation authorization."""
+    return _read_staged_snapshot(install_root, slot_id)[0]
+
+
+def read_staged_fork_manifest(install_root: Path, slot_id: str) -> dict[str, object]:
+    """Read the verified inactive manifest under the same pinned slot checks."""
+    return _read_staged_snapshot(install_root, slot_id)[1]
+
+
+def _read_staged_snapshot(
+    install_root: Path, slot_id: str
+) -> tuple[dict[str, object], dict[str, object]]:
     require_linux()
     if len(slot_id) != 64 or any(char not in "0123456789abcdef" for char in slot_id):
         raise ValueError("invalid fork slot identifier")
@@ -222,7 +233,7 @@ def read_staged_fork_receipt(install_root: Path, slot_id: str) -> dict[str, obje
                         raise ValueError(
                             "fork receipt changed during status verification"
                         )
-                return expected
+                return expected, verification.manifest
             finally:
                 os.close(slot_fd)
         finally:
