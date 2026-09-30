@@ -155,7 +155,7 @@ model = "gpt-5.4-mini"
         })
         .await?;
 
-    assert_eq!(response.model, "openai.gpt-6-sol");
+    assert_eq!(response.model, "openai.gpt-6.1-sol");
     Ok(())
 }
 
@@ -285,6 +285,7 @@ async fn thread_start_provider_model_fallback_uses_bedrock_static_catalog() -> R
     )
     .await?;
     for model in [
+        "openai.gpt-6.1-sol",
         "openai.gpt-6-sol",
         "openai.gpt-6-luna",
         "openai.gpt-5.6-sol",
@@ -313,7 +314,7 @@ async fn thread_start_provider_model_fallback_uses_bedrock_static_catalog() -> R
             supported_with_fallback.model,
             unsupported_without_fallback.model,
         ],
-        vec!["openai.gpt-6-sol", "openai.gpt-5.5", "gpt-5.4-mini"]
+        vec!["openai.gpt-6.1-sol", "openai.gpt-5.5", "gpt-5.4-mini"]
     );
     Ok(())
 }
@@ -332,6 +333,8 @@ async fn thread_start_bedrock_runtime_prefers_global_cross_region_models() -> Re
         .await?;
 
     for model in [
+        "global.openai.gpt-6.1-sol",
+        "us.openai.gpt-6.1-sol",
         "global.openai.gpt-6-sol",
         "us.openai.gpt-6-sol",
         "global.openai.gpt-6-luna",
@@ -351,7 +354,7 @@ async fn thread_start_bedrock_runtime_prefers_global_cross_region_models() -> Re
         /*allow_provider_model_fallback*/ true,
     )
     .await?;
-    assert_eq!(response.model, "global.openai.gpt-6-sol");
+    assert_eq!(response.model, "global.openai.gpt-6.1-sol");
 
     Ok(())
 }
