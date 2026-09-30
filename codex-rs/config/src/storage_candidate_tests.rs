@@ -90,3 +90,39 @@ fn invalid_trusted_profile_error_is_redacted() {
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert!(!error.to_string().contains("secret.example.test"));
 }
+
+#[test]
+fn escaped_candidate_keys_redact_malformed_source_diagnostics() {
+    for encoded_key in [r"storage_\u0063andidate", r"storage_\U00000063andidate"] {
+        let valid = format!("[\"{encoded_key}\"]\nbackend = 'local_sqlite'\n");
+        let decoded: TomlValue = toml::from_str(&valid).unwrap();
+        assert_eq!(decoded, toml::from_str::<TomlValue>(LOCAL).unwrap());
+
+        let malformed = format!("[\"{encoded_key}\"]\nendpoint = 'secret.example.test\n");
+        let parser_error = toml::from_str::<TomlValue>(&malformed).unwrap_err();
+        assert!(parser_error.to_string().contains("secret.example.test"));
+        let redacted = redacted_parse_error(&malformed).unwrap();
+        assert_eq!(redacted.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(redacted.to_string(), "invalid configuration");
+        let cloud = crate::cloud_config_layers_from_fragments(
+            [crate::CloudConfigFragment {
+                id: "id".into(),
+                name: "host".into(),
+                contents: malformed,
+            }],
+            &std::env::current_dir().unwrap().try_into().unwrap(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(cloud, crate::CloudConfigLayerError::Parse { message, .. } if message == "invalid configuration")
+        );
+    }
+}
+
+#[test]
+fn ordinary_malformed_config_keeps_source_diagnostics() {
+    let malformed = "model = 'ordinary.example.test\n";
+    assert!(redacted_parse_error(malformed).is_none());
+    let parser_error = toml::from_str::<TomlValue>(malformed).unwrap_err();
+    assert!(parser_error.to_string().contains("ordinary.example.test"));
+}

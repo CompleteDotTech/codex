@@ -123,6 +123,8 @@ mod server_diagnostics;
 mod session_end;
 mod skills_list;
 mod sleep;
+#[path = "storage_candidate_config_tests.rs"]
+mod storage_candidate_config_tests;
 mod thread_archive;
 mod thread_attachments;
 mod thread_delete;

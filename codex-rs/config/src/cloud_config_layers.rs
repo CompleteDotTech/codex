@@ -91,11 +91,8 @@ fn cloud_config_layers_from_fragments_impl(
         let value: TomlValue =
             toml::from_str(&raw_toml).map_err(|err| CloudConfigLayerError::Parse {
                 fragment: source_ref.clone(),
-                message: if crate::storage_candidate::redacted_parse_error(&raw_toml).is_some() {
-                    "invalid configuration with storage candidate".to_string()
-                } else {
-                    err.to_string()
-                },
+                message: crate::storage_candidate::redacted_parse_error(&raw_toml)
+                    .map_or_else(|| err.to_string(), |redacted| redacted.to_string()),
             })?;
         if strict_config {
             validate_fragment_strictly(&source_ref, &raw_toml, &value, base_dir)?;
