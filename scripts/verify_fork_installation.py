@@ -18,7 +18,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         receipt = read_staged_fork_receipt(args.install_root, args.slot_id)
-    except (OSError, ValueError, NotImplementedError):
+    except (OSError, ValueError, NotImplementedError, RecursionError):
         # Do not print parser, OS paths or arbitrary receipt contents on failure.
         print(json.dumps({"status": "unverified", "action": "manualReconciliation"}))
         return 1

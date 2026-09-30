@@ -119,3 +119,29 @@ class InstallationStatusTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "receipt changed"):
                 read_staged_fork_receipt(self.install, slot.name)
         self.assertTrue(receipt.is_file())
+
+    def test_deeply_nested_receipt_is_redacted_without_mutation(self) -> None:
+        slot = stage_fork_package(self.package, self.install, self.digest)
+        receipt = self.install / "fork-receipts" / (slot.name + ".json")
+        malformed = b"[" * 100_000 + b"0" + b"]" * 100_000
+        receipt.write_bytes(malformed)
+        before = {
+            str(p.relative_to(self.install)): p.read_bytes()
+            for p in self.install.rglob("*")
+            if p.is_file()
+        }
+        result = self.status(slot.name)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(
+            json.loads(result.stdout),
+            {"status": "unverified", "action": "manualReconciliation"},
+        )
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(
+            {
+                str(p.relative_to(self.install)): p.read_bytes()
+                for p in self.install.rglob("*")
+                if p.is_file()
+            },
+            before,
+        )
