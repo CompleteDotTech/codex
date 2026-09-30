@@ -32,6 +32,7 @@ fn move_rollout_with_before_quarantine(
         SourceBinding::Unbound,
         || Ok(()),
         before_quarantine,
+        sync_parent_directory,
     )
 }
 
@@ -62,6 +63,7 @@ fn bound_move_rejects_same_bytes_replacement_during_staging() -> io::Result<()> 
             Ok(())
         },
         || Ok(()),
+        sync_parent_directory,
     )
     .expect_err("replacement must be rejected before publication");
 
@@ -102,6 +104,7 @@ fn bound_move_rejects_same_inode_digest_change_during_staging() -> io::Result<()
                 .set_times(FileTimes::new().set_modified(modified))
         },
         || Ok(()),
+        sync_parent_directory,
     )
     .expect_err("content change must be rejected before publication");
 
@@ -147,7 +150,7 @@ fn prepare_move_intent(source: &Path, destination: &Path) -> io::Result<RolloutM
         quarantine_path: quarantine_dir.join("quarantined-source"),
         receipt_publication: None,
     };
-    write_rollout_move_intent(&rollout_move_intent_path(destination), &intent)?;
+    write_rollout_move_intent(&rollout_move_intent_path(destination), &intent, sync_parent_directory)?;
     Ok(intent)
 }
 
@@ -232,9 +235,9 @@ fn oversized_intent_is_rejected_before_publication() -> io::Result<()> {
     let intent_path = rollout_move_intent_path(&destination);
     std::fs::remove_file(&intent_path)?;
     intent.source = intent.source.join("x".repeat(4096));
-    let error = write_rollout_move_intent(&intent_path, &intent)
+    let error = write_rollout_move_intent(&intent_path, &intent, sync_parent_directory)
         .expect_err("receipt too large for recovery must not be published");
-    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert!(!intent_path.exists());
     Ok(())
 }
@@ -257,9 +260,9 @@ fn encoded_native_path_cannot_exceed_receipt_limit() -> io::Result<()> {
     std::fs::remove_file(&intent_path)?;
     intent.source = std::ffi::OsString::from_vec(vec![0xff; 2048]).into();
 
-    let error = write_rollout_move_intent(&intent_path, &intent)
+    let error = write_rollout_move_intent(&intent_path, &intent, sync_parent_directory)
         .expect_err("encoded receipt too large for recovery must not be published");
-    assert_eq!(error.kind(), io::ErrorKind::Other);
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert!(!intent_path.exists());
     Ok(())
 }
@@ -629,4 +632,75 @@ fn pathname_replacement_before_quarantine_is_preserved() -> io::Result<()> {
     assert!(!source.exists());
     assert!(verify_published_rollout_move(&source, &destination, home.path()).is_err());
     Ok(())
+}
+
+#[test]
+fn retry_preserves_stage_after_published_intent_sync_fails() -> io::Result<()> {
+    let home = tempfile::tempdir()?;
+    let sessions = home.path().join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir(&sessions)?;
+    std::fs::create_dir(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout contents")?;
+
+    let error = move_rollout_noclobber_retained_with_intent_sync(
+        &source,
+        &destination,
+        home.path(),
+        |path| {
+            assert!(path.exists(), "the intent must already be published");
+            Err(io::Error::other("injected intent directory sync failure"))
+        },
+    )
+    .expect_err("failed intent sync must be reported");
+    assert_eq!(error.to_string(), "injected intent directory sync failure");
+    let intent = read_rollout_move_intent(&rollout_move_intent_path(&destination))?;
+    assert_eq!(std::fs::read(&source)?, b"rollout contents");
+    // The newer149 protocol records an empty stage before copying rollout bytes.
+    assert_eq!(std::fs::read(&intent.stage_path)?, Vec::<u8>::new());
+    assert!(!destination.exists());
+
+    move_rollout_noclobber(&source, &destination, home.path())?;
+    assert!(!source.exists());
+    assert!(!intent.stage_path.exists());
+    assert!(!rollout_move_intent_path(&destination).exists());
+    assert_eq!(std::fs::read(&destination)?, b"rollout contents");
+    Ok(())
+}
+
+#[test]
+fn oversized_intent_preserves_source_before_publication() -> io::Result<()> {
+    let root = tempfile::tempdir()?;
+    let mut home = root.path().to_path_buf();
+    for _ in 0..10 {
+        home.push("p".repeat(/*n*/ 140));
+    }
+    let sessions = home.join(codex_rollout::SESSIONS_SUBDIR);
+    let archived = home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+    std::fs::create_dir_all(&sessions)?;
+    std::fs::create_dir_all(&archived)?;
+    let source = sessions.join("rollout.jsonl");
+    let destination = archived.join("rollout.jsonl");
+    std::fs::write(&source, b"rollout contents")?;
+
+    let error = move_rollout_noclobber_retained(&source, &destination, &home)
+        .expect_err("oversized receipt must fail before source unlink");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(std::fs::read(&source)?, b"rollout contents");
+    assert!(!destination.exists());
+    assert!(!rollout_move_intent_path(&destination).exists());
+    Ok(())
+}
+
+fn move_rollout_noclobber_retained_with_intent_sync(
+    source: &Path,
+    destination: &Path,
+    home: &Path,
+    sync: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    move_rollout_with_hooks(
+        source, destination, home, SourceBinding::Unbound, || Ok(()), || Ok(()), sync,
+    )
 }

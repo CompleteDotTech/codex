@@ -33,8 +33,17 @@ fn staging_path(stage: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-pub(super) fn write(path: &Path, intent: &RolloutMoveIntent) -> io::Result<()> {
-    write_with_publication(path, intent, |temporary, canonical| {
+#[cfg(test)]
+fn write(path: &Path, intent: &RolloutMoveIntent) -> io::Result<()> {
+    write_with_sync(path, intent, sync_parent_directory)
+}
+
+pub(super) fn write_with_sync(
+    path: &Path,
+    intent: &RolloutMoveIntent,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    write_with_publication_and_sync(path, intent, |temporary, canonical| {
         let temporary = tempfile::TempPath::try_from_path(temporary)?;
         if let Err(error) = temporary.persist_noclobber(canonical) {
             let kind = error.error.kind();
@@ -42,13 +51,23 @@ pub(super) fn write(path: &Path, intent: &RolloutMoveIntent) -> io::Result<()> {
             return Err(io::Error::from(kind));
         }
         Ok(())
-    })
+    }, sync_parent)
 }
 
+#[cfg(test)]
 fn write_with_publication(
     path: &Path,
     intent: &RolloutMoveIntent,
     publish: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    write_with_publication_and_sync(path, intent, publish, sync_parent_directory)
+}
+
+fn write_with_publication_and_sync(
+    path: &Path,
+    intent: &RolloutMoveIntent,
+    publish: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
     let temporary = staging_path(&intent.stage_path);
     let mut options = OpenOptions::new();
@@ -68,13 +87,13 @@ fn write_with_publication(
     bytes.push(b'\n');
     if bytes.len() as u64 > MAX_BYTES {
         // No receipt bytes were written. Keep the empty resource pending journal ownership.
-        return Err(io::Error::other("rollout move intent is too large"));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "rollout move intent is too large"));
     }
     file.write_all(&bytes)?;
     file.sync_all()?;
     drop(file);
     publish(&temporary, path)?;
-    sync_parent_directory(path)
+    sync_parent(path)
 }
 
 fn read_owned(path: &Path, identity: RolloutFileIdentity) -> io::Result<Vec<u8>> {

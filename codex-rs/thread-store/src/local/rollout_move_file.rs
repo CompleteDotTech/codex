@@ -41,6 +41,7 @@ pub(super) fn move_rollout_noclobber_retained_bound(
         binding,
         || Ok(()),
         || binding.verify(source),
+        sync_parent_directory,
     )
 }
 
@@ -80,6 +81,7 @@ fn move_rollout_with_hooks(
     binding: SourceBinding,
     before_staging: impl FnOnce() -> io::Result<()>,
     before_quarantine: impl FnOnce() -> io::Result<()>,
+    sync_intent_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
     let canonical_sessions =
         std::fs::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
@@ -180,7 +182,7 @@ fn move_rollout_with_hooks(
                 receipt_publication: None,
             };
             // Publication errors can follow a durable receipt. Retain its resources.
-            write_rollout_move_intent(&intent_path, &intent)?;
+            write_rollout_move_intent(&intent_path, &intent, sync_intent_parent)?;
             // The receipt must be durable before any rollout bytes enter the stage.
             // A crash before this point can leave only an empty, unowned tempfile.
             intent
@@ -456,8 +458,12 @@ fn rollout_move_intent_path(destination: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn write_rollout_move_intent(path: &Path, intent: &RolloutMoveIntent) -> io::Result<()> {
-    receipt_publication::write(path, intent)
+fn write_rollout_move_intent(
+    path: &Path,
+    intent: &RolloutMoveIntent,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    receipt_publication::write_with_sync(path, intent, sync_parent)
 }
 
 fn read_rollout_move_intent(path: &Path) -> io::Result<RolloutMoveIntent> {
