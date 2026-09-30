@@ -125,7 +125,10 @@ pub(super) fn move_rollout_noclobber(
     destination: &Path,
     codex_home: &Path,
 ) -> std::io::Result<()> {
-    let canonical_home = std::fs::canonicalize(codex_home)?;
+    let canonical_sessions =
+        std::fs::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
+    let canonical_archived =
+        std::fs::canonicalize(codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR))?;
     let canonical_source = std::fs::canonicalize(source)?;
     let canonical_destination_parent = std::fs::canonicalize(
         destination
@@ -135,19 +138,22 @@ pub(super) fn move_rollout_noclobber(
     let destination_name = destination
         .file_name()
         .ok_or_else(|| std::io::Error::other("rollout destination has no filename"))?;
-    if !canonical_source.starts_with(&canonical_home)
-        || !canonical_destination_parent.starts_with(&canonical_home)
-        || !std::fs::symlink_metadata(source)?.file_type().is_file()
-    {
+    let within_collections = (canonical_source.starts_with(&canonical_sessions)
+        && canonical_destination_parent.starts_with(&canonical_archived))
+        || (canonical_source.starts_with(&canonical_archived)
+            && canonical_destination_parent.starts_with(&canonical_sessions));
+    if !within_collections || !std::fs::symlink_metadata(source)?.file_type().is_file() {
         return Err(std::io::Error::other(
-            "rollout move is outside the Codex home or is not a file",
+            "rollout move is outside its collection or is not a file",
         ));
     }
 
-    // Both collections are under one home. Linking publishes the destination only if absent.
-    // If unlink fails, retain both links so neither copy is lost.
-    std::fs::hard_link(source, canonical_destination_parent.join(destination_name))?;
-    std::fs::remove_file(source)
+    // One no-replace rename either moves the name or leaves it untouched. In particular,
+    // publication cannot succeed before a separately failing source unlink.
+    super::rollout_move_noclobber_rename::rename_noclobber(
+        &canonical_source,
+        &canonical_destination_parent.join(destination_name),
+    )
 }
 
 pub(super) fn restore_rollout_moves(
