@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from .coverage_matrix import FILES, TABLES, audit_coverage
+from .coverage_matrix import FILES, PRIMARY_PROJECT_EDGES, TABLES, audit_coverage
 
 
 class CoverageMatrixTests(unittest.TestCase):
@@ -23,3 +23,17 @@ class CoverageMatrixTests(unittest.TestCase):
         for source in sources:
             with self.subTest(source=source):
                 self.assertTrue((root / source).exists())
+
+    def test_project_family_edges_match_production_sql_clauses(self):
+        matrix = audit_coverage()["stores"]["state_5.sqlite"]
+        root = Path(__file__).resolve().parents[2] / "codex-rs"
+        for table, modules in PRIMARY_PROJECT_EDGES.items():
+            self.assertEqual(matrix[table]["observed_direct_sql"], modules)
+            for module, operations in modules.items():
+                # Only check the production prefix: inline tests and test-only
+                # helpers may contain SQL that no runtime path executes.
+                source = (root / module).read_text(encoding="utf-8")
+                production = source.partition("#[cfg(test)]")[0]
+                for operation, clause in operations.items():
+                    with self.subTest(table=table, module=module, operation=operation):
+                        self.assertIn(clause, production)

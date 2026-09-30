@@ -90,9 +90,18 @@ and eight file classes to implementation issues and direct source anchors. Its
 migration decision. Producer/consumer closure and forward/reverse treatment are
 explicitly unresolved. The file-class list has no independent completeness
 check. A successful matrix audit never permits activation.
+For the project/thread primary-state family, the matrix also records selected
+direct read/write SQL clauses in the primary runtime modules. The source test
+checks the emitted mappings and those exact clauses in each module's prefix
+before its first `#[cfg(test)]` marker, excluding test helpers and fixtures.
+This conservative check does not parse Rust or SQL, enumerate every caller, or
+prove cross-host path handling. The transitive producer/consumer audit stays
+partial.
 `CANONICAL_HISTORY_SOURCES.md` separately pins a partial source-level map of
 rollout, fork, archive, compression, and attachment call sites. It does not
 qualify a coherent capture or second-host replay.
+`SPLIT_STORE_FIXTURES.md` documents populated old primary logs/memory rows at
+their drop boundaries alongside distinct or absent modern split stores.
 
 `migrate`, `regenerate`, `retain`, and `absent` are distinct treatments. Only
 `migrate` contributes verified record counts. Non-migrated entries cannot carry
