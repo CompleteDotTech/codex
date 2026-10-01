@@ -118,7 +118,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     .fetch_one(&mut *transaction)
     .await
     .expect("read named metadata and history");
-    assert_eq!((format, history), (4, 4));
+    assert_eq!((format, history), (5, 5));
     transaction
         .rollback()
         .await
@@ -130,11 +130,36 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
             .fetch_one(&mut *runtime_connection)
             .await
             .expect("runtime reads named metadata");
-    assert_eq!(visible, 4);
+    assert_eq!(visible, 5);
+    let pinned: (String, String, Option<String>) = sqlx::query_as(
+        "SELECT id, name, appearance FROM codex_storage_isolation.thread_sections WHERE name = 'Pinned'",
+    )
+    .fetch_one(&mut *runtime_connection)
+    .await
+    .expect("named runtime reads pinned section");
+    assert_eq!(
+        pinned,
+        (
+            "01984de2-8f74-7c91-a3b2-5c5e937cf318".to_string(),
+            "Pinned".to_string(),
+            None
+        )
+    );
     let denied = sqlx::query("SELECT version FROM codex_storage_isolation._codex_pg_migrations")
         .execute(&mut *runtime_connection)
         .await
         .expect_err("runtime must not read named migration history");
+    assert_eq!(
+        denied
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("42501")
+    );
+    let denied = sqlx::query("SELECT id FROM codex_storage.thread_sections")
+        .execute(&mut *runtime_connection)
+        .await
+        .expect_err("named runtime cannot read default sections");
     assert_eq!(
         denied
             .as_database_error()
@@ -169,16 +194,27 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
             .as_deref(),
         Some("42501")
     );
+    let denied = sqlx::query("SELECT id FROM codex_storage_isolation.thread_sections")
+        .execute(&mut *default_connection)
+        .await
+        .expect_err("default runtime cannot read named sections");
+    assert_eq!(
+        denied
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("42501")
+    );
     drop(default_connection);
 
     let capabilities = ClientCapabilities {
-        min_schema_format: 4,
-        max_schema_format: 4,
-        reader_version: 4,
-        writer_version: 4,
+        min_schema_format: 5,
+        max_schema_format: 5,
+        reader_version: 5,
+        writer_version: 5,
     };
     let compatible = Ok(CompatibilityResult {
-        schema_format: 4,
+        schema_format: 5,
         activation_permitted: false,
     });
     assert_eq!(
@@ -216,7 +252,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
 
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET min_writer_version = 5",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET min_writer_version = 6",
     )
     .await;
     assert_eq!(
@@ -241,7 +277,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     );
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET min_reader_version = 5",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET min_reader_version = 6",
     )
     .await;
     assert_eq!(
@@ -256,7 +292,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     );
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 5, min_reader_version = 4, min_writer_version = 4",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 6, min_reader_version = 5, min_writer_version = 5",
     )
     .await;
     assert_eq!(
@@ -271,7 +307,7 @@ async fn real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles() {
     );
     owner_sql(
         &first,
-        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 4",
+        "UPDATE codex_storage_isolation.codex_schema_meta SET format_version = 5",
     )
     .await;
 
