@@ -15,7 +15,7 @@ const MAX_TIMEOUT_SECONDS: u16 = 30;
 const MAX_POOL_CONNECTIONS: u16 = 32;
 
 /// A saved proposal, separate from the host-owned active backend identity.
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "backend", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageCandidateProfile {
     LocalSqlite,
@@ -32,7 +32,7 @@ impl fmt::Debug for StorageCandidateProfile {
 }
 
 /// A host-owned reference to a protected credential, never its value.
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CredentialSource {
     Environment { variable: EnvironmentVariableName },
@@ -49,7 +49,8 @@ impl fmt::Debug for CredentialSource {
 }
 
 /// An environment variable name selected by the owning host.
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq, schemars::JsonSchema)]
+#[schemars(transparent)]
 pub struct EnvironmentVariableName(String);
 
 impl EnvironmentVariableName {
@@ -104,7 +105,9 @@ impl<'de> Deserialize<'de> for CredentialRef {
 }
 
 /// The only TLS policy admitted by this initial candidate format.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum TlsVerification {
     #[default]
@@ -112,7 +115,7 @@ pub enum TlsVerification {
 }
 
 /// Verify the certificate and server name, using system roots or a host path.
-#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TlsSettings {
     #[serde(default)]
@@ -137,16 +140,22 @@ impl fmt::Debug for TlsSettings {
 
 /// PostgreSQL connection candidate. Deserialization validates structure only;
 /// it does not resolve credentials, open a socket, or claim authority.
-#[derive(Clone, Eq, PartialEq, Serialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+#[schemars(deny_unknown_fields)]
 pub struct RemotePostgresProfile {
     endpoint: String,
+    #[schemars(range(min = 1))]
     port: u16,
     database: String,
     namespace: String,
     credential: CredentialSource,
+    #[serde(default)]
     tls: TlsSettings,
+    #[schemars(range(min = 1, max = 30))]
     connect_timeout_seconds: u16,
+    #[schemars(range(min = 1, max = 30))]
     pool_acquire_timeout_seconds: u16,
+    #[schemars(range(min = 1, max = 32))]
     max_connections: u16,
 }
 
