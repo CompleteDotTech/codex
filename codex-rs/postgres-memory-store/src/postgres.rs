@@ -3,6 +3,7 @@ use anyhow::anyhow;
 use chrono::Duration;
 use chrono::Utc;
 use codex_postgres_runtime::PostgresPool;
+use codex_postgres_runtime::require_storage_open;
 use codex_postgres_thread_rows::epoch_seconds_to_datetime;
 use codex_postgres_thread_rows::thread_columns;
 use codex_postgres_thread_rows::thread_metadata_from_row;
@@ -73,6 +74,7 @@ impl PostgresMemoryStore {
             .map_err(|error| anyhow!("PostgreSQL memory storage is unavailable: {error:?}"))?;
         timeout(QUERY_TIMEOUT, async {
             let mut tx = connection.begin().await?;
+            require_storage_open(&mut tx).await?;
             lock_memory_in(&mut tx).await?;
             let value = operation(&mut tx).await?;
             tx.commit().await?;

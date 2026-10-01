@@ -13,6 +13,7 @@ use codex_postgres_rollout_store::RolloutStoreError;
 use codex_postgres_rollout_store::append_in;
 use codex_postgres_runtime::PostgresPool;
 use codex_postgres_runtime::ThreadOwnership;
+use codex_postgres_runtime::require_storage_open;
 use codex_postgres_thread_catalog::get_thread_in;
 use codex_postgres_thread_catalog::upsert_thread_in;
 use codex_protocol::ThreadId;
@@ -290,6 +291,11 @@ impl LiveThread {
             })?;
         let outcome: Result<(), ThreadStoreError> = async {
             let mut tx = connection.begin().await.map_err(database)?;
+            require_storage_open(&mut tx)
+                .await
+                .map_err(|error| ThreadStoreError::Internal {
+                    message: format!("PostgreSQL thread storage cannot accept writes: {error}"),
+                })?;
             // The lease is checked while holding its row, so a takeover cannot slip in between
             // this check and the commit that follows it.
             if let Some((owner_id, token)) = fence {

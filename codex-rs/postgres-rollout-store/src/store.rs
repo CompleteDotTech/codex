@@ -7,6 +7,7 @@
 
 use codex_postgres_runtime::PoolError;
 use codex_postgres_runtime::PostgresPool;
+use codex_postgres_runtime::require_storage_open;
 use codex_protocol::ThreadId;
 use sqlx::Acquire;
 use sqlx::PgConnection;
@@ -283,11 +284,15 @@ pub async fn append_in(
     Ok(expected_position + count)
 }
 
-/// Lock the thread row, which also proves the thread exists.
+/// Lock the thread row, which also proves the thread exists. Every write takes this lock
+/// first, so it is also where writes are refused while a migration holds the store.
 async fn lock_thread(
     connection: &mut PgConnection,
     thread_id: ThreadId,
 ) -> Result<(), RolloutStoreError> {
+    require_storage_open(connection)
+        .await
+        .map_err(|error| RolloutStoreError::Unavailable(error.to_string()))?;
     sqlx::query_scalar::<_, i32>(
         "SELECT 1 FROM codex_storage.threads WHERE id = $1::uuid FOR UPDATE",
     )

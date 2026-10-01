@@ -141,6 +141,10 @@ pub enum MigrationError {
     Mismatch { domain: &'static str },
     #[error("the run stopped after its batch limit and can be resumed")]
     Interrupted,
+    #[error("the target already holds data, and a migration never merges into existing history")]
+    TargetNotEmpty,
+    #[error("the run has not been verified, so it cannot be activated")]
+    NotVerified,
 }
 
 fn target(error: impl std::fmt::Display) -> MigrationError {
@@ -235,6 +239,59 @@ impl Migrator {
         Ok(VerificationReport { run_id, domains })
     }
 
+    /// Make a verified import the store's content and reopen the store for writers.
+    ///
+    /// Returns the new generation. Only the run that holds the store and passed verification
+    /// can activate it, so a partial or unverified copy never becomes writable.
+    pub async fn activate(&self, run_id: Uuid) -> Result<i64, MigrationError> {
+        let mut connection = self.connection().await?;
+        let mut tx = connection.begin().await.map_err(target)?;
+        let row = sqlx::query(
+            "SELECT state, run_id, generation FROM codex_storage.storage_activation \
+             WHERE singleton FOR UPDATE",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(target)?;
+        let state: String = row.try_get("state").map_err(target)?;
+        let held: Option<Uuid> = row.try_get("run_id").map_err(target)?;
+        let generation: i64 = row.try_get("generation").map_err(target)?;
+        if state != "migrating" || held != Some(run_id) {
+            return Err(MigrationError::TargetBusy);
+        }
+        let run_state: Option<String> = sqlx::query_scalar(
+            "SELECT state FROM codex_storage.storage_migration_runs WHERE run_id = $1",
+        )
+        .bind(run_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(target)?;
+        if run_state.as_deref() != Some("verified") {
+            return Err(MigrationError::NotVerified);
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "UPDATE codex_storage.storage_migration_runs SET state = 'activated', \
+             updated_at_ms = $2 WHERE run_id = $1",
+        )
+        .bind(run_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(target)?;
+        sqlx::query(
+            "UPDATE codex_storage.storage_activation SET state = 'open', generation = $1, \
+             updated_at_ms = $2 WHERE singleton",
+        )
+        .bind(generation + 1)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(target)?;
+        tx.commit().await.map_err(target)?;
+        Ok(generation + 1)
+    }
+
     async fn connection(
         &self,
     ) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, MigrationError> {
@@ -280,6 +337,21 @@ impl Migrator {
             }
             (run_id, true)
         } else {
+            let occupied: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM codex_storage.threads) \
+                 OR EXISTS (SELECT 1 FROM codex_storage.projects) \
+                 OR EXISTS (SELECT 1 FROM codex_storage.queued_items) \
+                 OR EXISTS (SELECT 1 FROM codex_storage.logs) \
+                 OR EXISTS (SELECT 1 FROM codex_storage.agent_board_posts) \
+                 OR EXISTS (SELECT 1 FROM codex_storage.memory_stage1_outputs) \
+                 OR EXISTS (SELECT 1 FROM codex_storage.thread_goals)",
+            )
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(target)?;
+            if occupied {
+                return Err(MigrationError::TargetNotEmpty);
+            }
             let run_id = Uuid::now_v7();
             sqlx::query(
                 "INSERT INTO codex_storage.storage_migration_runs \
@@ -470,3 +542,7 @@ async fn checkpoint(
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "gate_tests.rs"]
+mod gate_tests;

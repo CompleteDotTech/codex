@@ -60,7 +60,7 @@ async fn connect(state: &Path, role: &str) -> Arc<PostgresPool> {
 /// Leave the shared namespace with no migrated data and no run, as a fresh target would be.
 /// Project keys cannot be deleted by the runtime role; the live-test fixtures clear them before
 /// this test, and a rerun of the same source writes the same keys.
-async fn reset_target(pool: &PostgresPool) {
+pub(super) async fn reset_target(pool: &PostgresPool) {
     let mut connection = pool.acquire().await.expect("connection");
     for statement in [
         "DELETE FROM codex_storage.storage_migration_runs",
@@ -89,7 +89,7 @@ async fn reset_target(pool: &PostgresPool) {
     }
 }
 
-fn metadata(index: i64, base: DateTime<Utc>, source: SessionSource) -> ThreadMetadata {
+pub(super) fn metadata(index: i64, base: DateTime<Utc>, source: SessionSource) -> ThreadMetadata {
     metadata_at(
         index,
         base,
@@ -595,5 +595,5 @@ async fn real_postgres_catalog_migration() {
         matches!(changed, Err(MigrationError::Mismatch { domain: "threads" })),
         "{changed:?}"
     );
-    reset_target(&pool).await;
+    super::gate_tests::gate_phase(&pool, &source, threads[0].id).await;
 }

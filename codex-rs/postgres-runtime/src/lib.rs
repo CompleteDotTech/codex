@@ -32,6 +32,9 @@ use std::time::Duration;
 use tokio::time::timeout;
 use zeroize::Zeroizing;
 
+mod activation_gate;
+pub use activation_gate::ActivationGateError;
+pub use activation_gate::require_storage_open;
 mod bootstrap;
 pub use bootstrap::BootstrapError;
 pub use bootstrap::bootstrap_codex_storage;
