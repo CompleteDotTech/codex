@@ -117,6 +117,19 @@ fn strict_config_accepts_tool_registry_config() {
 }
 
 #[test]
+fn strict_config_accepts_retired_tui_prompt_suggestions() {
+    let path = Path::new("/tmp/config.toml");
+
+    for value in ["true", "false"] {
+        let contents = format!("[tui]\nprompt_suggestions = {value}\n");
+        assert_eq!(
+            config_error_from_ignored_toml_fields::<ConfigToml>(path, &contents),
+            None
+        );
+    }
+}
+
+#[test]
 fn strict_config_rejects_unknown_profile_feature_key() {
     let path = Path::new("/tmp/config.toml");
     let contents = r#"
