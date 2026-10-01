@@ -249,7 +249,7 @@ async fn search_rollout_matches_uses_logical_path_for_compressed_rollout() -> an
     compress_now(&rollout_path)?;
 
     let matches = search_rollout_matches(
-        std::path::Path::new("missing-rg-for-test"),
+        home.path().join("missing-rg-for-test").as_path(),
         home.path(),
         /*archived*/ false,
         "search term",
@@ -520,7 +520,9 @@ fn persist_temp_file_noclobber_does_not_replace_existing_destination() -> anyhow
     fs::write(&temp_path, "candidate rollout")?;
     fs::write(&destination, "existing rollout")?;
 
-    persist_temp_file_noclobber(&temp_path, &destination)?;
+    let err = persist_temp_file_noclobber(&temp_path, &destination)
+        .expect_err("occupied destination must refuse materialization");
+    assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
 
     assert!(!temp_path.exists());
     assert_eq!(fs::read_to_string(destination)?, "existing rollout");

@@ -3200,6 +3200,7 @@ mod tests {
             request_id: RequestId::Integer(7),
             response: v2::ThreadStartResponse {
                 disabled_plugin_ids: Vec::new(),
+                persisted_on_start: false,
                 thread: v2::Thread {
                     originator: None,
                     environments: None,
@@ -3297,6 +3298,7 @@ mod tests {
                         "turns": []
                     },
                     "model": "gpt-5",
+                    "persistedOnStart": false,
                     "modelProvider": "openai",
                     "serviceTier": null,
                     "disabledPluginIds": [],
