@@ -24,6 +24,7 @@ pub use credential_resolution::ResolvedCredential;
 pub use cutover::AuthorityState;
 pub use cutover::CutoverIntent;
 pub use cutover::abandon_cutover;
+pub use cutover::attach_remote_dataset;
 pub use cutover::authority_state;
 pub use cutover::begin_cutover;
 pub use cutover::complete_cutover;

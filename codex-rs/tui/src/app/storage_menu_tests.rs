@@ -66,6 +66,14 @@ fn plan(action: StoragePlanAction, blockers: Vec<StorageBlocker>) -> StoragePlan
     }
 }
 
+fn attach_plan(blockers: Vec<StorageBlocker>) -> StoragePlan {
+    let mut attach = plan(StoragePlanAction::Attach, blockers);
+    attach.estimate = None;
+    attach.connection.dataset_id = Some("0194e0a0-0000-7000-8000-000000000001".to_string());
+    attach.connection.empty = Some(false);
+    attach
+}
+
 fn operation(state: StorageOperationState, blocker: Option<StorageBlocker>) -> StorageOperation {
     StorageOperation {
         operation_id: "0194e0a0-0000-7000-8000-0000000000bb".to_string(),
@@ -157,6 +165,21 @@ async fn status_views_keep_the_active_backend_apart_from_a_saved_profile() {
         let (app, _rx) = app_with(view).await;
         insta::assert_snapshot!(name, render_bottom_popup(&app.chat_widget, /*width*/ 80));
     }
+}
+
+#[tokio::test]
+async fn only_a_never_managed_host_with_a_profile_is_offered_the_join() {
+    let (app, _rx) = app_with(status_view(&status(
+        StorageBackend::LocalSqlite,
+        StorageAuthority::Unmanaged,
+        true,
+        Vec::new(),
+    )))
+    .await;
+    insta::assert_snapshot!(
+        "storage_status_never_managed_with_profile",
+        render_bottom_popup(&app.chat_widget, /*width*/ 80)
+    );
 }
 
 #[tokio::test]
@@ -255,6 +278,12 @@ async fn plans_list_what_moves_and_only_a_clear_plan_can_start() {
             plan(StoragePlanAction::Return, Vec::new()),
             80,
         ),
+        ("storage_plan_attach_ready", attach_plan(Vec::new()), 80),
+        (
+            "storage_plan_attach_already_managed",
+            attach_plan(vec![StorageBlocker::HomeAlreadyManaged]),
+            80,
+        ),
     ] {
         let (app, _rx) = app_with(plan_view(&plan)).await;
         insta::assert_snapshot!(name, render_bottom_popup(&app.chat_widget, width));
@@ -265,9 +294,30 @@ async fn plans_list_what_moves_and_only_a_clear_plan_can_start() {
         app_with(plan_view(&plan(StoragePlanAction::Migrate, Vec::new()))).await;
     app.chat_widget.handle_key_event(KeyCode::Enter.into());
     match rx.try_recv().unwrap() {
-        AppEvent::StorageStartRequested { action, plan_id } => {
+        AppEvent::StorageStartRequested {
+            action,
+            plan_id,
+            dataset_id,
+        } => {
             assert_eq!(action, StoragePlanAction::Migrate);
             assert_eq!(plan_id, "0194e0a0-0000-7000-8000-0000000000aa");
+            assert_eq!(dataset_id, None);
+        }
+        other => panic!("expected a start request, got {other:?}"),
+    }
+
+    // Joining sends back the dataset the operator was shown.
+    let (mut app, mut rx) = app_with(plan_view(&attach_plan(Vec::new()))).await;
+    app.chat_widget.handle_key_event(KeyCode::Enter.into());
+    match rx.try_recv().unwrap() {
+        AppEvent::StorageStartRequested {
+            action, dataset_id, ..
+        } => {
+            assert_eq!(action, StoragePlanAction::Attach);
+            assert_eq!(
+                dataset_id.as_deref(),
+                Some("0194e0a0-0000-7000-8000-000000000001")
+            );
         }
         other => panic!("expected a start request, got {other:?}"),
     }

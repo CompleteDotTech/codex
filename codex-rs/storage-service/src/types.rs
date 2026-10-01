@@ -34,6 +34,7 @@ pub enum BlockerCode {
     AuthorityInvalid,
     AlreadyRemote,
     NotRemote,
+    HomeAlreadyManaged,
     SqliteHomeDiffersFromCodexHome,
     StalePlan,
     NotConfirmed,
@@ -68,6 +69,7 @@ impl BlockerCode {
             Self::AuthorityInvalid => "authority_invalid",
             Self::AlreadyRemote => "already_remote",
             Self::NotRemote => "not_remote",
+            Self::HomeAlreadyManaged => "home_already_managed",
             Self::SqliteHomeDiffersFromCodexHome => "sqlite_home_differs_from_codex_home",
             Self::StalePlan => "stale_plan",
             Self::NotConfirmed => "not_confirmed",
@@ -252,4 +254,6 @@ pub enum PlanAction {
     Migrate,
     /// Copy the remote dataset back into this home and make local files authoritative.
     Return,
+    /// Join a dataset that already exists, copying nothing from this home.
+    Attach,
 }

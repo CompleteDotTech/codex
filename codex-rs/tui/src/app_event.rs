@@ -308,6 +308,8 @@ pub(crate) enum AppEvent {
     StorageStartRequested {
         action: codex_app_server_protocol::StoragePlanAction,
         plan_id: String,
+        /// The dataset the operator saw in the preview, for joining one.
+        dataset_id: Option<String>,
     },
 
     /// The operator asked to make a verified copy authoritative.

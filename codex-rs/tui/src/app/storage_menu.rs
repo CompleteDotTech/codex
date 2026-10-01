@@ -83,6 +83,7 @@ pub(super) fn blocker_text(blocker: StorageBlocker) -> &'static str {
         StorageBlocker::AuthorityInvalid => "This host's storage records are unusable",
         StorageBlocker::AlreadyRemote => "History is already kept in PostgreSQL",
         StorageBlocker::NotRemote => "History is not kept in PostgreSQL",
+        StorageBlocker::HomeAlreadyManaged => "This host already belongs to a dataset",
         StorageBlocker::SqliteHomeDiffersFromCodexHome => {
             "The SQLite home differs from the Codex home"
         }
@@ -119,6 +120,7 @@ fn action_text(action: StoragePlanAction) -> &'static str {
     match action {
         StoragePlanAction::Migrate => "Migrate this host's history to PostgreSQL",
         StoragePlanAction::Return => "Return PostgreSQL history to this host's local files",
+        StoragePlanAction::Attach => "Join the existing PostgreSQL dataset",
     }
 }
 
@@ -219,6 +221,19 @@ pub(super) fn status_view(status: &StorageStatus) -> SelectionViewParams {
             } else {
                 StoragePlanAction::Migrate
             };
+            if status.authority == StorageAuthority::Unmanaged && status.candidate_configured {
+                items.push(SelectionItem {
+                    name: "Preview joining an existing dataset".to_string(),
+                    description: Some(
+                        "Copies nothing; this host's own history stays untouched".to_string(),
+                    ),
+                    actions: vec![Box::new(|tx| {
+                        tx.send(AppEvent::StoragePlanRequested(StoragePlanAction::Attach));
+                    })],
+                    dismiss_on_select: true,
+                    ..Default::default()
+                });
+            }
             items.push(SelectionItem {
                 name: if remote {
                     "Preview returning to local files".to_string()
@@ -300,6 +315,14 @@ pub(super) fn plan_view(plan: &StoragePlan) -> SelectionViewParams {
             format!("Destination: {}", plan.destination).dim(),
         ));
     }
+    if plan.action == StoragePlanAction::Attach
+        && let Some(dataset) = &plan.connection.dataset_id
+    {
+        header.push(Line::from(format!("Dataset: {dataset}").dim()));
+        header.push(Line::from(
+            "Nothing is copied. This host's own history stays where it is, unused.".dim(),
+        ));
+    }
     if let Some(estimate) = &plan.estimate {
         header.push(Line::from("This host holds:".dim()));
         header.extend(
@@ -324,13 +347,24 @@ pub(super) fn plan_view(plan: &StoragePlan) -> SelectionViewParams {
         ));
         let action = plan.action;
         let plan_id = plan.plan_id.clone();
+        let dataset_id = plan.connection.dataset_id.clone();
+        let joining = action == StoragePlanAction::Attach;
         items.push(SelectionItem {
-            name: "Start now: other Codex processes are stopped".to_string(),
-            description: Some("Copies and verifies; you decide when to switch".to_string()),
+            name: if joining {
+                "Join now: other Codex processes are stopped".to_string()
+            } else {
+                "Start now: other Codex processes are stopped".to_string()
+            },
+            description: Some(if joining {
+                "Switches this host to the dataset above".to_string()
+            } else {
+                "Copies and verifies; you decide when to switch".to_string()
+            }),
             actions: vec![Box::new(move |tx| {
                 tx.send(AppEvent::StorageStartRequested {
                     action,
                     plan_id: plan_id.clone(),
+                    dataset_id: dataset_id.clone(),
                 });
             })],
             require_explicit_confirmation: true,
@@ -556,6 +590,7 @@ impl App {
         app_server: &AppServerSession,
         action: StoragePlanAction,
         plan_id: String,
+        dataset_id: Option<String>,
     ) {
         self.storage_task(
             app_server,
@@ -567,6 +602,7 @@ impl App {
                             action,
                             plan_id,
                             operation_id: None,
+                            dataset_id,
                             writers_stopped: true,
                             activate: false,
                         },

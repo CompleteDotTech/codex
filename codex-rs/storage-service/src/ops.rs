@@ -16,6 +16,7 @@ use codex_storage_authority::ActiveBackend;
 use codex_storage_authority::AuthorityState;
 use codex_storage_authority::HostCredentialResolver;
 use codex_storage_authority::adopt_quiesced_home;
+use codex_storage_authority::attach_remote_dataset;
 use codex_storage_authority::read_cutover;
 use codex_storage_migration::Cutover;
 use codex_storage_migration::MigrationError;
@@ -155,6 +156,75 @@ impl StorageService {
             }
         })?;
         Ok((record, true))
+    }
+
+    /// Join a dataset that already exists. Nothing is copied or merged: this home's own history
+    /// stays untouched and stops being authoritative. The operator names the dataset they mean,
+    /// so a second client can never join a namespace it did not intend to.
+    pub async fn attach_dataset(
+        &self,
+        operation_id: Uuid,
+        plan_id: Uuid,
+        dataset_id: Uuid,
+        confirmation: Confirmation,
+    ) -> Result<OperationRecord, StorageError> {
+        if let Some(existing) = self.journal.read(operation_id).map_err(internal)? {
+            return Ok(existing);
+        }
+        if !confirmation.writers_stopped {
+            return Err(StorageError(BlockerCode::NotConfirmed));
+        }
+        let plan = self.plan(PlanAction::Attach).await?;
+        if plan.plan_id != plan_id {
+            return Err(StorageError(BlockerCode::StalePlan));
+        }
+        if let Some(blocker) = plan.blockers.first() {
+            return Err(StorageError(*blocker));
+        }
+        if plan.connection.dataset_id != Some(dataset_id) {
+            return Err(StorageError(BlockerCode::DatasetMismatch));
+        }
+        let mut record = OperationRecord {
+            operation_id,
+            action: PlanAction::Attach,
+            plan_digest: plan.digest,
+            state: OperationState::Planned,
+            run_id: None,
+            created_at_ms: now_ms(),
+            updated_at_ms: now_ms(),
+            blocker: None,
+            copied: Vec::new(),
+        };
+        self.journal.create(&record).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                StorageError(BlockerCode::OperationConflict)
+            } else {
+                internal(error)
+            }
+        })?;
+        let storage = match self.connect().await {
+            Ok(storage) => storage,
+            Err(error) => return Err(self.fail(&mut record, error.0)),
+        };
+        self.save(&mut record, OperationState::Committing)?;
+        let activation = storage.activation().await;
+        storage.close().await;
+        let generation = match activation {
+            Ok(activation)
+                if !activation.migrating
+                    && !activation.retired
+                    && activation.dataset_id == Some(dataset_id) =>
+            {
+                u64::try_from(activation.generation).unwrap_or(0)
+            }
+            Ok(_) => return Err(self.fail(&mut record, BlockerCode::DatasetMismatch)),
+            Err(error) => return Err(self.fail(&mut record, BlockerCode::from(error))),
+        };
+        if attach_remote_dataset(&self.inputs.codex_home, dataset_id, generation).is_err() {
+            return Err(self.fail(&mut record, BlockerCode::AuthorityInvalid));
+        }
+        self.save(&mut record, OperationState::Active)?;
+        Ok(record)
     }
 
     /// Copy and verify a prepared migration. Does nothing if this process already drives it.

@@ -43,6 +43,8 @@ enum ActionArg {
     Migrate,
     /// Copy the remote dataset back into this home and make local files authoritative.
     Return,
+    /// Join a dataset that already exists. Nothing is copied or merged.
+    Attach,
 }
 
 impl From<ActionArg> for PlanAction {
@@ -50,6 +52,7 @@ impl From<ActionArg> for PlanAction {
         match action {
             ActionArg::Migrate => Self::Migrate,
             ActionArg::Return => Self::Return,
+            ActionArg::Attach => Self::Attach,
         }
     }
 }
@@ -94,6 +97,9 @@ enum StorageSubcommand {
         /// Confirm that you read the plan.
         #[arg(long)]
         yes: bool,
+        /// The dataset to join; required for `attach`, copied from the plan you previewed.
+        #[arg(long)]
+        dataset_id: Option<Uuid>,
         /// Confirm that every Codex process writing this home is stopped.
         #[arg(long)]
         writers_stopped: bool,
@@ -315,6 +321,7 @@ pub(crate) async fn run_storage_command(
             plan_id,
             operation_id,
             yes,
+            dataset_id,
             writers_stopped,
             activate,
             json,
@@ -335,6 +342,14 @@ pub(crate) async fn run_storage_command(
                         .start_return(operation_id, plan_id, confirmation)
                         .await
                 }
+                PlanAction::Attach => match dataset_id {
+                    Some(dataset_id) => {
+                        service
+                            .attach_dataset(operation_id, plan_id, dataset_id, confirmation)
+                            .await
+                    }
+                    None => Err(StorageError(BlockerCode::NotConfirmed)),
+                },
             };
             let mut record = started.unwrap_or_else(|error| exit_blocked(error, json));
             if activate {

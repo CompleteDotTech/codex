@@ -172,3 +172,36 @@ fn authority_state_classifies_every_stage_of_a_home() {
     std::fs::remove_file(directory.path().join(ACTIVATION_FILE)).unwrap();
     assert!(authority_state(directory.path()).is_err());
 }
+
+#[test]
+fn attaching_adopts_a_dataset_without_touching_anything_else() {
+    let directory = tempdir().unwrap();
+    std::fs::write(directory.path().join("state_5.sqlite"), b"local history").unwrap();
+    let dataset = Uuid::new_v4();
+    let attached = attach_remote_dataset(directory.path(), dataset, 4).unwrap();
+    assert_eq!(attached.identity.dataset_id, dataset);
+    assert_eq!(attached.identity.generation, 4);
+    assert_eq!(attached.marker.active_backend, ActiveBackend::Remote);
+    assert!(attached.marker.remote_ever_activated);
+    assert_eq!(load_authority(directory.path()).unwrap(), attached);
+    assert_eq!(
+        authority_state(directory.path()).unwrap(),
+        AuthorityState::Remote(attached)
+    );
+    assert_eq!(
+        std::fs::read(directory.path().join("state_5.sqlite")).unwrap(),
+        b"local history"
+    );
+    // A home that already belongs to a dataset cannot join another, and a bad generation fails.
+    assert!(matches!(
+        attach_remote_dataset(directory.path(), Uuid::new_v4(), 5),
+        Err(AuthorityError::Blocked(
+            "home already has authority records"
+        ))
+    ));
+    let other = tempdir().unwrap();
+    initialize_empty_home(other.path()).unwrap();
+    assert!(attach_remote_dataset(other.path(), dataset, 2).is_err());
+    let fresh = tempdir().unwrap();
+    assert!(attach_remote_dataset(fresh.path(), dataset, 0).is_err());
+}

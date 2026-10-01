@@ -48,6 +48,7 @@ pub enum StorageBlocker {
     AuthorityInvalid,
     AlreadyRemote,
     NotRemote,
+    HomeAlreadyManaged,
     SqliteHomeDiffersFromCodexHome,
     StalePlan,
     NotConfirmed,
@@ -82,6 +83,8 @@ pub enum StoragePlanAction {
     Migrate,
     /// Copy the remote dataset back into this host and make local files authoritative.
     Return,
+    /// Join a dataset that already exists. Nothing is copied or merged.
+    Attach,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
@@ -297,6 +300,10 @@ pub struct StorageStartParams {
     /// Names the operation. Repeating a request with the same id never starts a second copy.
     #[ts(optional = nullable)]
     pub operation_id: Option<String>,
+    /// The dataset the operator means to join; required for `attach`, and refused if it is not
+    /// the dataset the previewed plan names.
+    #[ts(optional = nullable)]
+    pub dataset_id: Option<String>,
     /// The operator confirms that every process writing this host's Codex home is stopped.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub writers_stopped: bool,

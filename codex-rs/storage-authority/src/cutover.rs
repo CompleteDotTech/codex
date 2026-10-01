@@ -126,6 +126,50 @@ pub fn read_cutover(home: &Path) -> Result<Option<CutoverIntent>, AuthorityError
     Ok(Some(intent))
 }
 
+/// Join an existing remote dataset from a home that was never under storage management.
+///
+/// Nothing is copied or merged: the home's own history stays where it is, untouched and no longer
+/// authoritative, and the home starts using the dataset at the generation it is at. Homes that
+/// already have authority records of their own are refused, because joining would change which
+/// dataset they belong to.
+pub fn attach_remote_dataset(
+    home: &Path,
+    dataset_id: Uuid,
+    generation: u64,
+) -> Result<LocalAuthority, AuthorityError> {
+    if read_cutover(home)?.is_some() {
+        return Err(AuthorityError::Blocked("cutover in progress"));
+    }
+    if home.join(IDENTITY_FILE).exists() || home.join(ACTIVATION_FILE).exists() {
+        return Err(AuthorityError::Blocked(
+            "home already has authority records",
+        ));
+    }
+    if !(1..=i64::MAX as u64).contains(&generation) {
+        return Err(AuthorityError::Blocked("invalid authority generation"));
+    }
+    let identity = LocalIdentity {
+        format_version: FORMAT_VERSION,
+        dataset_id,
+        instance_id: Uuid::new_v4(),
+        generation,
+        home_id: Uuid::new_v4(),
+    };
+    let marker = ActivationMarker {
+        format_version: FORMAT_VERSION,
+        dataset_id,
+        instance_id: identity.instance_id,
+        home_id: identity.home_id,
+        generation,
+        remote_ever_activated: true,
+        active_backend: ActiveBackend::Remote,
+    };
+    write_new(&home.join(IDENTITY_FILE), &identity)?;
+    write_new(&home.join(ACTIVATION_FILE), &marker)?;
+    sync_dir(home)?;
+    Ok(LocalAuthority { identity, marker })
+}
+
 /// Record the intent to make `target` authoritative for the next generation.
 ///
 /// Fails if another cutover is already recorded or the authority records disagree. The caller

@@ -141,8 +141,12 @@ impl App {
             AppEvent::StorageCheckLoaded(result) => self.show_storage_check(result),
             AppEvent::StoragePlanRequested(action) => self.request_storage_plan(app_server, action),
             AppEvent::StoragePlanLoaded(result) => self.show_storage_plan(result),
-            AppEvent::StorageStartRequested { action, plan_id } => {
-                self.request_storage_start(app_server, action, plan_id);
+            AppEvent::StorageStartRequested {
+                action,
+                plan_id,
+                dataset_id,
+            } => {
+                self.request_storage_start(app_server, action, plan_id, dataset_id);
             }
             AppEvent::StorageActivateRequested { operation_id } => {
                 self.request_storage_activate(app_server, operation_id);

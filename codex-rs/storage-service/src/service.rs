@@ -153,6 +153,12 @@ impl StorageService {
                     blockers.push(code);
                 } else if matches == Some(false) {
                     blockers.push(BlockerCode::DatasetMismatch);
+                } else {
+                    match report.dataset_state.as_deref() {
+                        Some("retired") => blockers.push(BlockerCode::DatasetRetired),
+                        Some("migrating") => blockers.push(BlockerCode::DatasetMigrating),
+                        _ => {}
+                    }
                 }
             }
             Some(RemoteSummary {

@@ -5012,6 +5012,7 @@ class StorageBlocker(Enum):
     authority_invalid = "authorityInvalid"
     already_remote = "alreadyRemote"
     not_remote = "notRemote"
+    home_already_managed = "homeAlreadyManaged"
     sqlite_home_differs_from_codex_home = "sqliteHomeDiffersFromCodexHome"
     stale_plan = "stalePlan"
     not_confirmed = "notConfirmed"
@@ -5074,6 +5075,7 @@ class StorageOperationState(RootModel[StorageOperationStateValue | Literal["read
 class StoragePlanAction(Enum):
     migrate = "migrate"
     return_ = "return"
+    attach = "attach"
 
 
 class StorageRecoveryOutcome(Enum):

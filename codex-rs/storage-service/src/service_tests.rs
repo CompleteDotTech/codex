@@ -289,6 +289,7 @@ async fn real_postgres_storage_service() {
     assert_eq!(status.local_generation, Some(2));
     assert!(status.remote_ever_activated);
     assert_eq!(status.blockers, Vec::new());
+    let dataset_of_first_host = status.dataset_id;
     let remote = status.remote.expect("remote summary");
     assert_eq!(remote.dataset_matches, Some(true));
     assert_eq!(remote.generation, Some(2));
@@ -312,6 +313,122 @@ async fn real_postgres_storage_service() {
         service.operation(Uuid::new_v4()),
         Err(StorageError(BlockerCode::OperationNotFound))
     );
+
+    // A second host joins the dataset without copying anything or touching its own history.
+    let second_home = populated_home().await;
+    let second = self::service(
+        second_home.path(),
+        state,
+        Some(profile(state, true)),
+        keyring(state, None),
+    );
+    let attach_plan = second.plan(PlanAction::Attach).await.expect("attach plan");
+    assert!(attach_plan.is_startable(), "{:?}", attach_plan.blockers);
+    assert_eq!(attach_plan.estimate, None);
+    let dataset = attach_plan
+        .connection
+        .dataset_id
+        .expect("the dataset to join");
+    assert_eq!(Some(dataset), dataset_of_first_host);
+    let local_history_before =
+        std::fs::read(SqliteConfig::new_for_testing(second_home.path().abs()).state_db_path())
+            .expect("second host history");
+    let attach_operation = Uuid::new_v4();
+    assert_eq!(
+        second
+            .attach_dataset(
+                attach_operation,
+                attach_plan.plan_id,
+                Uuid::new_v4(),
+                confirmed
+            )
+            .await,
+        Err(StorageError(BlockerCode::DatasetMismatch))
+    );
+    assert_eq!(
+        second
+            .attach_dataset(
+                attach_operation,
+                attach_plan.plan_id,
+                dataset,
+                Confirmation {
+                    writers_stopped: false
+                }
+            )
+            .await,
+        Err(StorageError(BlockerCode::NotConfirmed))
+    );
+    let attached = second
+        .attach_dataset(attach_operation, attach_plan.plan_id, dataset, confirmed)
+        .await
+        .expect("attach");
+    assert_eq!(attached.state, OperationState::Active);
+    assert_eq!(
+        second
+            .attach_dataset(attach_operation, attach_plan.plan_id, dataset, confirmed)
+            .await
+            .expect("repeat"),
+        attached
+    );
+    let joined = second.status(true).await;
+    assert_eq!(joined.active_backend, BackendName::RemotePostgres);
+    assert_eq!(joined.local_generation, Some(2));
+    assert_eq!(joined.remote.expect("remote").dataset_matches, Some(true));
+    assert_eq!(
+        std::fs::read(SqliteConfig::new_for_testing(second_home.path().abs()).state_db_path())
+            .expect("second host history after"),
+        local_history_before
+    );
+    // A host that already belongs to a dataset cannot join another.
+    assert!(
+        service
+            .plan(PlanAction::Attach)
+            .await
+            .expect("plan")
+            .blockers
+            .contains(&BlockerCode::HomeAlreadyManaged)
+    );
+
+    // Both hosts write to the one dataset and see each other's work.
+    let credentials = keyring(state, None);
+    let resolver = HostCredentialResolver::new(credentials.as_ref());
+    let first_handle = RemoteStorage::connect(&profile(state, true), &resolver)
+        .await
+        .expect("first host handle");
+    let second_handle = RemoteStorage::connect(&profile(state, true), &resolver)
+        .await
+        .expect("second host handle");
+    let mut written = Vec::new();
+    for (index, handle) in [&first_handle, &second_handle].into_iter().enumerate() {
+        let mut builder = ThreadMetadataBuilder::new(
+            ThreadId::new(),
+            home.path().join(format!("shared-{index}.jsonl")),
+            chrono::Utc::now(),
+            SessionSource::Cli,
+        );
+        builder.model_provider = Some("service-provider".to_string());
+        let thread = builder.build("service-provider");
+        handle
+            .thread_catalog()
+            .upsert_thread(&thread)
+            .await
+            .expect("shared write");
+        written.push(thread.id);
+    }
+    for handle in [&first_handle, &second_handle] {
+        for id in &written {
+            assert!(
+                handle
+                    .thread_catalog()
+                    .get_thread(*id)
+                    .await
+                    .expect("shared read")
+                    .is_some()
+            );
+        }
+    }
+    first_handle.close().await;
+    second_handle.close().await;
 
     // Writes made while PostgreSQL is authoritative come back with the return.
     let remote = RemoteStorage::connect(
@@ -435,5 +552,8 @@ async fn real_postgres_storage_service() {
         service.recover().await.expect("recover").outcome,
         RecoveryKind::Idle
     );
+    // The host that joined is told plainly, not left writing a history nobody reads.
+    let stranded = second.status(true).await;
+    assert!(stranded.blockers.contains(&BlockerCode::DatasetRetired));
     reset_target(state).await;
 }

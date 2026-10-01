@@ -91,8 +91,12 @@ impl StoragePlan {
             (PlanAction::Return, Ok(AuthorityState::Unmanaged | AuthorityState::Local(_))) => {
                 blockers.push(BlockerCode::NotRemote);
             }
+            (PlanAction::Attach, Ok(AuthorityState::Local(_) | AuthorityState::Remote(_))) => {
+                blockers.push(BlockerCode::HomeAlreadyManaged);
+            }
             (PlanAction::Migrate, Ok(AuthorityState::Unmanaged | AuthorityState::Local(_)))
-            | (PlanAction::Return, Ok(AuthorityState::Remote(_))) => {}
+            | (PlanAction::Return, Ok(AuthorityState::Remote(_)))
+            | (PlanAction::Attach, Ok(AuthorityState::Unmanaged)) => {}
         }
         if !inputs.sqlite_home_matches {
             blockers.push(BlockerCode::SqliteHomeDiffersFromCodexHome);
@@ -109,6 +113,11 @@ impl StoragePlan {
                 PlanAction::Migrate => {
                     if inputs.connection.empty != Some(true) {
                         blockers.push(BlockerCode::TargetNotEmpty);
+                    }
+                }
+                PlanAction::Attach => {
+                    if inputs.connection.dataset_id.is_none() {
+                        blockers.push(BlockerCode::DatasetNotActivated);
                     }
                 }
                 PlanAction::Return => {

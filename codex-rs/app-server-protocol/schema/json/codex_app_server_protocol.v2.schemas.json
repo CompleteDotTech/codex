@@ -18310,6 +18310,7 @@
         "authorityInvalid",
         "alreadyRemote",
         "notRemote",
+        "homeAlreadyManaged",
         "sqliteHomeDiffersFromCodexHome",
         "stalePlan",
         "notConfirmed",
@@ -18561,6 +18562,13 @@
           "description": "Copy the remote dataset back into this host and make local files authoritative.",
           "enum": [
             "return"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Join a dataset that already exists. Nothing is copied or merged.",
+          "enum": [
+            "attach"
           ],
           "type": "string"
         }

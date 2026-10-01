@@ -5,4 +5,4 @@
 /**
  * What a plan or operation moves.
  */
-export type StoragePlanAction = "migrate" | "return";
+export type StoragePlanAction = "migrate" | "return" | "attach";

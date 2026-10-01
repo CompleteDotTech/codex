@@ -74,6 +74,7 @@ fn blocker(code: service::BlockerCode) -> StorageBlocker {
         Code::AuthorityInvalid => StorageBlocker::AuthorityInvalid,
         Code::AlreadyRemote => StorageBlocker::AlreadyRemote,
         Code::NotRemote => StorageBlocker::NotRemote,
+        Code::HomeAlreadyManaged => StorageBlocker::HomeAlreadyManaged,
         Code::SqliteHomeDiffersFromCodexHome => StorageBlocker::SqliteHomeDiffersFromCodexHome,
         Code::StalePlan => StorageBlocker::StalePlan,
         Code::NotConfirmed => StorageBlocker::NotConfirmed,
@@ -145,6 +146,7 @@ fn action(value: service::PlanAction) -> StoragePlanAction {
     match value {
         service::PlanAction::Migrate => StoragePlanAction::Migrate,
         service::PlanAction::Return => StoragePlanAction::Return,
+        service::PlanAction::Attach => StoragePlanAction::Attach,
     }
 }
 
@@ -152,6 +154,7 @@ fn plan_action(value: StoragePlanAction) -> service::PlanAction {
     match value {
         StoragePlanAction::Migrate => service::PlanAction::Migrate,
         StoragePlanAction::Return => service::PlanAction::Return,
+        StoragePlanAction::Attach => service::PlanAction::Attach,
     }
 }
 
@@ -355,6 +358,21 @@ impl StorageRequestProcessor {
         let confirmation = service::Confirmation {
             writers_stopped: params.writers_stopped,
         };
+        if params.action == StoragePlanAction::Attach {
+            // Joining copies nothing, so it finishes inside the request.
+            let dataset = params
+                .dataset_id
+                .as_deref()
+                .ok_or_else(|| invalid_params("attach needs the datasetId of the dataset to join"))
+                .and_then(parse_id)?;
+            let record = service
+                .attach_dataset(operation_id, plan_id, dataset, confirmation)
+                .await
+                .map_err(storage_error_from)?;
+            return Ok(StorageStartResponse {
+                operation: operation(record),
+            });
+        }
         let migrate = matches!(params.action, StoragePlanAction::Migrate);
         let (record, created) = if migrate {
             service

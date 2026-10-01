@@ -1,0 +1,16 @@
+---
+source: tui/src/app/storage_menu_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, width)"
+---
+  Join the existing PostgreSQL dataset
+  Host: build-host
+  Destination: db.internal:5432/codex/codex_storage
+  Dataset: 0194e0a0-0000-7000-8000-000000000001
+  Nothing is copied. This host's own history stays where it is, unused.
+    ✗ This host already belongs to a dataset
+
+
+› 1. Back to storage
+  2. Close
+
+  enter select · esc back

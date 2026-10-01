@@ -4161,6 +4161,13 @@
             "return"
           ],
           "type": "string"
+        },
+        {
+          "description": "Join a dataset that already exists. Nothing is copied or merged.",
+          "enum": [
+            "attach"
+          ],
+          "type": "string"
         }
       ]
     },
