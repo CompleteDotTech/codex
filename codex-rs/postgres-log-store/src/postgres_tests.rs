@@ -100,8 +100,13 @@ async fn scenario(store: &dyn RuntimeLogStore, token: &str, now: i64) -> Vec<Str
     let mut log = Vec::new();
     let thread = |n: u8| format!("{token}-thread-{n}");
     let process = |n: u8| format!("{token}-process-{n}");
+    // Module filters are alternatives, so a query that sets its own pattern carries the token.
     let scoped = |query: LogQuery| LogQuery {
-        module_like: [vec![token.to_string()], query.module_like.clone()].concat(),
+        module_like: if query.module_like.is_empty() {
+            vec![token.to_string()]
+        } else {
+            query.module_like.clone()
+        },
         ..query
     };
     let mut message_only = entry(
@@ -213,7 +218,7 @@ async fn scenario(store: &dyn RuntimeLogStore, token: &str, now: i64) -> Vec<Str
         (
             "module like",
             LogQuery {
-                module_like: vec!["::MOD_A".to_string()],
+                module_like: vec![format!("{token}::MOD_A")],
                 ..Default::default()
             },
         ),
