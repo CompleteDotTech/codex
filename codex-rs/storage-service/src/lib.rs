@@ -7,6 +7,7 @@
 
 mod journal;
 mod ops;
+mod ops_return;
 mod plan;
 mod service;
 mod types;

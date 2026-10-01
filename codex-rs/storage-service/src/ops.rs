@@ -12,14 +12,17 @@ use crate::journal::OperationRecord;
 use crate::journal::OperationState;
 use crate::service::StorageService;
 use codex_remote_storage::RemoteStorage;
+use codex_storage_authority::ActiveBackend;
 use codex_storage_authority::AuthorityState;
 use codex_storage_authority::HostCredentialResolver;
 use codex_storage_authority::adopt_quiesced_home;
+use codex_storage_authority::read_cutover;
 use codex_storage_migration::Cutover;
 use codex_storage_migration::MigrationError;
 use codex_storage_migration::Migrator;
 use codex_storage_migration::RecoveryOutcome;
 use codex_storage_migration::SqliteSource;
+use codex_storage_migration::read_plan;
 use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
@@ -58,7 +61,7 @@ fn internal<E>(_: E) -> StorageError {
 }
 
 impl StorageService {
-    async fn connect(&self) -> Result<RemoteStorage, StorageError> {
+    pub(crate) async fn connect(&self) -> Result<RemoteStorage, StorageError> {
         let profile = self
             .inputs
             .candidate
@@ -70,14 +73,14 @@ impl StorageService {
             .map_err(|error| StorageError(error.into()))
     }
 
-    fn migrator(&self, storage: &RemoteStorage) -> Migrator {
+    pub(crate) fn migrator(&self, storage: &RemoteStorage) -> Migrator {
         Migrator::new(
             SqliteSource::new(self.inputs.sqlite.clone()),
             storage.pool().clone(),
         )
     }
 
-    fn save(
+    pub(crate) fn save(
         &self,
         record: &mut OperationRecord,
         state: OperationState,
@@ -87,7 +90,7 @@ impl StorageService {
         self.journal.update(record).map_err(internal)
     }
 
-    fn fail(&self, record: &mut OperationRecord, code: BlockerCode) -> StorageError {
+    pub(crate) fn fail(&self, record: &mut OperationRecord, code: BlockerCode) -> StorageError {
         record.blocker = Some(code);
         let _ = self.save(record, OperationState::Failed);
         StorageError(code)
@@ -186,6 +189,9 @@ impl StorageService {
                 return Err(StorageError(BlockerCode::OperationConflict));
             }
         }
+        if record.action == PlanAction::Return {
+            return self.activate_return(record).await;
+        }
         let run_id = record
             .run_id
             .ok_or(StorageError(BlockerCode::OperationConflict))?;
@@ -216,6 +222,15 @@ impl StorageService {
     /// Settle an interrupted cutover from the evidence on both sides and bring the records in
     /// line with the outcome.
     pub async fn recover(&self) -> Result<RecoveryReport, StorageError> {
+        let returning = read_cutover(&self.inputs.codex_home)
+            .map_err(internal)?
+            .is_some_and(|intent| intent.target == ActiveBackend::Local)
+            || read_plan(&self.inputs.codex_home)
+                .map_err(internal)?
+                .is_some();
+        if returning {
+            return self.recover_return().await;
+        }
         let storage = self.connect().await?;
         let cutover = Cutover::new(self.inputs.codex_home.clone(), self.migrator(&storage));
         let outcome = cutover.recover().await;
@@ -264,6 +279,9 @@ impl StorageService {
             | OperationState::Ready
             | OperationState::Committing
             | OperationState::Failed => {}
+        }
+        if record.action == PlanAction::Return {
+            return self.cancel_return(record).await;
         }
         let storage = self.connect().await?;
         let migrator = self.migrator(&storage);
