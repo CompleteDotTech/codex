@@ -65,6 +65,17 @@ pub(super) fn rollout_path_is_archived(codex_home: &Path, path: &Path) -> bool {
             .any(|component| component.as_os_str() == OsStr::new(ARCHIVED_SESSIONS_SUBDIR))
 }
 
+pub(super) fn ensure_unambiguous_rollout(path: &Path) -> ThreadStoreResult<()> {
+    codex_rollout::ensure_single_rollout_representation(path).map_err(|err| match err.kind() {
+        std::io::ErrorKind::AlreadyExists => ThreadStoreError::Conflict {
+            message: err.to_string(),
+        },
+        _ => ThreadStoreError::Internal {
+            message: format!("failed to inspect rollout representations: {err}"),
+        },
+    })
+}
+
 /// Returns rollout files whose session metadata belongs to `thread_id`.
 pub(super) async fn owned_rollout_paths(
     store: &LocalThreadStore,
@@ -72,8 +83,13 @@ pub(super) async fn owned_rollout_paths(
 ) -> ThreadStoreResult<Vec<PathBuf>> {
     RolloutReferenceIndex::scan(store.config.codex_home.as_path())
         .await
-        .map_err(|err| ThreadStoreError::Internal {
-            message: format!("failed to scan thread rollout files: {err}"),
+        .map_err(|err| match err.kind() {
+            std::io::ErrorKind::AlreadyExists => ThreadStoreError::Conflict {
+                message: err.to_string(),
+            },
+            _ => ThreadStoreError::Internal {
+                message: format!("failed to scan thread rollout files: {err}"),
+            },
         })
         .map(|index| owned_rollout_paths_from_index(&index, thread_id))
 }
@@ -112,11 +128,13 @@ pub(super) fn validated_rollout_file_name(
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn touch_modified_time(path: &Path) -> std::io::Result<()> {
     let times = std::fs::FileTimes::new().set_modified(std::time::SystemTime::now());
     std::fs::OpenOptions::new().append(true).open(path)?.set_times(times)
 }
 
+#[allow(dead_code)]
 pub(super) fn move_rollout_noclobber(
     source: &Path,
     destination: &Path,
@@ -153,6 +171,7 @@ pub(super) fn move_rollout_noclobber(
     )
 }
 
+#[allow(dead_code)]
 pub(super) fn restore_rollout_moves(
     moves: &[(PathBuf, PathBuf)],
     codex_home: &Path,
@@ -288,17 +307,21 @@ pub(super) async fn resolve_thread_names(
         .await
         .unwrap_or_default();
     if let Some(state_db_ctx) = store.state_db().await {
+        let thread_ids = thread_history_modes.keys().copied().collect::<Vec<_>>();
+        let metadata_by_id = state_db_ctx
+            .get_threads(&thread_ids)
+            .await
+            .unwrap_or_default();
         for (&thread_id, &history_mode) in thread_history_modes {
-            let Ok(Some(metadata)) = state_db_ctx.get_thread(thread_id).await else {
+            let Some(metadata) = metadata_by_id.get(&thread_id) else {
                 continue;
             };
             let name = match history_mode {
-                ThreadHistoryMode::Legacy => distinct_thread_metadata_title(&metadata),
-                ThreadHistoryMode::Paginated => sqlite_thread_name(&metadata),
+                ThreadHistoryMode::Legacy => distinct_thread_metadata_title(metadata),
+                ThreadHistoryMode::Paginated => sqlite_thread_name(metadata),
             };
             if let Some(name) = name {
-                if history_mode == ThreadHistoryMode::Legacy
-                    && has_guardian_default_title(&metadata)
+                if history_mode == ThreadHistoryMode::Legacy && has_guardian_default_title(metadata)
                 {
                     names.entry(thread_id).or_insert(name);
                 } else {

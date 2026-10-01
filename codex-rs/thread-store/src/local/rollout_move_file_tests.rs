@@ -117,12 +117,14 @@ fn bound_move_rejects_same_inode_digest_change_during_staging() -> io::Result<()
 }
 
 fn prepare_move_intent(source: &Path, destination: &Path) -> io::Result<RolloutMoveIntent> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| io::Error::other("no parent"))?;
+    let parent = std::fs::canonicalize(
+        destination
+            .parent()
+            .ok_or_else(|| io::Error::other("no parent"))?,
+    )?;
     let mut stage = tempfile::Builder::new()
         .prefix(".codex-rollout-stage-")
-        .tempfile_in(parent)?;
+        .tempfile_in(&parent)?;
     io::copy(&mut std::fs::File::open(source)?, &mut stage)?;
     stage.as_file().sync_all()?;
     let stage_id = rollout_file_identity(stage.path())?;
@@ -139,7 +141,11 @@ fn prepare_move_intent(source: &Path, destination: &Path) -> io::Result<RolloutM
         .keep();
     let intent = RolloutMoveIntent {
         source: std::fs::canonicalize(source)?,
-        destination: destination.to_path_buf(),
+        destination: parent.join(
+            destination
+                .file_name()
+                .ok_or_else(|| io::Error::other("no file name"))?,
+        ),
         source_len: source_metadata.len(),
         source_modified: source_metadata.modified()?,
         source_id: rollout_file_identity(source)?,

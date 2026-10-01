@@ -1,4 +1,5 @@
 use super::LocalThreadStore;
+use super::helpers::ensure_unambiguous_rollout;
 use super::helpers::owned_rollout_paths_from_index;
 use super::helpers::rollout_path_is_archived;
 use super::helpers::scoped_rollout_path;
@@ -53,8 +54,13 @@ pub(super) async fn archive_threads(
         &thread_ids,
     )
     .await
-    .map_err(|err| ThreadStoreError::Internal {
-        message: format!("failed to scan thread rollout files: {err}"),
+    .map_err(|err| match err.kind() {
+        std::io::ErrorKind::AlreadyExists => ThreadStoreError::Conflict {
+            message: err.to_string(),
+        },
+        _ => ThreadStoreError::Internal {
+            message: format!("failed to scan thread rollout files: {err}"),
+        },
     })?;
 
     let parent_thread_id = thread_ids[0];
@@ -98,6 +104,11 @@ async fn archive_thread_with_paths(
     })?;
     if !rollout_paths.contains(&selected_rollout_path) {
         rollout_paths.push(selected_rollout_path.clone());
+    }
+    for rollout_path in &rollout_paths {
+        if !rollout_path_is_archived(store.config.codex_home.as_path(), rollout_path) {
+            ensure_unambiguous_rollout(rollout_path)?;
+        }
     }
     let mut archived_path = None;
     let mut rollout_moves = Vec::new();
