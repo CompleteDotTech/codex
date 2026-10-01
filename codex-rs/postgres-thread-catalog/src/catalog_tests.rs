@@ -4,9 +4,14 @@ use codex_postgres_runtime::ConnectionSettings;
 use codex_postgres_runtime::bootstrap_codex_storage;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_state::Anchor;
+use codex_state::SortDirection;
+use codex_state::SortKey;
 use codex_state::SqliteConfig;
 use codex_state::StateRuntime;
+use codex_state::ThreadFilterOptions;
 use codex_state::ThreadMetadataBuilder;
+use codex_state::ThreadRelationFilter;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
@@ -434,9 +439,461 @@ async fn real_postgres_delete_removes_thread_state_and_keeps_queue_changes_visib
     assert_eq!(pending, 1);
 }
 
+/// Threads for the listing scenario. Titles are unique, so results compare by title.
+fn listing_fixture(token: &str, base: DateTime<Utc>, ids: &[ThreadId]) -> Vec<ThreadMetadata> {
+    let sources = [
+        SessionSource::Cli,
+        SessionSource::Exec,
+        SessionSource::VSCode,
+        SessionSource::Custom("custom".to_string()),
+    ];
+    let mut threads = Vec::new();
+    for (index, id) in ids.iter().enumerate() {
+        let number = index as i64;
+        let created = base + chrono::Duration::seconds(number * 7);
+        let mut builder = ThreadMetadataBuilder::new(
+            *id,
+            PathBuf::from(format!("/rollouts/list-{number}.jsonl")),
+            created,
+            sources[index % sources.len()].clone(),
+        );
+        builder.updated_at = Some(created + chrono::Duration::seconds(100 - number * 3));
+        // Several threads share one old recency time, so ties fall back to the thread id.
+        builder.recency_at = Some(if index % 3 == 0 {
+            base + chrono::Duration::seconds(1)
+        } else {
+            created + chrono::Duration::seconds(2)
+        });
+        builder.cwd = PathBuf::from(format!("/work/area-{}", index % 3));
+        builder.model_provider = Some(format!(
+            "{token}-{}",
+            if index % 2 == 0 { "alpha" } else { "beta" }
+        ));
+        let mut metadata = builder.build("provider");
+        metadata.title = format!("title {number}");
+        metadata.preview = (index % 5 != 4).then(|| format!("preview words {number}"));
+        metadata.first_user_message = None;
+        // Positions on some threads exercise NULL placement when sorting by position.
+        metadata.section_position = (index % 4 != 0).then_some(1_000 + (number % 5) * 10);
+        threads.push(metadata);
+    }
+    threads
+}
+
+fn titles(threads: &[ThreadMetadata]) -> Vec<String> {
+    threads.iter().map(|thread| thread.title.clone()).collect()
+}
+
+/// Lists every page of a query and records each page, so ordering and cursors both compare.
+async fn page_through(
+    backend: &Backend,
+    label: &str,
+    page_size: usize,
+    filters: ThreadFilterOptions<'_>,
+    log: &mut Vec<String>,
+) {
+    let mut anchor: Option<Anchor> = None;
+    for page_number in 0..12 {
+        let page = both!(
+            backend,
+            list_threads(
+                page_size,
+                ThreadFilterOptions {
+                    anchor: anchor.as_ref(),
+                    ..filters
+                }
+            )
+        )
+        .expect("list threads");
+        log.push(format!(
+            "{label} page {page_number}: {:?} scanned {} next {:?}",
+            titles(&page.items),
+            page.num_scanned_rows,
+            page.next_anchor
+                .as_ref()
+                .map(|next| (next.ts, next.id.is_some())),
+        ));
+        anchor = page.next_anchor;
+        if anchor.is_none() {
+            break;
+        }
+    }
+}
+
+async fn listing_scenario(
+    backend: &Backend,
+    token: &str,
+    base: DateTime<Utc>,
+    ids: &[ThreadId],
+) -> Vec<String> {
+    let mut log = Vec::new();
+    let fixture = listing_fixture(token, base, ids);
+    // Every query is scoped to this run's providers, so rows from earlier runs cannot leak in.
+    let alpha = format!("{token}-alpha");
+    let all_providers = vec![alpha.clone(), format!("{token}-beta")];
+    // A later thread raises the shared recency mark first, so the older tied times pass through.
+    let mut newest = metadata(
+        ThreadId::new(),
+        99,
+        base + chrono::Duration::seconds(5_000),
+        SessionSource::Cli,
+    );
+    newest.title = "newest".to_string();
+    newest.preview = Some("newest preview".to_string());
+    newest.model_provider = alpha.clone();
+    let newest_id = newest.id;
+    both!(backend, upsert_thread(&newest)).expect("upsert newest");
+    for thread in &fixture {
+        both!(backend, upsert_thread(thread)).expect("upsert listed thread");
+    }
+    // The first threads are archived.
+    for thread in fixture.iter().take(2) {
+        both!(
+            backend,
+            mark_archived(
+                thread.id,
+                &thread.rollout_path,
+                base + chrono::Duration::seconds(9_000)
+            )
+        )
+        .expect("archive");
+    }
+    let sources: Vec<String> = Vec::new();
+    let exec_only = vec![fixture[1].source.clone()];
+    let providers = vec![alpha.clone()];
+    let cwds = vec![PathBuf::from("/work/area-1")];
+    let two_cwds = vec![PathBuf::from("/work/area-0"), PathBuf::from("/work/area-2")];
+    let no_cwds: Vec<PathBuf> = Vec::new();
+    let defaults = ThreadFilterOptions {
+        archived_only: false,
+        allowed_sources: &sources,
+        model_providers: Some(&all_providers),
+        cwd_filters: None,
+        section: None,
+        project_id: None,
+        anchor: None,
+        sort_key: SortKey::UpdatedAt,
+        sort_direction: SortDirection::Desc,
+        search_term: None,
+    };
+    for sort_key in [
+        SortKey::CreatedAt,
+        SortKey::UpdatedAt,
+        SortKey::RecencyAt,
+        SortKey::SectionPosition,
+    ] {
+        for sort_direction in [SortDirection::Desc, SortDirection::Asc] {
+            page_through(
+                backend,
+                &format!("{sort_key:?} {sort_direction:?}"),
+                4,
+                ThreadFilterOptions {
+                    sort_key,
+                    sort_direction,
+                    ..defaults
+                },
+                &mut log,
+            )
+            .await;
+        }
+    }
+    page_through(
+        backend,
+        "archived",
+        3,
+        ThreadFilterOptions {
+            archived_only: true,
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+    page_through(
+        backend,
+        "exec",
+        3,
+        ThreadFilterOptions {
+            allowed_sources: &exec_only,
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+    page_through(
+        backend,
+        "provider",
+        3,
+        ThreadFilterOptions {
+            model_providers: Some(&providers),
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+    page_through(
+        backend,
+        "cwd",
+        3,
+        ThreadFilterOptions {
+            cwd_filters: Some(&cwds),
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+    page_through(
+        backend,
+        "two cwds",
+        5,
+        ThreadFilterOptions {
+            cwd_filters: Some(&two_cwds),
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+    page_through(
+        backend,
+        "no cwds",
+        5,
+        ThreadFilterOptions {
+            cwd_filters: Some(&no_cwds),
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+    page_through(
+        backend,
+        "search title",
+        5,
+        ThreadFilterOptions {
+            search_term: Some("title 1"),
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+    page_through(
+        backend,
+        "search preview",
+        5,
+        ThreadFilterOptions {
+            search_term: Some("words 3"),
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+    page_through(
+        backend,
+        "search none",
+        5,
+        ThreadFilterOptions {
+            search_term: Some("nothing matches"),
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+    page_through(
+        backend,
+        "no section",
+        5,
+        ThreadFilterOptions {
+            section: Some(None),
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+    page_through(
+        backend,
+        "no project",
+        5,
+        ThreadFilterOptions {
+            project_id: Some(None),
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+    page_through(
+        backend,
+        "unknown project",
+        5,
+        ThreadFilterOptions {
+            project_id: Some(Some("missing")),
+            ..defaults
+        },
+        &mut log,
+    )
+    .await;
+
+    for sort_key in [
+        SortKey::CreatedAt,
+        SortKey::RecencyAt,
+        SortKey::SectionPosition,
+    ] {
+        let listed = both!(
+            backend,
+            list_thread_ids(6, None, sort_key, &sources, Some(&all_providers), false)
+        )
+        .expect("list ids");
+        let mut names = Vec::new();
+        for id in listed {
+            names.push(
+                both!(backend, get_thread(id))
+                    .expect("get")
+                    .map(|thread| thread.title),
+            );
+        }
+        log.push(format!("ids {sort_key:?}: {names:?}"));
+    }
+    for (title, archived_only, cwd) in [
+        ("title 3", false, None),
+        ("title 0", false, None),
+        ("title 0", true, None),
+        ("title 3", false, Some(PathBuf::from("/work/area-0"))),
+        ("title 3", false, Some(PathBuf::from("/work/area-2"))),
+        ("absent", false, None),
+    ] {
+        log.push(format!(
+            "exact {title} {archived_only} {cwd:?}: {:?}",
+            both!(
+                backend,
+                find_thread_by_exact_title(
+                    title,
+                    &sources,
+                    Some(&all_providers),
+                    archived_only,
+                    cwd.as_deref()
+                )
+            )
+            .expect("find")
+            .map(|thread| thread.id == newest_id)
+        ));
+    }
+
+    // Relations: children recorded from a spawn source, and everything below a root.
+    let parent_id = fixture[2].id;
+    let mut child = metadata(
+        ThreadId::new(),
+        50,
+        base + chrono::Duration::seconds(6_000),
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: parent_id,
+            depth: 1,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        }),
+    );
+    child.title = "child".to_string();
+    child.model_provider = alpha.clone();
+    let mut grandchild = metadata(
+        ThreadId::new(),
+        51,
+        base + chrono::Duration::seconds(6_100),
+        SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
+            parent_thread_id: child.id,
+            depth: 2,
+            agent_path: None,
+            agent_nickname: None,
+            agent_role: None,
+        }),
+    );
+    grandchild.title = "grandchild".to_string();
+    grandchild.model_provider = alpha.clone();
+    both!(backend, upsert_thread(&child)).expect("upsert child");
+    both!(backend, upsert_thread(&grandchild)).expect("upsert grandchild");
+    for (label, page) in [
+        (
+            "children",
+            both!(backend, list_threads_by_parent(5, parent_id, defaults)).expect("children"),
+        ),
+        (
+            "descendants",
+            both!(
+                backend,
+                list_threads_by_relation(
+                    5,
+                    ThreadRelationFilter::DescendantsOf(parent_id),
+                    defaults
+                )
+            )
+            .expect("descendants"),
+        ),
+        (
+            "descendants of child",
+            both!(
+                backend,
+                list_threads_by_relation(
+                    1,
+                    ThreadRelationFilter::DescendantsOf(child.id),
+                    defaults
+                )
+            )
+            .expect("descendants of child"),
+        ),
+    ] {
+        let mut parents: Vec<(String, String)> = page
+            .parent_thread_ids
+            .iter()
+            .map(|(thread, parent)| (thread.to_string(), parent.to_string()))
+            .collect();
+        parents.sort();
+        log.push(format!(
+            "{label}: {:?} parents {} next {:?}",
+            titles(&page.items),
+            parents.len(),
+            page.next_anchor
+                .as_ref()
+                .map(|next| (next.ts, next.id.is_some()))
+        ));
+    }
+    log
+}
+
+async fn real_postgres_listing_matches_sqlite() {
+    let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_THREAD_CATALOG_STATE") else {
+        return;
+    };
+    let pool = setup(Path::new(&state)).await;
+    let home = tempfile::tempdir().expect("sqlite fixture home");
+    let sqlite = StateRuntime::init(
+        SqliteConfig::new_for_testing(home.path().abs()),
+        "provider".to_string(),
+    )
+    .await
+    .expect("sqlite runtime");
+    let token = format!(
+        "list{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    );
+    let base = run_base() + chrono::Duration::seconds(20_000);
+    let ids: Vec<ThreadId> = (0..14).map(|_| ThreadId::new()).collect();
+    let expected = listing_scenario(&Backend::Sqlite(sqlite), &token, base, &ids).await;
+    let actual = listing_scenario(
+        &Backend::Postgres(PostgresThreadCatalog::new(pool)),
+        &token,
+        base,
+        &ids,
+    )
+    .await;
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(&expected) {
+        assert_eq!(actual, expected);
+    }
+}
+
 /// The checks share the namespace-wide timestamp marks, so they run one after another.
 #[tokio::test]
 async fn real_postgres_thread_catalog() {
     real_postgres_threads_match_sqlite().await;
+    real_postgres_listing_matches_sqlite().await;
     real_postgres_delete_removes_thread_state_and_keeps_queue_changes_visible().await;
 }

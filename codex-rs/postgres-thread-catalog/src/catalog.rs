@@ -64,6 +64,10 @@ impl PostgresThreadCatalog {
         Self { pool }
     }
 
+    pub(crate) fn pool(&self) -> &PostgresPool {
+        &self.pool
+    }
+
     /// Run one catalog write in a transaction, bounded by the query timeout.
     async fn write<T, F>(&self, operation: F) -> Result<T>
     where
