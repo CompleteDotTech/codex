@@ -67,8 +67,6 @@ pub enum MigrationError {
     Target(String),
     #[error("another migration holds the target store")]
     TargetBusy,
-    #[error("the source changed while it was being migrated")]
-    SourceChanged,
     #[error("{domain} differs between the source and the target")]
     Mismatch { domain: &'static str },
     #[error("the run stopped after its batch limit and can be resumed")]
@@ -151,11 +149,6 @@ impl Migrator {
 
     /// Prove the target holds exactly what the source holds, then mark the run verified.
     pub async fn verify(&self, run_id: Uuid) -> Result<VerificationReport, MigrationError> {
-        let fingerprint = self.source.fingerprint().await.map_err(source)?;
-        let recorded = self.recorded_fingerprint(run_id).await?;
-        if recorded != fingerprint {
-            return Err(MigrationError::SourceChanged);
-        }
         let mut domains = Vec::new();
         for domain in Domain::ALL {
             let (source_digest, target_digest) =
@@ -242,17 +235,6 @@ impl Migrator {
         };
         tx.commit().await.map_err(target)?;
         Ok(outcome)
-    }
-
-    async fn recorded_fingerprint(&self, run_id: Uuid) -> Result<String, MigrationError> {
-        let mut connection = self.connection().await?;
-        sqlx::query_scalar(
-            "SELECT source_fingerprint FROM codex_storage.storage_migration_runs WHERE run_id = $1",
-        )
-        .bind(run_id)
-        .fetch_one(&mut *connection)
-        .await
-        .map_err(target)
     }
 
     async fn set_run_state(&self, run_id: Uuid, state: &str) -> Result<(), MigrationError> {

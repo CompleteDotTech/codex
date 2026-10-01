@@ -27,45 +27,15 @@ impl SqliteSource {
         self.config.home()
     }
 
-    /// A digest of every database file and its write-ahead log, so a change made while a
-    /// migration runs is noticed. Callers should quiesce Codex first; this catches mistakes.
+    /// Identifies which home a run was started for, so a run is only ever resumed against the
+    /// same source. Content drift is not part of the identity; verification catches it by
+    /// comparing every domain's digest.
     pub async fn fingerprint(&self) -> Result<String> {
         use sha2::Digest;
-        let mut hasher = sha2::Sha256::new();
-        let mut paths: Vec<_> = self
-            .config
-            .runtime_db_paths()
-            .into_iter()
-            .map(|database| database.path)
-            .collect();
-        paths.sort();
-        for path in paths {
-            for suffix in ["", "-wal"] {
-                let mut file = path.clone().into_os_string();
-                file.push(suffix);
-                let file = std::path::PathBuf::from(file);
-                let Ok(metadata) = tokio::fs::metadata(&file).await else {
-                    continue;
-                };
-                let modified = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |elapsed| elapsed.as_secs());
-                hasher.update(
-                    format!(
-                        "{}:{}:{modified}
-",
-                        file.file_name()
-                            .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
-                        metadata.len()
-                    )
-                    .as_bytes(),
-                );
-            }
-        }
-        Ok(hasher
-            .finalize()
+        let home = tokio::fs::canonicalize(self.config.home())
+            .await
+            .unwrap_or_else(|_| self.config.home().to_path_buf());
+        Ok(sha2::Sha256::digest(home.to_string_lossy().as_bytes())
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect())

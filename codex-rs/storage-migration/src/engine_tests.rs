@@ -105,16 +105,15 @@ async fn populate(home: &Path) -> Vec<ThreadMetadata> {
     for index in 0..9 {
         let mut thread = metadata(index, base, SessionSource::Cli);
         if index >= 6 {
-            thread.source = serde_json::to_string(&SessionSource::SubAgent(
-                SubAgentSource::ThreadSpawn {
+            thread.source =
+                serde_json::to_string(&SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
                     parent_thread_id: threads[0].id,
                     depth: 1,
                     agent_path: None,
                     agent_nickname: None,
                     agent_role: None,
-                },
-            ))
-            .expect("source");
+                }))
+                .expect("source");
         }
         runtime.upsert_thread(&thread).await.expect("upsert");
         threads.push(thread);
@@ -215,7 +214,9 @@ async fn real_postgres_catalog_migration() {
         "{interrupted:?}"
     );
     let competing = Migrator::new(
-        SqliteSource::new(SqliteConfig::new_for_testing(tempfile::tempdir().expect("other").path().abs())),
+        SqliteSource::new(SqliteConfig::new_for_testing(
+            tempfile::tempdir().expect("other").path().abs(),
+        )),
         pool.clone(),
     )
     .import()
@@ -282,12 +283,12 @@ async fn real_postgres_catalog_migration() {
         .verify(first.run_id)
         .await;
     assert!(
-        matches!(mismatch, Err(MigrationError::Mismatch { domain: "threads" })),
+        matches!(
+            mismatch,
+            Err(MigrationError::Mismatch { domain: "threads" })
+        ),
         "{mismatch:?}"
     );
-    let stale_home = home.path().join("added-later");
-    std::fs::write(&stale_home, b"change").expect("write marker");
-    let state_db = config.state_db_path();
     let runtime = StateRuntime::init(config.clone(), "migration-provider".to_string())
         .await
         .expect("runtime");
@@ -296,12 +297,18 @@ async fn real_postgres_catalog_migration() {
         .await
         .expect("late thread");
     drop(runtime);
-    let _ = state_db;
+    // Repair the tampered row so only the late source change remains.
+    sqlx::query("UPDATE codex_storage.threads SET title = $2 WHERE id = $1::uuid")
+        .bind(threads[3].id.to_string())
+        .bind(&threads[3].title)
+        .execute(&mut *pool.acquire().await.expect("connection"))
+        .await
+        .expect("repair");
     let changed = Migrator::new(source.clone(), pool.clone())
         .verify(first.run_id)
         .await;
     assert!(
-        matches!(changed, Err(MigrationError::SourceChanged)),
+        matches!(changed, Err(MigrationError::Mismatch { domain: "threads" })),
         "{changed:?}"
     );
     reset_target(&pool).await;
