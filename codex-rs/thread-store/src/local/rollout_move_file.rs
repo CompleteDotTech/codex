@@ -15,6 +15,8 @@ use serde::Serialize;
 use super::rollout_move_identity::RolloutFileIdentity;
 use super::rollout_move_identity::rollout_file_digest;
 use super::rollout_move_identity::rollout_file_identity;
+
+const MAX_ROLLOUT_MOVE_INTENT_BYTES: usize = 4096;
 pub(super) fn touch_modified_time(path: &Path) -> std::io::Result<()> {
     let times = FileTimes::new().set_modified(SystemTime::now());
     OpenOptions::new().append(true).open(path)?.set_times(times)
@@ -35,6 +37,20 @@ pub(super) fn move_rollout_noclobber_retained(
     destination: &Path,
     codex_home: &Path,
 ) -> std::io::Result<()> {
+    move_rollout_noclobber_retained_with_intent_sync(
+        source,
+        destination,
+        codex_home,
+        sync_parent_directory,
+    )
+}
+
+fn move_rollout_noclobber_retained_with_intent_sync(
+    source: &Path,
+    destination: &Path,
+    codex_home: &Path,
+    sync_intent_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
     let canonical_sessions =
         std::fs::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
     let canonical_archived =
@@ -121,10 +137,9 @@ pub(super) fn move_rollout_noclobber_retained(
                 stage_id,
                 stage_digest,
             };
-            if let Err(err) = write_rollout_move_intent(&intent_path, &intent) {
-                let _ = std::fs::remove_file(&intent.stage_path);
-                return Err(err);
-            }
+            // A failed directory sync can follow successful intent publication.
+            // Preserve its stage even on error so a recorded move stays retryable.
+            write_rollout_move_intent(&intent_path, &intent, sync_intent_parent)?;
             intent
         }
         Err(err) => return Err(err),
@@ -203,23 +218,34 @@ fn rollout_move_intent_path(destination: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
-fn write_rollout_move_intent(path: &Path, intent: &RolloutMoveIntent) -> io::Result<()> {
+fn write_rollout_move_intent(
+    path: &Path,
+    intent: &RolloutMoveIntent,
+    sync_parent: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let mut contents = serde_json::to_vec(intent).map_err(io::Error::other)?;
+    contents.push(b'\n');
+    if contents.len() > MAX_ROLLOUT_MOVE_INTENT_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rollout move intent is too large",
+        ));
+    }
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::other("missing intent parent"))?;
     let mut file = tempfile::Builder::new()
         .prefix(".codex-move-intent-")
         .tempfile_in(parent)?;
-    serde_json::to_writer(&mut file, intent).map_err(io::Error::other)?;
-    file.write_all(b"\n")?;
+    file.write_all(&contents)?;
     file.as_file().sync_all()?;
     file.persist_noclobber(path).map_err(|err| err.error)?;
-    sync_parent_directory(path)
+    sync_parent(path)
 }
 
 fn read_rollout_move_intent(path: &Path) -> io::Result<RolloutMoveIntent> {
     let mut file = std::fs::File::open(path)?;
-    if file.metadata()?.len() > 4096 {
+    if file.metadata()?.len() > MAX_ROLLOUT_MOVE_INTENT_BYTES as u64 {
         return Err(io::Error::other("rollout move intent is too large"));
     }
     let mut contents = String::new();

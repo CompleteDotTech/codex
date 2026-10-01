@@ -116,6 +116,7 @@ pub(crate) async fn materialize_rollout_for_append(
 /// Materializes a compressed rollout back to plain `.jsonl` for blocking append paths.
 pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result<PathBuf> {
     let plain_path = plain_rollout_path(path);
+    ensure_single_rollout_representation(&plain_path)?;
     if plain_path.exists() {
         metrics::materialize("plain_exists");
         return Ok(plain_path);
@@ -152,7 +153,7 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
         stage = "publish";
         match std::fs::hard_link(temp_path.as_path(), plain_path.as_path()) {
             Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Err(err),
             Err(_) => persist_temp_file_noclobber(temp_path.as_path(), plain_path.as_path())?,
         }
         stage = "set_metadata";
@@ -184,9 +185,41 @@ fn persist_temp_file_noclobber(temp_path: &Path, destination: &Path) -> io::Resu
     let temp_path = tempfile::TempPath::try_from_path(temp_path)?;
     match temp_path.persist_noclobber(destination) {
         Ok(()) => Ok(()),
-        Err(err) if err.error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
         Err(err) => Err(err.error),
     }
+}
+
+/// Refuses an ambiguous local rollout without selecting or deleting either representation.
+pub fn ensure_single_rollout_representation(path: &Path) -> io::Result<()> {
+    fn regular_or_absent(path: &Path) -> io::Result<bool> {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "rollout representation is not a regular file: {}",
+                    path.display()
+                ),
+            )),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    let plain_path = plain_rollout_path(path);
+    let compressed_path = path::compressed_rollout_path(&plain_path);
+    let plain_exists = regular_or_absent(&plain_path)?;
+    let compressed_exists = regular_or_absent(&compressed_path)?;
+    if plain_exists && compressed_exists {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "both plain and compressed rollout files exist for {}",
+                plain_path.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Returns the plain `.jsonl` path for a plain or compressed rollout path.

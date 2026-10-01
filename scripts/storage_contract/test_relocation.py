@@ -150,6 +150,99 @@ class RelocationTests(unittest.TestCase):
             ["unresolved", "unresolved", "unresolved"],
         )
 
+    def test_windows_mapping_requires_exact_components(self):
+        self.plan["records"] = [self.plan["records"][0]]
+        self.rows = [self.rows[0]]
+        self.plan["mappings"] = [self.plan["mappings"][0]]
+        expected = {
+            "status": "offline_relocation_preview",
+            "activation_permitted": False,
+            "resume_permitted": False,
+            "source_observation_verified": False,
+            "dispositions": [
+                {"kind": "thread_cwd", "id": "thread1", "disposition": "unresolved"}
+            ],
+        }
+        for root, disposition in (
+            (r"c:\source\workspace", "unresolved"),
+            (r"C:\Source\workspace", "unresolved"),
+            (r"C:\source\Workspace", "unresolved"),
+            (r"C:\source\work", "unresolved"),
+            (r"C:\source\workspace\sub\child", "unresolved"),
+            (r"C:\source\workspace", "mapping_candidate"),
+            ("C:/source/workspace", "mapping_candidate"),
+            (r"C:\source\workspace\sub", "mapping_candidate"),
+            ("C:\\", "mapping_candidate"),
+        ):
+            with self.subTest(root=root):
+                self.plan["mappings"][0]["source_root"] = root
+                expected["dispositions"][0]["disposition"] = disposition
+                self.assertEqual(self.preview(), expected)
+
+    def test_invalid_windows_components_are_rejected_before_mapping(self):
+        components = [
+            *[f"bad{character}name" for character in '<>:"|?*\x00\x01\x1f'],
+            "trailing.",
+            "trailing ",
+            "nul",
+            "NUL.tar.gz",
+            "con .txt",
+            "COM1",
+            "COM².txt",
+            "LPT9",
+            "LPT³",
+            "CONIN$",
+            "CONOUT$",
+            "C:",
+        ]
+        for component in components:
+            for location in ("record", "source_root", "target_root", "suffix"):
+                with self.subTest(component=component, location=location):
+                    record = {
+                        **self.plan["records"][0],
+                        "source_path": r"C:\source\valid",
+                        "flavor": "windows",
+                    }
+                    mapping = {
+                        "source_root": r"C:\source",
+                        "source_flavor": "windows",
+                        "target_root": r"C:\target",
+                        "target_flavor": "windows",
+                    }
+                    if location == "record":
+                        record["source_path"] = f"C:\\source\\{component}\\child"
+                    elif location == "suffix":
+                        record.update(
+                            source_path=f"/source/{component}/child", flavor="posix"
+                        )
+                        mapping.update(source_root="/source", source_flavor="posix")
+                    else:
+                        mapping[location] = f"C:\\{component}\\child"
+                    self.plan["records"] = [record]
+                    self.rows = [
+                        {
+                            key: value
+                            for key, value in record.items()
+                            if key != "portable_rollout_id"
+                        }
+                    ]
+                    self.plan["mappings"] = [mapping]
+                    with self.assertRaises(ContractError) as failure:
+                        self.preview()
+                    self.assertEqual(str(failure.exception), "invalid_path")
+
+    def test_valid_windows_targets_preserve_mapping_candidates(self):
+        expected = self.preview()
+        for root in (
+            "D:\\",
+            r"D:\target\COM10\NULdata\.hidden\part name",
+            r"D:\target\café\项目",
+        ):
+            with self.subTest(root=root):
+                for mapping in self.plan["mappings"]:
+                    mapping.update(target_root=root, target_flavor="windows")
+                self.assertEqual(self.preview(), expected)
+
     def test_overlapping_roots_and_traversal_are_rejected(self):
         self.plan["mappings"].append(
             {
