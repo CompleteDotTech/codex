@@ -1,12 +1,18 @@
 """Synthetic physical-copy and direct-lineage checks for snapshot previews."""
 
 import json
+import contextlib
+import io
+import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
-from .rollout_capture_preview import preview
+from .rollout_capture_preview import _compressed_headers, preview
+from .rollout_capture_cli import main
 
 
 class RolloutCapturePreviewTest(unittest.TestCase):
@@ -75,6 +81,177 @@ class RolloutCapturePreviewTest(unittest.TestCase):
 
             self.assertEqual(result["canonical_files"], 0)
             self.assertEqual(result["unknown_entries"], 1)
+
+    def test_native_compressed_batch_adds_lineage_only_after_full_validation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            archive = home / "archived_sessions"
+            archive.mkdir()
+            parent, child, missing = (str(uuid.uuid4()) for _ in range(3))
+            for thread_id in (parent, child):
+                (
+                    archive / f"rollout-2026-09-28T12-00-00-{thread_id}.jsonl.zst"
+                ).write_bytes(b"zstd")
+            (archive / f"rollout-2026-09-28T12-00-00-{parent}.jsonl").write_text(
+                self._meta(parent), encoding="utf-8"
+            )
+
+            def respond(args, *, input, stdout, **kwargs):
+                self.assertEqual(args[1:], ["--snapshot-home", str(home.absolute())])
+                paths = [
+                    json.loads(line)["relative_path"] for line in input.splitlines()
+                ]
+                self.assertEqual(len(paths), 2)
+                for path in paths:
+                    thread_id = parent if parent in path else child
+                    ancestor = missing if thread_id == child else None
+                    stdout.write(
+                        (
+                            json.dumps(
+                                {
+                                    "status": "ok",
+                                    "thread_id": thread_id,
+                                    "ancestor_rollout_id": ancestor,
+                                }
+                            )
+                            + "\n"
+                        ).encode()
+                    )
+                return subprocess.CompletedProcess(args, 0)
+
+            with mock.patch(
+                "storage_contract.rollout_capture_preview.subprocess.run",
+                side_effect=respond,
+            ):
+                result = preview(
+                    home, compressed_header_helper=Path(sys.executable).resolve()
+                )
+            self.assertEqual(result["compressed_header_status"], "processed")
+            self.assertEqual(result["compressed_headers_unknown"], 0)
+            self.assertEqual(
+                result["missing_direct_ancestors"]["examples"], [f"{child}:{missing}"]
+            )
+            self.assertEqual(result["duplicate_rollout_ids"]["examples"], [parent])
+            self.assertFalse(result["capture_complete"])
+            self.assertFalse(result["activation_permitted"])
+            self.assertNotIn(str(home), json.dumps(result))
+
+    def test_invalid_late_native_response_discards_all_header_edges(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            archive = home / "archived_sessions"
+            archive.mkdir()
+            ids = [str(uuid.uuid4()) for _ in range(2)]
+            for thread_id in ids:
+                (
+                    archive / f"rollout-2026-09-28T12-00-00-{thread_id}.jsonl.zst"
+                ).write_bytes(b"zstd")
+
+            def respond(args, *, stdout, **kwargs):
+                stdout.write(
+                    (
+                        json.dumps(
+                            {
+                                "status": "ok",
+                                "thread_id": ids[0],
+                                "ancestor_rollout_id": str(uuid.uuid4()),
+                            }
+                        )
+                        + "\n"
+                    ).encode()
+                )
+                stdout.write(
+                    (
+                        f'{{"status":"ok","thread_id":"{ids[1]}",'
+                        f'"thread_id":"{ids[1]}","ancestor_rollout_id":null}}\n'
+                    ).encode()
+                )
+                return subprocess.CompletedProcess(args, 0)
+
+            with mock.patch(
+                "storage_contract.rollout_capture_preview.subprocess.run",
+                side_effect=respond,
+            ):
+                result = preview(
+                    home, compressed_header_helper=Path(sys.executable).resolve()
+                )
+            self.assertEqual(result["compressed_header_status"], "unavailable")
+            self.assertEqual(result["compressed_header_code"], "helper_protocol")
+            self.assertEqual(result["compressed_headers_unknown"], 2)
+            self.assertEqual(result["missing_direct_ancestors"]["count"], 0)
+
+    def test_timeout_and_request_limit_leave_compressed_headers_unknown(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            archive = home / "archived_sessions"
+            archive.mkdir()
+            thread_id = str(uuid.uuid4())
+            (
+                archive / f"rollout-2026-09-28T12-00-00-{thread_id}.jsonl.zst"
+            ).write_bytes(b"zstd")
+            with mock.patch(
+                "storage_contract.rollout_capture_preview.subprocess.run",
+                side_effect=subprocess.TimeoutExpired("helper", 30),
+            ):
+                result = preview(
+                    home, compressed_header_helper=Path(sys.executable).resolve()
+                )
+            self.assertEqual(
+                (
+                    result["compressed_header_code"],
+                    result["compressed_headers_unknown"],
+                ),
+                ("helper_timeout", 1),
+            )
+            candidates = [("archived_sessions/x", thread_id, thread_id)] * 1025
+            self.assertEqual(
+                _compressed_headers(home, Path(sys.executable).resolve(), candidates),
+                (None, "request_limit"),
+            )
+
+    def test_oversized_helper_output_is_discarded(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            archive = home / "archived_sessions"
+            archive.mkdir()
+            thread_id = str(uuid.uuid4())
+            (
+                archive / f"rollout-2026-09-28T12-00-00-{thread_id}.jsonl.zst"
+            ).write_bytes(b"zstd")
+
+            def respond(args, *, stdout, **kwargs):
+                stdout.write(b"x" * (512 * 1024 + 1))
+                return subprocess.CompletedProcess(args, 0)
+
+            with mock.patch(
+                "storage_contract.rollout_capture_preview.subprocess.run",
+                side_effect=respond,
+            ):
+                result = preview(
+                    home, compressed_header_helper=Path(sys.executable).resolve()
+                )
+            self.assertEqual(
+                (
+                    result["compressed_header_code"],
+                    result["compressed_headers_unknown"],
+                ),
+                ("helper_output_limit", 1),
+            )
+
+    def test_cli_rejects_relative_helper_without_echoing_it(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(
+                [
+                    "--snapshot-home",
+                    "unused",
+                    "--compressed-header-helper",
+                    "secret/helper",
+                ]
+            )
+        self.assertEqual(code, 2)
+        self.assertEqual(json.loads(output.getvalue())["code"], "invalid_helper_path")
+        self.assertNotIn("secret/helper", output.getvalue())
 
     @staticmethod
     def _meta(thread_id, ancestor=None):
