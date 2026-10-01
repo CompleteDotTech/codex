@@ -292,3 +292,6 @@ mod tests;
 
 #[cfg(all(test, unix))]
 mod exclusive_fixture;
+
+#[cfg(all(test, unix))]
+mod exclusive_fixture_io;
