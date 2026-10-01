@@ -1,0 +1,8 @@
+---
+source: tui/src/app/tests/session_picker_settings_tests.rs
+assertion_line: 140
+expression: "render_bottom_popup(&app.chat_widget, 80)"
+---
+› retained resume-picker draft
+
+  gpt-5.4 high · /tmp/project                   Plan mode (shift+tab to cycle)
