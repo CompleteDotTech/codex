@@ -279,7 +279,10 @@ BEGIN
               AND routine.pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace)
               AND relation.relkind IN ('r', 'p', 'v', 'f')
               AND (
-                ((trigger_row.tgtype::integer & 4) <> 0 AND has_table_privilege(caller.oid, relation.oid, 'INSERT'))
+                ((trigger_row.tgtype::integer & 4) <> 0 AND (
+                    has_table_privilege(caller.oid, relation.oid, 'INSERT')
+                    OR has_any_column_privilege(caller.oid, relation.oid, 'INSERT')
+                ))
                 OR ((trigger_row.tgtype::integer & 8) <> 0 AND has_table_privilege(caller.oid, relation.oid, 'DELETE'))
                 OR ((trigger_row.tgtype::integer & 16) <> 0 AND (
                     has_table_privilege(caller.oid, relation.oid, 'UPDATE')

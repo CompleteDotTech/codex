@@ -50,7 +50,6 @@ use codex_protocol::protocol::InternalSessionSource;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_protocol::protocol::WarningEvent;
-use codex_rollout::state_db;
 use codex_thread_store::PersistContext;
 use codex_thread_store::ReadThreadParams;
 use codex_utils_absolute_path::AbsolutePathBuf;
@@ -64,6 +63,7 @@ use crate::context::HookAdditionalContext;
 use crate::environment_selection::TurnEnvironmentSnapshot;
 use crate::event_mapping::parse_turn_item;
 use crate::guardian::GuardianReviewContext;
+use crate::memory_mode_pollution;
 use crate::session::TurnInput;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
@@ -910,8 +910,9 @@ pub(crate) async fn emit_hook_completed_events(
                 )
         })
     {
-        state_db::mark_thread_memory_mode_polluted(
+        memory_mode_pollution::mark_thread_memory_mode_polluted(
             sess.services.state_db.as_deref(),
+            turn_context.config.memories.version,
             sess.thread_id,
             "mcp_tool_hook",
         )

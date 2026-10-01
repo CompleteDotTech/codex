@@ -73,8 +73,17 @@ async fn restrictive_launcher_uses_embedded_if_daemon_cannot_start() -> Result<(
             .arg("--no-alt-screen")
             .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::inherit())
-            .stderr(std::process::Stdio::inherit());
-        let status = job.spawn_contained(&mut command)?.wait().await?;
+            .stderr(std::process::Stdio::inherit())
+            // This interactive CLI must inherit the PTY console rather than use
+            // the background helper's CREATE_NO_WINDOW launch policy.
+            .creation_flags(windows_sys::Win32::System::Threading::CREATE_SUSPENDED)
+            .kill_on_drop(true);
+        let mut child = command.spawn()?;
+        ensure!(
+            job.assign_and_resume_process(child.id().context("missing CLI pid")?)?,
+            "CLI job assignment failed"
+        );
+        let status = child.wait().await?;
         ensure!(status.success(), "CLI exited: {status}");
         return Ok(());
     }
@@ -201,12 +210,10 @@ async fn daemon_startup(command: &str) -> Result<()> {
             steps.push_back(("GPT-5.6-Terra", b"\x14"));
             "Runningwithoutthesharedbackgroundserver:thisWindowslauncher"
         } else if mismatch {
-            args.extend(if persisted {
-                ["--disable".into(), "api_key_model_discovery".into()]
-            } else if disabling {
+            args.extend(if disabling && !persisted {
                 ["--disable".into(), "auth_elicitation".into()]
             } else {
-                ["--enable".into(), "api_key_model_discovery".into()]
+                ["--disable".into(), "api_key_model_discovery".into()]
             });
             let input: &[u8] = match command {
                 "mismatch-cancel" => b"\x03",
@@ -316,7 +323,7 @@ async fn daemon_startup(command: &str) -> Result<()> {
                         let previous_pid = existing_daemon.as_ref().context("missing original daemon PID")?;
                         ensure!((fs::read(&pid_file)? != *previous_pid) == restart);
                         if command == "mismatch-cancel" {
-                            ensure!(text.contains("Cannotusethesharedbackgroundserver:Thissessionrequiresapi_key_model_discoverytobeenabled."));
+                            ensure!(text.contains("Cannotusethesharedbackgroundserver:Thissessionrequiresapi_key_model_discoverytobedisabled."));
                         } else {
                             ensure!(text.contains("Server:Localbackgroundserver") == restart);
                         }
