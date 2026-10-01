@@ -46,7 +46,7 @@ pub struct PostgresThreadCatalog {
 macro_rules! insert_thread {
     () => {
         concat!(
-            "INSERT INTO codex_storage.threads (id, origin_rollout_path, ",
+            "INSERT INTO threads (id, origin_rollout_path, ",
             "created_at_ms, updated_at_ms, recency_at_ms, source, originator, creator_user_id, ",
             "creator_account_id, history_mode, thread_source, agent_nickname, agent_role, ",
             "agent_path, model_provider, model, reasoning_effort, origin_cwd, cli_version, ",
@@ -131,7 +131,7 @@ impl PostgresThreadCatalog {
             .await
             .map_err(|error| anyhow!("PostgreSQL thread storage is unavailable: {error:?}"))?;
         Ok(
-            sqlx::query_scalar("SELECT memory_mode FROM codex_storage.threads WHERE id = $1::uuid")
+            sqlx::query_scalar("SELECT memory_mode FROM threads WHERE id = $1::uuid")
                 .bind(id.to_string())
                 .fetch_optional(&mut *connection)
                 .await?,
@@ -182,7 +182,7 @@ impl PostgresThreadCatalog {
         daybreak_enabled: bool,
     ) -> Result<bool> {
         self.update_one(
-            "UPDATE codex_storage.threads SET daybreak_enabled = $1 WHERE id = $2::uuid",
+            "UPDATE threads SET daybreak_enabled = $1 WHERE id = $2::uuid",
             move |query| query.bind(daybreak_enabled).bind(thread_id.to_string()),
         )
         .await
@@ -195,7 +195,7 @@ impl PostgresThreadCatalog {
     ) -> Result<bool> {
         let memory_mode = memory_mode.to_string();
         self.update_one(
-            "UPDATE codex_storage.threads SET memory_mode = $1 WHERE id = $2::uuid",
+            "UPDATE threads SET memory_mode = $1 WHERE id = $2::uuid",
             move |query| query.bind(memory_mode).bind(thread_id.to_string()),
         )
         .await
@@ -204,7 +204,7 @@ impl PostgresThreadCatalog {
     pub async fn update_thread_title(&self, thread_id: ThreadId, title: &str) -> Result<bool> {
         let title = title.to_string();
         self.update_one(
-            "UPDATE codex_storage.threads SET title = $1 WHERE id = $2::uuid",
+            "UPDATE threads SET title = $1 WHERE id = $2::uuid",
             move |query| query.bind(title).bind(thread_id.to_string()),
         )
         .await
@@ -217,7 +217,7 @@ impl PostgresThreadCatalog {
     ) -> Result<bool> {
         let name = name.map(str::to_string);
         self.update_one(
-            "UPDATE codex_storage.threads SET name = $1 WHERE id = $2::uuid",
+            "UPDATE threads SET name = $1 WHERE id = $2::uuid",
             move |query| query.bind(name).bind(thread_id.to_string()),
         )
         .await
@@ -231,7 +231,7 @@ impl PostgresThreadCatalog {
     ) -> Result<bool> {
         let legacy_name = legacy_name.map(str::to_string);
         self.update_one(
-            "UPDATE codex_storage.threads SET history_mode = 'paginated', name = CASE \
+            "UPDATE threads SET history_mode = 'paginated', name = CASE \
                WHEN name IS NULL OR trim(name) = '' THEN $1 \
                WHEN history_mode = 'legacy' \
                  AND source = '{\"subagent\":{\"other\":\"guardian\"}}' \
@@ -258,7 +258,7 @@ impl PostgresThreadCatalog {
             return Ok(false);
         }
         self.update_one(
-            "UPDATE codex_storage.threads SET preview = $1 \
+            "UPDATE threads SET preview = $1 \
              WHERE id = $2::uuid AND COALESCE(preview, '') = ''",
             move |query| query.bind(preview).bind(thread_id.to_string()),
         )
@@ -275,15 +275,15 @@ impl PostgresThreadCatalog {
                 let mut marks = lock_marks(connection).await?;
                 let allocated = marks.allocate_updated_at(updated_at);
                 marks.save(connection).await?;
-                Ok(sqlx::query(
-                    "UPDATE codex_storage.threads SET updated_at_ms = $1 WHERE id = $2::uuid",
+                Ok(
+                    sqlx::query("UPDATE threads SET updated_at_ms = $1 WHERE id = $2::uuid")
+                        .bind(allocated)
+                        .bind(thread_id.to_string())
+                        .execute(&mut *connection)
+                        .await?
+                        .rows_affected()
+                        > 0,
                 )
-                .bind(allocated)
-                .bind(thread_id.to_string())
-                .execute(&mut *connection)
-                .await?
-                .rows_affected()
-                    > 0)
             })
         })
         .await
@@ -300,7 +300,7 @@ impl PostgresThreadCatalog {
                 let allocated = marks.allocate_recency_at(recency_at);
                 marks.save(connection).await?;
                 Ok(sqlx::query(
-                    "UPDATE codex_storage.threads \
+                    "UPDATE threads \
                      SET recency_at_ms = GREATEST($1, recency_at_ms + 1) WHERE id = $2::uuid",
                 )
                 .bind(allocated)
@@ -333,7 +333,7 @@ impl PostgresThreadCatalog {
                 .map(|url| SanitizedGitUrl::as_str(url).to_string()),
         );
         self.update_one(
-            "UPDATE codex_storage.threads SET \
+            "UPDATE threads SET \
                git_sha = CASE WHEN $1 THEN $2 ELSE git_sha END, \
                git_branch = CASE WHEN $3 THEN $4 ELSE git_branch END, \
                git_origin_url = CASE WHEN $5 THEN $6 ELSE git_origin_url END \
@@ -363,7 +363,7 @@ impl PostgresThreadCatalog {
             .await
             .map_err(|error| anyhow!("PostgreSQL thread storage is unavailable: {error:?}"))?;
         let path: Option<String> = sqlx::query_scalar(
-            "SELECT origin_rollout_path FROM codex_storage.threads WHERE id = $1::uuid \
+            "SELECT origin_rollout_path FROM threads WHERE id = $1::uuid \
              AND ($2::boolean IS NULL OR ($2 = (archived_at_s IS NOT NULL)))",
         )
         .bind(id.to_string())
@@ -386,7 +386,7 @@ impl PostgresThreadCatalog {
         );
         Ok(self
             .update_count(
-                "UPDATE codex_storage.threads SET origin_rollout_path = $1 \
+                "UPDATE threads SET origin_rollout_path = $1 \
                  WHERE id = $2::uuid AND origin_rollout_path = $3",
                 move |query| query.bind(replacement).bind(id.to_string()).bind(expected),
             )
@@ -450,7 +450,7 @@ impl PostgresThreadCatalog {
                 lock_memory_in(connection).await?;
                 for thread_id in &thread_ids {
                     let id = thread_id.to_string();
-                    sqlx::query("DELETE FROM codex_storage.logs WHERE thread_id = $1")
+                    sqlx::query("DELETE FROM logs WHERE thread_id = $1")
                         .bind(&id)
                         .execute(&mut *connection)
                         .await?;
@@ -461,18 +461,17 @@ impl PostgresThreadCatalog {
                 for thread_id in &thread_ids {
                     let id = thread_id.to_string();
                     sqlx::query(
-                        "DELETE FROM codex_storage.thread_spawn_edges \
+                        "DELETE FROM thread_spawn_edges \
                          WHERE parent_thread_id = $1::uuid OR child_thread_id = $1::uuid",
                     )
                     .bind(&id)
                     .execute(&mut *connection)
                     .await?;
-                    rows_affected +=
-                        sqlx::query("DELETE FROM codex_storage.threads WHERE id = $1::uuid")
-                            .bind(&id)
-                            .execute(&mut *connection)
-                            .await?
-                            .rows_affected();
+                    rows_affected += sqlx::query("DELETE FROM threads WHERE id = $1::uuid")
+                        .bind(&id)
+                        .execute(&mut *connection)
+                        .await?
+                        .rows_affected();
                 }
                 Ok(rows_affected)
             })
@@ -517,13 +516,13 @@ pub async fn get_thread_in(
         concat!(
             "SELECT ",
             thread_columns!(),
-            " FROM codex_storage.threads WHERE threads.id = $1::uuid FOR UPDATE OF threads"
+            " FROM threads WHERE threads.id = $1::uuid FOR UPDATE OF threads"
         )
     } else {
         concat!(
             "SELECT ",
             thread_columns!(),
-            " FROM codex_storage.threads WHERE threads.id = $1::uuid"
+            " FROM threads WHERE threads.id = $1::uuid"
         )
     };
     sqlx::query(sql)
@@ -682,7 +681,7 @@ async fn insert_spawn_edge_from_source(
         return Ok(());
     };
     sqlx::query(
-        "INSERT INTO codex_storage.thread_spawn_edges (parent_thread_id, child_thread_id, status) \
+        "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) \
          VALUES ($1::uuid, $2::uuid, 'open') ON CONFLICT (child_thread_id) DO NOTHING",
     )
     .bind(parent_thread_id.to_string())

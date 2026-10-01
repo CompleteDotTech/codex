@@ -76,7 +76,7 @@ impl DomainOps for Stage1Outputs {
     async fn import(connection: &mut PgConnection, records: &[Stage1Record]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.memory_stage1_outputs (thread_id, source_updated_at, \
+                "INSERT INTO memory_stage1_outputs (thread_id, source_updated_at, \
                  raw_memory, rollout_summary, rollout_slug, generated_at, usage_count, \
                  last_usage, selected_for_phase2, selected_for_phase2_source_updated_at) \
                  VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
@@ -114,7 +114,7 @@ impl DomainOps for Stage1Outputs {
             "SELECT thread_id::text AS thread_id, source_updated_at, raw_memory, \
              rollout_summary, rollout_slug, generated_at, usage_count, last_usage, \
              selected_for_phase2, selected_for_phase2_source_updated_at \
-             FROM codex_storage.memory_stage1_outputs \
+             FROM memory_stage1_outputs \
              WHERE ($1::uuid IS NULL OR thread_id > $1::uuid) ORDER BY thread_id LIMIT $2",
         )
         .bind(after)
@@ -229,7 +229,7 @@ impl DomainOps for MemoryJobs {
     async fn import(connection: &mut PgConnection, records: &[JobRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.memory_jobs (kind, job_key, status, worker_id, \
+                "INSERT INTO memory_jobs (kind, job_key, status, worker_id, \
                  ownership_token, started_at, finished_at, lease_until, retry_at, \
                  retry_remaining, last_error, input_watermark, last_success_watermark) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
@@ -269,7 +269,7 @@ impl DomainOps for MemoryJobs {
         let rows = sqlx::query(
             "SELECT kind, job_key, status, worker_id, ownership_token, started_at, finished_at, \
              lease_until, retry_at, retry_remaining, last_error, input_watermark, \
-             last_success_watermark FROM codex_storage.memory_jobs \
+             last_success_watermark FROM memory_jobs \
              WHERE ($1::text IS NULL OR (kind COLLATE \"C\", job_key COLLATE \"C\") > \
              ($1 COLLATE \"C\", $2 COLLATE \"C\")) \
              ORDER BY kind COLLATE \"C\", job_key COLLATE \"C\" LIMIT $3",
@@ -328,7 +328,7 @@ impl DomainOps for MemoryProgress {
     async fn import(connection: &mut PgConnection, records: &[ProgressRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "UPDATE codex_storage.memory_consolidation_progress \
+                "UPDATE memory_consolidation_progress \
                  SET max_thread_count = $1 WHERE singleton",
             )
             .bind(record.max_thread_count)
@@ -346,10 +346,9 @@ impl DomainOps for MemoryProgress {
         if after.is_some() {
             return Ok(Vec::new());
         }
-        let rows =
-            sqlx::query("SELECT max_thread_count FROM codex_storage.memory_consolidation_progress")
-                .fetch_all(connection)
-                .await?;
+        let rows = sqlx::query("SELECT max_thread_count FROM memory_consolidation_progress")
+            .fetch_all(connection)
+            .await?;
         rows.iter()
             .map(|row| {
                 Ok(ProgressRecord {

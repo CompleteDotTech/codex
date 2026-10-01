@@ -37,12 +37,11 @@ impl std::error::Error for ActivationGateError {}
 pub async fn require_storage_open(
     connection: &mut PgConnection,
 ) -> Result<(), ActivationGateError> {
-    let state: String = sqlx::query_scalar(
-        "SELECT state FROM codex_storage.storage_activation WHERE singleton FOR SHARE",
-    )
-    .fetch_one(connection)
-    .await
-    .map_err(|_| ActivationGateError::Unavailable)?;
+    let state: String =
+        sqlx::query_scalar("SELECT state FROM storage_activation WHERE singleton FOR SHARE")
+            .fetch_one(connection)
+            .await
+            .map_err(|_| ActivationGateError::Unavailable)?;
     match state.as_str() {
         "open" => Ok(()),
         "migrating" => Err(ActivationGateError::Migrating),

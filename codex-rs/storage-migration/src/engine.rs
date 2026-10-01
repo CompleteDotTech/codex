@@ -247,7 +247,7 @@ impl Migrator {
         let mut connection = self.connection().await?;
         let mut tx = connection.begin().await.map_err(target)?;
         let row = sqlx::query(
-            "SELECT state, run_id, generation FROM codex_storage.storage_activation \
+            "SELECT state, run_id, generation FROM storage_activation \
              WHERE singleton FOR UPDATE",
         )
         .fetch_one(&mut *tx)
@@ -259,19 +259,18 @@ impl Migrator {
         if state != "migrating" || held != Some(run_id) {
             return Err(MigrationError::TargetBusy);
         }
-        let run_state: Option<String> = sqlx::query_scalar(
-            "SELECT state FROM codex_storage.storage_migration_runs WHERE run_id = $1",
-        )
-        .bind(run_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(target)?;
+        let run_state: Option<String> =
+            sqlx::query_scalar("SELECT state FROM storage_migration_runs WHERE run_id = $1")
+                .bind(run_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(target)?;
         if run_state.as_deref() != Some("verified") {
             return Err(MigrationError::NotVerified);
         }
         let now = chrono::Utc::now().timestamp_millis();
         sqlx::query(
-            "UPDATE codex_storage.storage_migration_runs SET state = 'activated', \
+            "UPDATE storage_migration_runs SET state = 'activated', \
              updated_at_ms = $2 WHERE run_id = $1",
         )
         .bind(run_id)
@@ -280,7 +279,7 @@ impl Migrator {
         .await
         .map_err(target)?;
         sqlx::query(
-            "UPDATE codex_storage.storage_activation SET state = 'open', generation = $1, \
+            "UPDATE storage_activation SET state = 'open', generation = $1, \
              updated_at_ms = $2 WHERE singleton",
         )
         .bind(generation + 1)
@@ -306,19 +305,18 @@ impl Migrator {
     async fn begin(&self, fingerprint: &str) -> Result<(Uuid, bool), MigrationError> {
         let mut connection = self.connection().await?;
         let mut tx = connection.begin().await.map_err(target)?;
-        let row = sqlx::query(
-            "SELECT state, run_id FROM codex_storage.storage_activation WHERE singleton FOR UPDATE",
-        )
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(target)?;
+        let row =
+            sqlx::query("SELECT state, run_id FROM storage_activation WHERE singleton FOR UPDATE")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(target)?;
         let state: String = row.try_get("state").map_err(target)?;
         let held: Option<Uuid> = row.try_get("run_id").map_err(target)?;
         let now = chrono::Utc::now().timestamp_millis();
         let outcome = if state == "migrating" {
             let run_id = held.ok_or(MigrationError::TargetBusy)?;
             let existing = sqlx::query(
-                "SELECT source_fingerprint, state FROM codex_storage.storage_migration_runs \
+                "SELECT source_fingerprint, state FROM storage_migration_runs \
                  WHERE run_id = $1",
             )
             .bind(run_id)
@@ -338,13 +336,13 @@ impl Migrator {
             (run_id, true)
         } else {
             let occupied: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM codex_storage.threads) \
-                 OR EXISTS (SELECT 1 FROM codex_storage.projects) \
-                 OR EXISTS (SELECT 1 FROM codex_storage.queued_items) \
-                 OR EXISTS (SELECT 1 FROM codex_storage.logs) \
-                 OR EXISTS (SELECT 1 FROM codex_storage.agent_board_posts) \
-                 OR EXISTS (SELECT 1 FROM codex_storage.memory_stage1_outputs) \
-                 OR EXISTS (SELECT 1 FROM codex_storage.thread_goals)",
+                "SELECT EXISTS (SELECT 1 FROM threads) \
+                 OR EXISTS (SELECT 1 FROM projects) \
+                 OR EXISTS (SELECT 1 FROM queued_items) \
+                 OR EXISTS (SELECT 1 FROM logs) \
+                 OR EXISTS (SELECT 1 FROM agent_board_posts) \
+                 OR EXISTS (SELECT 1 FROM memory_stage1_outputs) \
+                 OR EXISTS (SELECT 1 FROM thread_goals)",
             )
             .fetch_one(&mut *tx)
             .await
@@ -354,7 +352,7 @@ impl Migrator {
             }
             let run_id = Uuid::now_v7();
             sqlx::query(
-                "INSERT INTO codex_storage.storage_migration_runs \
+                "INSERT INTO storage_migration_runs \
                  (run_id, direction, source_fingerprint, state, started_at_ms, updated_at_ms) \
                  VALUES ($1, 'import', $2, 'running', $3, $3)",
             )
@@ -365,7 +363,7 @@ impl Migrator {
             .await
             .map_err(target)?;
             sqlx::query(
-                "UPDATE codex_storage.storage_activation \
+                "UPDATE storage_activation \
                  SET state = 'migrating', run_id = $1, updated_at_ms = $2 WHERE singleton",
             )
             .bind(run_id)
@@ -382,7 +380,7 @@ impl Migrator {
     async fn set_run_state(&self, run_id: Uuid, state: &str) -> Result<(), MigrationError> {
         let mut connection = self.connection().await?;
         sqlx::query(
-            "UPDATE codex_storage.storage_migration_runs SET state = $2, updated_at_ms = $3 \
+            "UPDATE storage_migration_runs SET state = $2, updated_at_ms = $3 \
              WHERE run_id = $1",
         )
         .bind(run_id)
@@ -402,7 +400,7 @@ impl Migrator {
     ) -> Result<(), MigrationError> {
         let mut connection = self.connection().await?;
         sqlx::query(
-            "INSERT INTO codex_storage.storage_migration_domains \
+            "INSERT INTO storage_migration_domains \
              (run_id, domain, done, row_count, digest) VALUES ($1, $2, TRUE, $3, $4) \
              ON CONFLICT (run_id, domain) DO UPDATE SET done = TRUE, row_count = $3, digest = $4",
         )
@@ -426,7 +424,7 @@ impl Migrator {
             let mut connection = self.connection().await?;
             let row = sqlx::query(
                 "SELECT resume_cursor, done, row_count \
-                 FROM codex_storage.storage_migration_domains WHERE run_id = $1 AND domain = $2",
+                 FROM storage_migration_domains WHERE run_id = $1 AND domain = $2",
             )
             .bind(run_id)
             .bind(D::DOMAIN.name())
@@ -523,7 +521,7 @@ async fn checkpoint(
     moved: u64,
 ) -> Result<(), MigrationError> {
     sqlx::query(
-        "INSERT INTO codex_storage.storage_migration_domains \
+        "INSERT INTO storage_migration_domains \
          (run_id, domain, resume_cursor, done, row_count) VALUES ($1, $2, $3, $4, $5) \
          ON CONFLICT (run_id, domain) DO UPDATE \
          SET resume_cursor = $3, done = $4, row_count = $5",

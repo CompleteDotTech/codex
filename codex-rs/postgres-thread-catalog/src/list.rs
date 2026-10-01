@@ -118,9 +118,8 @@ impl PostgresThreadCatalog {
         archived_only: bool,
     ) -> Result<Vec<ThreadId>> {
         let tiebreaker = matches!(sort_key, SortKey::RecencyAt | SortKey::SectionPosition);
-        let mut builder = QueryBuilder::<Postgres>::new(
-            "SELECT threads.id::text AS id FROM codex_storage.threads",
-        );
+        let mut builder =
+            QueryBuilder::<Postgres>::new("SELECT threads.id::text AS id FROM threads");
         push_thread_filters(
             &mut builder,
             ThreadFilterOptions {
@@ -163,7 +162,7 @@ impl PostgresThreadCatalog {
     ) -> Result<Option<ThreadMetadata>> {
         let mut builder = QueryBuilder::<Postgres>::new("");
         push_select_columns(&mut builder);
-        builder.push(" FROM codex_storage.threads");
+        builder.push(" FROM threads");
         push_thread_filters(
             &mut builder,
             ThreadFilterOptions {
@@ -233,11 +232,11 @@ fn push_list_threads_query(
         builder.push(
             "WITH RECURSIVE subtree(child_thread_id, parent_thread_id) AS ( \
              SELECT child_thread_id, parent_thread_id \
-             FROM codex_storage.thread_spawn_edges WHERE parent_thread_id = ",
+             FROM thread_spawn_edges WHERE parent_thread_id = ",
         );
         builder.push_bind(ancestor_thread_id.to_string()).push(
             "::uuid UNION SELECT edge.child_thread_id, edge.parent_thread_id \
-                 FROM codex_storage.thread_spawn_edges AS edge \
+                 FROM thread_spawn_edges AS edge \
                  JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id) ",
         );
     }
@@ -245,14 +244,14 @@ fn push_list_threads_query(
     match relation_filter {
         Some(ThreadRelationFilter::DirectChildrenOf(_)) => builder.push(
             ", listed_edge.parent_thread_id::text AS parent_thread_id \
-             FROM codex_storage.thread_spawn_edges AS listed_edge \
-             JOIN codex_storage.threads ON threads.id = listed_edge.child_thread_id",
+             FROM thread_spawn_edges AS listed_edge \
+             JOIN threads ON threads.id = listed_edge.child_thread_id",
         ),
         Some(ThreadRelationFilter::DescendantsOf(_)) => builder.push(
             ", subtree.parent_thread_id::text AS parent_thread_id \
-             FROM subtree JOIN codex_storage.threads ON threads.id = subtree.child_thread_id",
+             FROM subtree JOIN threads ON threads.id = subtree.child_thread_id",
         ),
-        None => builder.push(" FROM codex_storage.threads"),
+        None => builder.push(" FROM threads"),
     };
     let include_thread_id_tiebreaker = relation_filter.is_some()
         || matches!(

@@ -68,7 +68,7 @@ impl DomainOps for DeletedBoards {
     async fn import(connection: &mut PgConnection, records: &[DeletedBoardRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.agent_board_deleted (board) VALUES ($1) \
+                "INSERT INTO agent_board_deleted (board) VALUES ($1) \
                  ON CONFLICT (board) DO NOTHING",
             )
             .bind(&record.board)
@@ -84,7 +84,7 @@ impl DomainOps for DeletedBoards {
         limit: usize,
     ) -> Result<Vec<DeletedBoardRecord>> {
         let rows = sqlx::query(
-            "SELECT board FROM codex_storage.agent_board_deleted \
+            "SELECT board FROM agent_board_deleted \
              WHERE ($1::text IS NULL OR board > $1) ORDER BY board LIMIT $2",
         )
         .bind(after)
@@ -164,7 +164,7 @@ impl DomainOps for Channels {
     async fn import(connection: &mut PgConnection, records: &[ChannelRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.agent_board_channels \
+                "INSERT INTO agent_board_channels \
                  (board, name, name_search, created_at, timestamp, author) \
                  VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (board, name) DO NOTHING",
             )
@@ -188,7 +188,7 @@ impl DomainOps for Channels {
         let [board, name] = parts::<2>(after).unwrap_or(["", ""]);
         let rows = sqlx::query(
             "SELECT board, name, name_search, created_at, timestamp, author \
-             FROM codex_storage.agent_board_channels \
+             FROM agent_board_channels \
              WHERE ($1 = FALSE OR (board, name) > ($2, $3)) ORDER BY board, name LIMIT $4",
         )
         .bind(after.is_some())
@@ -276,7 +276,7 @@ impl DomainOps for Posts {
     async fn import(connection: &mut PgConnection, records: &[PostRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.agent_board_posts (seq, board, id, channel, root, \
+                "INSERT INTO agent_board_posts (seq, board, id, channel, root, \
                  author, timestamp, body_search, payload, request_id, request) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
                  ON CONFLICT (seq) DO NOTHING",
@@ -298,7 +298,7 @@ impl DomainOps for Posts {
         // New posts must be numbered after every imported sequence number.
         if let Some(highest) = records.iter().map(|record| record.seq).max() {
             sqlx::query(
-                "UPDATE codex_storage.agent_board_post_counter \
+                "UPDATE agent_board_post_counter \
                  SET last_seq = GREATEST(last_seq, $1) WHERE singleton",
             )
             .bind(highest)
@@ -315,7 +315,7 @@ impl DomainOps for Posts {
     ) -> Result<Vec<PostRecord>> {
         let rows = sqlx::query(
             "SELECT seq, board, id, channel, root, author, timestamp, body_search, payload, \
-             request_id, request FROM codex_storage.agent_board_posts \
+             request_id, request FROM agent_board_posts \
              WHERE seq > $1 ORDER BY seq LIMIT $2",
         )
         .bind(
@@ -403,7 +403,7 @@ macro_rules! membership_domain {
             ) -> Result<()> {
                 for record in records {
                     sqlx::query(concat!(
-                        "INSERT INTO codex_storage.",
+                        "INSERT INTO ",
                         $pg_table,
                         " (board, target, agent) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING"
                     ))
@@ -423,7 +423,7 @@ macro_rules! membership_domain {
             ) -> Result<Vec<MembershipRecord>> {
                 let [board, target, agent] = parts::<3>(after).unwrap_or(["", "", ""]);
                 let rows = sqlx::query(concat!(
-                    "SELECT board, target, agent FROM codex_storage.",
+                    "SELECT board, target, agent FROM ",
                     $pg_table,
                     " WHERE ($1 = FALSE OR (board, target, agent) > ($2, $3, $4)) \
                      ORDER BY board, target, agent LIMIT $5"

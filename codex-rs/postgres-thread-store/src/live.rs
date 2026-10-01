@@ -300,7 +300,7 @@ impl LiveThread {
             // this check and the commit that follows it.
             if let Some((owner_id, token)) = fence {
                 let held: Option<i32> = sqlx::query_scalar(
-                    "SELECT 1 FROM codex_storage.thread_writer_ownership \
+                    "SELECT 1 FROM thread_writer_ownership \
                      WHERE thread_id = $1::uuid AND owner_id = $2::uuid AND token = $3 \
                        AND lease_until > clock_timestamp() FOR SHARE",
                 )

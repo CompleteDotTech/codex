@@ -93,14 +93,14 @@ impl AgentMessageBoard for PostgresAgentMessageBoard {
             self.read(move |connection| {
                 Box::pin(async move {
                     let mut sql = QueryBuilder::<Postgres>::new(
-                        "SELECT c.name FROM codex_storage.agent_board_channels c WHERE c.board = ",
+                        "SELECT c.name FROM agent_board_channels c WHERE c.board = ",
                     );
                     sql.push_bind(board.clone())
                         .push(" AND strpos(c.name_search, ")
                         .push_bind(default_case_fold_str(&query.query.unwrap_or_default()))
                         .push(
                             ") > 0 ORDER BY COALESCE( \
-                             (SELECT MAX(p.timestamp) FROM codex_storage.agent_board_posts p \
+                             (SELECT MAX(p.timestamp) FROM agent_board_posts p \
                               WHERE p.board = c.board AND p.channel = c.name), \
                              c.timestamp) ",
                         )
@@ -140,7 +140,7 @@ impl AgentMessageBoard for PostgresAgentMessageBoard {
             self.read(move |connection| {
                 Box::pin(async move {
                     let exists: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM codex_storage.agent_board_channels \
+                        "SELECT EXISTS(SELECT 1 FROM agent_board_channels \
                          WHERE board = $1 AND name = $2)",
                     )
                     .bind(&board)
@@ -162,37 +162,35 @@ impl AgentMessageBoard for PostgresAgentMessageBoard {
                         }
                         ThreadSort::Activity => {
                             sql.push(
-                                "(SELECT MAX(r.timestamp) FROM codex_storage.agent_board_posts r \
+                                "(SELECT MAX(r.timestamp) FROM agent_board_posts r \
                                  WHERE r.board = p.board AND r.root = p.id)",
                             );
                         }
                     }
-                    sql.push(
-                        " AS sort_timestamp FROM codex_storage.agent_board_posts p WHERE p.board = ",
-                    )
-                    .push_bind(board)
-                    .push(" AND p.channel = ")
-                    .push_bind(query.channel_name)
-                    .push(" AND p.id = p.root ORDER BY sort_timestamp ")
-                    .push(order)
-                    .push(", p.seq ")
-                    .push(order)
-                    .push(" LIMIT ")
-                    .push_bind((window.limit + 1) as i64)
-                    .push(" OFFSET ")
-                    .push_bind(window.offset())
-                    .push(
-                        ") SELECT p.payload, \
-                         (SELECT COUNT(*) FROM codex_storage.agent_board_posts r \
+                    sql.push(" AS sort_timestamp FROM agent_board_posts p WHERE p.board = ")
+                        .push_bind(board)
+                        .push(" AND p.channel = ")
+                        .push_bind(query.channel_name)
+                        .push(" AND p.id = p.root ORDER BY sort_timestamp ")
+                        .push(order)
+                        .push(", p.seq ")
+                        .push(order)
+                        .push(" LIMIT ")
+                        .push_bind((window.limit + 1) as i64)
+                        .push(" OFFSET ")
+                        .push_bind(window.offset())
+                        .push(
+                            ") SELECT p.payload, \
+                         (SELECT COUNT(*) FROM agent_board_posts r \
                           WHERE r.board = p.board AND r.root = p.id AND r.id <> r.root), \
-                         (SELECT r.payload FROM codex_storage.agent_board_posts r \
+                         (SELECT r.payload FROM agent_board_posts r \
                           WHERE r.board = p.board AND r.root = p.id AND r.id <> r.root \
                           ORDER BY r.timestamp DESC, r.seq DESC LIMIT 1) \
                          FROM page p ORDER BY p.sort_timestamp ",
-                    )
-                    .push(order)
-                    .push(", p.seq ")
-                    .push(order);
+                        )
+                        .push(order)
+                        .push(", p.seq ")
+                        .push(order);
                     let rows = sql
                         .build_query_as::<(String, i64, Option<String>)>()
                         .fetch_all(&mut *connection)
@@ -202,7 +200,8 @@ impl AgentMessageBoard for PostgresAgentMessageBoard {
                         .min(MAX_READ_CHARS / (2 * rows.len().min(window.limit).max(1)));
                     let mut threads = Vec::with_capacity(rows.len());
                     for (root, count, last) in rows {
-                        let root: StoredPost = serde_json::from_str(&root).map_err(serialization)?;
+                        let root: StoredPost =
+                            serde_json::from_str(&root).map_err(serialization)?;
                         let id = root.metadata.message_id;
                         let last: Option<StoredPost> = last
                             .map(|value| serde_json::from_str(&value))
@@ -240,7 +239,7 @@ impl AgentMessageBoard for PostgresAgentMessageBoard {
                     let after = if let Some(id) = query.after_message_id {
                         Some(
                             sqlx::query_as::<_, (i64, i64)>(
-                                "SELECT timestamp, seq FROM codex_storage.agent_board_posts \
+                                "SELECT timestamp, seq FROM agent_board_posts \
                                  WHERE board = $1 AND id = $2",
                             )
                             .bind(&board)
@@ -254,7 +253,7 @@ impl AgentMessageBoard for PostgresAgentMessageBoard {
                         None
                     };
                     let mut sql = QueryBuilder::<Postgres>::new(
-                        "SELECT payload FROM codex_storage.agent_board_posts WHERE board = ",
+                        "SELECT payload FROM agent_board_posts WHERE board = ",
                     );
                     sql.push_bind(board);
                     if let Some(channel) = query.channel_name {
@@ -311,7 +310,7 @@ impl AgentMessageBoard for PostgresAgentMessageBoard {
                     }
                     let posts = decode_posts(
                         sqlx::query_scalar(
-                            "SELECT payload FROM codex_storage.agent_board_posts \
+                            "SELECT payload FROM agent_board_posts \
                              WHERE board = $1 AND root = $2 AND id <> root \
                              ORDER BY timestamp DESC, seq DESC LIMIT $3 OFFSET $4",
                         )

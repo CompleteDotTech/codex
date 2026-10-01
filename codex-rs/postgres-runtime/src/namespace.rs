@@ -15,6 +15,16 @@ pub struct NamedNamespace {
 pub struct InvalidNamespace;
 
 impl NamedNamespace {
+    /// The schema that holds this namespace's tables.
+    pub fn schema(&self) -> &str {
+        &self.schema
+    }
+
+    /// Login the runtime stores use for ordinary reads and writes in this namespace.
+    pub fn runtime_login(&self) -> &str {
+        &self.runtime
+    }
+
     /// Login required for read-only namespace compatibility preflight.
     pub fn migrator_login(&self) -> &str {
         &self.migrator

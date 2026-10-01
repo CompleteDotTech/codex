@@ -192,7 +192,7 @@ impl DomainOps for Threads {
     async fn import(connection: &mut PgConnection, records: &[ThreadRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.threads (id, origin_rollout_path, created_at_ms, \
+                "INSERT INTO threads (id, origin_rollout_path, created_at_ms, \
                  updated_at_ms, recency_at_ms, source, originator, creator_user_id, \
                  creator_account_id, history_mode, thread_source, agent_nickname, agent_role, \
                  agent_path, model_provider, model, reasoning_effort, origin_cwd, cli_version, \
@@ -269,7 +269,7 @@ impl DomainOps for Threads {
         let recency = records.iter().map(|record| record.recency_at_ms).max();
         if let (Some(updated), Some(recency)) = (updated, recency) {
             sqlx::query(
-                "UPDATE codex_storage.thread_timestamp_marks SET \
+                "UPDATE thread_timestamp_marks SET \
                  updated_at_ms = GREATEST(updated_at_ms, $1), \
                  recency_at_ms = GREATEST(recency_at_ms, $2) WHERE singleton",
             )
@@ -295,7 +295,7 @@ impl DomainOps for Threads {
              COALESCE(first_user_message, '') AS first_user_message, archived_at_s, \
              thread_section_id, section_position, section_entered_at_ms, project_id, \
              daybreak_enabled, git_sha, git_branch, git_origin_url, memory_mode \
-             FROM codex_storage.threads \
+             FROM threads \
              WHERE ($1::uuid IS NULL OR id > $1::uuid) ORDER BY id LIMIT $2",
         )
         .bind(after)

@@ -48,7 +48,7 @@ const MAX_CHANNEL_BYTES: usize = 128;
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) const LOCK_WRITERS: &str =
-    "SELECT 1 FROM codex_storage.agent_board_post_counter WHERE singleton FOR UPDATE";
+    "SELECT 1 FROM agent_board_post_counter WHERE singleton FOR UPDATE";
 
 #[derive(Clone)]
 pub struct PostgresAgentMessageBoard {
@@ -105,7 +105,7 @@ impl PostgresAgentMessageBoard {
                 .await
                 .map_err(storage)?;
             let deleted: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM codex_storage.agent_board_deleted WHERE board = $1)",
+                "SELECT EXISTS(SELECT 1 FROM agent_board_deleted WHERE board = $1)",
             )
             .bind(&board)
             .fetch_one(&mut *tx)
@@ -226,7 +226,7 @@ impl PostgresAgentMessageBoard {
                     let (channel, root, target) = match &request.destination {
                         PostDestination::Channel(channel) => {
                             let exists: bool = sqlx::query_scalar(
-                                "SELECT EXISTS(SELECT 1 FROM codex_storage.agent_board_channels \
+                                "SELECT EXISTS(SELECT 1 FROM agent_board_channels \
                                  WHERE board = $1 AND name = $2)",
                             )
                             .bind(&board)
@@ -272,7 +272,7 @@ impl PostgresAgentMessageBoard {
                         }
                     };
                     let subscribed: Vec<String> = sqlx::query_scalar(
-                        "SELECT agent FROM codex_storage.agent_board_subscriptions \
+                        "SELECT agent FROM agent_board_subscriptions \
                          WHERE board = $1 AND target = $2",
                     )
                     .bind(&board)
@@ -298,14 +298,14 @@ impl PostgresAgentMessageBoard {
                         text: request.text.clone(),
                     };
                     let seq: i64 = sqlx::query_scalar(
-                        "UPDATE codex_storage.agent_board_post_counter \
+                        "UPDATE agent_board_post_counter \
                          SET last_seq = last_seq + 1 WHERE singleton RETURNING last_seq",
                     )
                     .fetch_one(&mut *connection)
                     .await
                     .map_err(storage)?;
                     sqlx::query(
-                        "INSERT INTO codex_storage.agent_board_posts(seq, board, id, channel, \
+                        "INSERT INTO agent_board_posts(seq, board, id, channel, \
                          root, author, timestamp, body_search, payload, request_id, request) \
                          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
                     )
@@ -380,7 +380,7 @@ impl PostgresAgentMessageBoard {
                                 return Err(invalid("thread_id must identify a top-level post"));
                             }
                             let last: String = sqlx::query_scalar(
-                                "SELECT id FROM codex_storage.agent_board_posts \
+                                "SELECT id FROM agent_board_posts \
                                  WHERE board = $1 AND root = $2 \
                                  ORDER BY timestamp DESC, seq DESC LIMIT 1",
                             )
@@ -403,15 +403,15 @@ impl PostgresAgentMessageBoard {
                     // prevent implicit subscription when this agent participates again.
                     let statements = match change {
                         SubscriptionChange::Subscribe => [
-                            "DELETE FROM codex_storage.agent_board_opt_outs \
+                            "DELETE FROM agent_board_opt_outs \
                              WHERE board = $1 AND target = $2 AND agent = $3",
-                            "INSERT INTO codex_storage.agent_board_subscriptions(board, target, agent) \
+                            "INSERT INTO agent_board_subscriptions(board, target, agent) \
                              VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
                         ],
                         SubscriptionChange::Unsubscribe => [
-                            "DELETE FROM codex_storage.agent_board_subscriptions \
+                            "DELETE FROM agent_board_subscriptions \
                              WHERE board = $1 AND target = $2 AND agent = $3",
-                            "INSERT INTO codex_storage.agent_board_opt_outs(board, target, agent) \
+                            "INSERT INTO agent_board_opt_outs(board, target, agent) \
                              VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
                         ],
                     };
@@ -475,7 +475,7 @@ pub(crate) async fn insert_channel(
     now: DateTime<Utc>,
 ) -> Result<()> {
     let inserted = sqlx::query(
-        "INSERT INTO codex_storage.agent_board_channels(board, name, name_search, created_at, \
+        "INSERT INTO agent_board_channels(board, name, name_search, created_at, \
          timestamp, author) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
     )
     .bind(board)
@@ -501,9 +501,9 @@ async fn subscribe(
     agent: ThreadId,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO codex_storage.agent_board_subscriptions(board, target, agent) \
+        "INSERT INTO agent_board_subscriptions(board, target, agent) \
          SELECT $1, $2, $3 WHERE NOT EXISTS ( \
-           SELECT 1 FROM codex_storage.agent_board_opt_outs \
+           SELECT 1 FROM agent_board_opt_outs \
            WHERE board = $1 AND target = $2 AND agent = $3) \
          ON CONFLICT DO NOTHING",
     )
@@ -521,14 +521,13 @@ pub(crate) async fn load_post(
     board: &str,
     id: Uuid,
 ) -> Result<StoredPost> {
-    let payload: Option<String> = sqlx::query_scalar(
-        "SELECT payload FROM codex_storage.agent_board_posts WHERE board = $1 AND id = $2",
-    )
-    .bind(board)
-    .bind(id.to_string())
-    .fetch_optional(connection)
-    .await
-    .map_err(storage)?;
+    let payload: Option<String> =
+        sqlx::query_scalar("SELECT payload FROM agent_board_posts WHERE board = $1 AND id = $2")
+            .bind(board)
+            .bind(id.to_string())
+            .fetch_optional(connection)
+            .await
+            .map_err(storage)?;
     serde_json::from_str(&payload.ok_or_else(|| invalid("post not found in this board"))?)
         .map_err(serialization)
 }
@@ -540,7 +539,7 @@ async fn existing_post(
     request: &str,
 ) -> Result<Option<StoredPost>> {
     let row = sqlx::query(
-        "SELECT payload, request FROM codex_storage.agent_board_posts \
+        "SELECT payload, request FROM agent_board_posts \
          WHERE board = $1 AND request_id = $2",
     )
     .bind(board)
@@ -565,12 +564,12 @@ pub(crate) async fn channel_summary(
 ) -> Result<ChannelSummary> {
     let row = sqlx::query(
         "SELECT c.created_at, c.author, \
-         (SELECT COUNT(*) FROM codex_storage.agent_board_posts p \
+         (SELECT COUNT(*) FROM agent_board_posts p \
           WHERE p.board = c.board AND p.channel = c.name) AS message_count, \
-         (SELECT p.id FROM codex_storage.agent_board_posts p \
+         (SELECT p.id FROM agent_board_posts p \
           WHERE p.board = c.board AND p.channel = c.name \
           ORDER BY p.timestamp DESC, p.seq DESC LIMIT 1) AS last_message_id \
-         FROM codex_storage.agent_board_channels c WHERE c.board = $1 AND c.name = $2",
+         FROM agent_board_channels c WHERE c.board = $1 AND c.name = $2",
     )
     .bind(board)
     .bind(name)

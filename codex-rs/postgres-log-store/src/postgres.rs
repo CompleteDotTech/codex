@@ -49,7 +49,7 @@ impl PostgresLogStore {
             let mut tx = connection.begin().await?;
             require_storage_open(&mut tx).await?;
             let last_id: i64 = sqlx::query_scalar(
-                "UPDATE codex_storage.log_id_counter SET last_id = last_id + $1 \
+                "UPDATE log_id_counter SET last_id = last_id + $1 \
                  WHERE singleton RETURNING last_id",
             )
             .bind(count)
@@ -57,7 +57,7 @@ impl PostgresLogStore {
             .await?;
             let first_id = last_id - count + 1;
             let mut builder = QueryBuilder::<Postgres>::new(
-                "INSERT INTO codex_storage.logs (id, ts, ts_nanos, level, target, \
+                "INSERT INTO logs (id, ts, ts_nanos, level, target, \
                  feedback_log_body, thread_id, process_uuid, module_path, file, line, \
                  estimated_bytes) ",
             );
@@ -89,7 +89,7 @@ impl PostgresLogStore {
     async fn query(&self, query: &LogQuery) -> Result<Vec<LogRow>> {
         let mut builder = QueryBuilder::<Postgres>::new(
             "SELECT id, ts, ts_nanos, level, target, feedback_log_body AS message, thread_id, \
-             process_uuid, file, line FROM codex_storage.logs WHERE TRUE",
+             process_uuid, file, line FROM logs WHERE TRUE",
         );
         push_log_filters(&mut builder, query);
         builder.push(if query.descending {
@@ -143,7 +143,7 @@ WITH requested_threads(thread_id) AS (
 latest_processes AS (
     SELECT (
         SELECT process_uuid
-        FROM codex_storage.logs
+        FROM logs
         WHERE logs.thread_id = requested_threads.thread_id AND process_uuid IS NOT NULL
         ORDER BY ts DESC, ts_nanos DESC, id DESC
         LIMIT 1
@@ -152,7 +152,7 @@ latest_processes AS (
 ),
 feedback_logs AS (
     SELECT ts, ts_nanos, level, feedback_log_body, estimated_bytes, id
-    FROM codex_storage.logs
+    FROM logs
     WHERE feedback_log_body IS NOT NULL AND (
         thread_id IN (SELECT thread_id FROM requested_threads)
         OR (
@@ -211,9 +211,8 @@ ORDER BY ts DESC, ts_nanos DESC, id DESC
     }
 
     async fn max_id(&self, query: &LogQuery) -> Result<i64> {
-        let mut builder = QueryBuilder::<Postgres>::new(
-            "SELECT MAX(id) AS max_id FROM codex_storage.logs WHERE TRUE",
-        );
+        let mut builder =
+            QueryBuilder::<Postgres>::new("SELECT MAX(id) AS max_id FROM logs WHERE TRUE");
         push_log_filters(&mut builder, query);
         let mut connection = self.pool.acquire().await?;
         let row = timeout(QUERY_TIMEOUT, builder.build().fetch_one(&mut *connection))
@@ -303,14 +302,14 @@ async fn prune_after_insert(entries: &[LogEntry], tx: &mut PgConnection) -> Resu
 }
 
 const PRUNE_THREADS: &str = r#"
-DELETE FROM codex_storage.logs
+DELETE FROM logs
 WHERE id IN (
     SELECT id FROM (
         SELECT
             id,
             SUM(estimated_bytes) OVER w AS cumulative_bytes,
             ROW_NUMBER() OVER w AS row_number
-        FROM codex_storage.logs
+        FROM logs
         WHERE thread_id = ANY($1::text[])
         WINDOW w AS (PARTITION BY thread_id ORDER BY ts DESC, ts_nanos DESC, id DESC)
     ) ranked
@@ -319,14 +318,14 @@ WHERE id IN (
 "#;
 
 const PRUNE_PROCESSES: &str = r#"
-DELETE FROM codex_storage.logs
+DELETE FROM logs
 WHERE id IN (
     SELECT id FROM (
         SELECT
             id,
             SUM(estimated_bytes) OVER w AS cumulative_bytes,
             ROW_NUMBER() OVER w AS row_number
-        FROM codex_storage.logs
+        FROM logs
         WHERE thread_id IS NULL AND process_uuid = ANY($1::text[])
         WINDOW w AS (PARTITION BY process_uuid ORDER BY ts DESC, ts_nanos DESC, id DESC)
     ) ranked
@@ -335,14 +334,14 @@ WHERE id IN (
 "#;
 
 const PRUNE_NULL_PROCESS: &str = r#"
-DELETE FROM codex_storage.logs
+DELETE FROM logs
 WHERE id IN (
     SELECT id FROM (
         SELECT
             id,
             SUM(estimated_bytes) OVER w AS cumulative_bytes,
             ROW_NUMBER() OVER w AS row_number
-        FROM codex_storage.logs
+        FROM logs
         WHERE thread_id IS NULL AND process_uuid IS NULL
         WINDOW w AS (ORDER BY ts DESC, ts_nanos DESC, id DESC)
     ) ranked

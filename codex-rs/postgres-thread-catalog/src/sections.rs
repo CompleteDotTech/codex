@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 const SECTION_POSITION_GAP: i64 = 1_000_000;
-const LOCK_SECTIONS: &str = "LOCK TABLE codex_storage.thread_sections IN SHARE ROW EXCLUSIVE MODE";
+const LOCK_SECTIONS: &str = "LOCK TABLE thread_sections IN SHARE ROW EXCLUSIVE MODE";
 
 fn section_from_row(
     (id, name, appearance): (String, String, Option<String>),
@@ -49,7 +49,7 @@ impl PostgresThreadCatalog {
         self.write(move |connection| {
             Box::pin(async move {
                 sqlx::query(
-                    "INSERT INTO codex_storage.thread_sections (id, name, appearance) \
+                    "INSERT INTO thread_sections (id, name, appearance) \
                      VALUES ($1, $2, $3)",
                 )
                 .bind(&stored.id)
@@ -90,7 +90,7 @@ impl PostgresThreadCatalog {
             .write(move |connection| {
                 Box::pin(async move {
                     Ok(sqlx::query_as::<_, (String, String, Option<String>)>(
-                        "UPDATE codex_storage.thread_sections SET name = $1, \
+                        "UPDATE thread_sections SET name = $1, \
                          appearance = CASE WHEN $2 THEN $3 ELSE appearance END \
                          WHERE id = $4 RETURNING id, name, appearance",
                     )
@@ -116,20 +116,18 @@ impl PostgresThreadCatalog {
             Box::pin(async move {
                 lock_sections(connection).await?;
                 sqlx::query(
-                    "UPDATE codex_storage.threads SET section_position = NULL, \
+                    "UPDATE threads SET section_position = NULL, \
                      section_entered_at_ms = NULL WHERE thread_section_id = $1",
                 )
                 .bind(&id)
                 .execute(&mut *connection)
                 .await?;
-                Ok(
-                    sqlx::query("DELETE FROM codex_storage.thread_sections WHERE id = $1")
-                        .bind(&id)
-                        .execute(&mut *connection)
-                        .await?
-                        .rows_affected()
-                        > 0,
-                )
+                Ok(sqlx::query("DELETE FROM thread_sections WHERE id = $1")
+                    .bind(&id)
+                    .execute(&mut *connection)
+                    .await?
+                    .rows_affected()
+                    > 0)
             })
         })
         .await
@@ -149,7 +147,7 @@ impl PostgresThreadCatalog {
                 Box::pin(async move {
                     Ok(sqlx::query_as::<_, (String, Option<i64>, Option<i64>)>(
                         "SELECT id::text, section_position, section_entered_at_ms \
-                         FROM codex_storage.threads WHERE id = ANY($1::uuid[])",
+                         FROM threads WHERE id = ANY($1::uuid[])",
                     )
                     .bind(&ids)
                     .fetch_all(&mut *connection)
@@ -178,7 +176,7 @@ impl PostgresThreadCatalog {
             .read(move |connection| {
                 Box::pin(async move {
                     Ok(sqlx::query_as::<_, (String, String, Option<String>)>(
-                        "SELECT id, name, appearance FROM codex_storage.thread_sections \
+                        "SELECT id, name, appearance FROM thread_sections \
                          WHERE id = $1",
                     )
                     .bind(&id)
@@ -203,7 +201,7 @@ impl PostgresThreadCatalog {
             .read(move |connection| {
                 Box::pin(async move {
                     Ok(sqlx::query_as::<_, (String, String, Option<String>)>(
-                        "SELECT id, name, appearance FROM codex_storage.thread_sections \
+                        "SELECT id, name, appearance FROM thread_sections \
                          WHERE ($1::text IS NULL OR id > $1) ORDER BY id LIMIT $2",
                     )
                     .bind(&cursor)
@@ -249,7 +247,7 @@ impl PostgresThreadCatalog {
                 lock_sections(connection).await?;
                 let thread_id = thread_id.to_string();
                 let current_section = sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT thread_section_id FROM codex_storage.threads \
+                    "SELECT thread_section_id FROM threads \
                      WHERE id = $1::uuid FOR UPDATE",
                 )
                 .bind(&thread_id)
@@ -260,7 +258,7 @@ impl PostgresThreadCatalog {
                 };
                 let Some(section) = section else {
                     sqlx::query(
-                        "UPDATE codex_storage.threads SET thread_section_id = NULL, \
+                        "UPDATE threads SET thread_section_id = NULL, \
                          section_position = NULL, section_entered_at_ms = NULL \
                          WHERE id = $1::uuid",
                     )
@@ -270,7 +268,7 @@ impl PostgresThreadCatalog {
                     return Ok(true);
                 };
                 let exists: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM codex_storage.thread_sections WHERE id = $1)",
+                    "SELECT EXISTS(SELECT 1 FROM thread_sections WHERE id = $1)",
                 )
                 .bind(&section)
                 .fetch_one(&mut *connection)
@@ -284,7 +282,7 @@ impl PostgresThreadCatalog {
                 }
                 if let Some(before_thread_id) = before_thread_id.as_deref() {
                     let before_section = sqlx::query_scalar::<_, Option<String>>(
-                        "SELECT thread_section_id FROM codex_storage.threads \
+                        "SELECT thread_section_id FROM threads \
                          WHERE id = $1::uuid",
                     )
                     .bind(before_thread_id)
@@ -305,7 +303,7 @@ impl PostgresThreadCatalog {
                 .await?;
                 if current_section.as_deref() == Some(section.as_str()) {
                     sqlx::query(
-                        "UPDATE codex_storage.threads SET section_position = $1 \
+                        "UPDATE threads SET section_position = $1 \
                          WHERE id = $2::uuid",
                     )
                     .bind(position)
@@ -314,7 +312,7 @@ impl PostgresThreadCatalog {
                     .await?;
                 } else {
                     sqlx::query(
-                        "UPDATE codex_storage.threads SET thread_section_id = $1, \
+                        "UPDATE threads SET thread_section_id = $1, \
                          section_position = $2, section_entered_at_ms = $3 WHERE id = $4::uuid",
                     )
                     .bind(&section)
@@ -346,7 +344,7 @@ async fn section_move_position(
     loop {
         let position = if let Some(before_thread_id) = before_thread_id {
             let upper = sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT section_position FROM codex_storage.threads \
+                "SELECT section_position FROM threads \
                  WHERE id = $1::uuid AND thread_section_id = $2",
             )
             .bind(before_thread_id)
@@ -358,7 +356,7 @@ async fn section_move_position(
                 anyhow!("before thread {before_thread_id} is not in section {section}")
             })?;
             let lower = sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT MAX(section_position) FROM codex_storage.threads \
+                "SELECT MAX(section_position) FROM threads \
                  WHERE thread_section_id = $1 AND section_position < $2 AND id <> $3::uuid",
             )
             .bind(section)
@@ -376,7 +374,7 @@ async fn section_move_position(
             }
         } else {
             let max_position = sqlx::query_scalar::<_, Option<i64>>(
-                "SELECT MAX(section_position) FROM codex_storage.threads \
+                "SELECT MAX(section_position) FROM threads \
                  WHERE thread_section_id = $1 AND id <> $2::uuid",
             )
             .bind(section)
@@ -396,10 +394,10 @@ async fn section_move_position(
             ));
         }
         sqlx::query(
-            "UPDATE codex_storage.threads SET section_position = ranked.position FROM ( \
+            "UPDATE threads SET section_position = ranked.position FROM ( \
                SELECT id, ROW_NUMBER() OVER ( \
                  ORDER BY section_position ASC NULLS FIRST, id ASC) * $1 AS position \
-               FROM codex_storage.threads \
+               FROM threads \
                WHERE thread_section_id = $2 AND id <> $3::uuid) AS ranked \
              WHERE threads.id = ranked.id",
         )

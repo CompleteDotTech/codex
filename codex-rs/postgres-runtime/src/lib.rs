@@ -174,6 +174,25 @@ pub struct PostgresPool {
 
 impl PostgresPool {
     pub async fn connect(settings: ConnectionSettings) -> Result<Self, PoolError> {
+        Self::connect_with_search_path(settings, None).await
+    }
+
+    /// Connect so that unqualified table names resolve inside one namespace.
+    ///
+    /// `None` selects the default `codex_storage` schema. Stores that write unqualified SQL use
+    /// this so one set of statements serves the default and every named namespace.
+    pub async fn connect_in_namespace(
+        settings: ConnectionSettings,
+        namespace: Option<&NamedNamespace>,
+    ) -> Result<Self, PoolError> {
+        let schema = namespace.map_or("codex_storage", NamedNamespace::schema);
+        Self::connect_with_search_path(settings, Some(format!("pg_catalog, \"{schema}\""))).await
+    }
+
+    async fn connect_with_search_path(
+        settings: ConnectionSettings,
+        search_path: Option<String>,
+    ) -> Result<Self, PoolError> {
         let limits = settings.limits;
         let valid_host = settings.host.parse::<IpAddr>().is_ok()
             || (settings.host.len() <= 253
@@ -228,7 +247,17 @@ impl PostgresPool {
                     let rejected_version = Arc::clone(&rejected_version);
                     move |connection, _| {
                         let rejected_version = Arc::clone(&rejected_version);
+                        let search_path = search_path.clone();
                         Box::pin(async move {
+                            if let Some(search_path) = search_path {
+                                sqlx::query("SELECT set_config('search_path', $1, false)")
+                                    .bind(search_path)
+                                    .execute(&mut *connection)
+                                    .await
+                                    .map_err(|error| {
+                                        sqlx::Error::Configuration(Box::new(classify(&error)))
+                                    })?;
+                            }
                             let version =
                                 sqlx::query_scalar::<_, String>("SHOW server_version_num")
                                     .fetch_one(connection)

@@ -107,9 +107,9 @@ impl PostgresMemoryStore {
         let rows = self
             .read_rows(
                 sqlx::query(
-                    "SELECT (SELECT source_updated_at FROM codex_storage.memory_stage1_outputs \
+                    "SELECT (SELECT source_updated_at FROM memory_stage1_outputs \
                              WHERE thread_id = $1::uuid) AS output_source_updated_at, \
-                            (SELECT last_success_watermark FROM codex_storage.memory_jobs \
+                            (SELECT last_success_watermark FROM memory_jobs \
                              WHERE kind = $2 AND job_key = $1) AS last_success_watermark",
                 )
                 .bind(thread_id.to_string())
@@ -142,11 +142,9 @@ fn stage1_output_from_row(row: &PgRow) -> Result<Stage1Output> {
 /// Take the memory lock that serializes memory work. Callers that combine memory changes with
 /// other tables lock it first, so every transaction acquires locks in the same order.
 pub async fn lock_memory_in(connection: &mut PgConnection) -> Result<()> {
-    sqlx::query(
-        "SELECT 1 FROM codex_storage.memory_consolidation_progress WHERE singleton FOR UPDATE",
-    )
-    .execute(connection)
-    .await?;
+    sqlx::query("SELECT 1 FROM memory_consolidation_progress WHERE singleton FOR UPDATE")
+        .execute(connection)
+        .await?;
     Ok(())
 }
 
@@ -159,19 +157,18 @@ pub async fn delete_thread_memory_in(
     let now = Utc::now().timestamp();
     let thread_id = thread_id.to_string();
     let was_selected = sqlx::query_scalar::<_, i64>(
-        "SELECT selected_for_phase2 FROM codex_storage.memory_stage1_outputs WHERE thread_id = $1::uuid",
+        "SELECT selected_for_phase2 FROM memory_stage1_outputs WHERE thread_id = $1::uuid",
     )
     .bind(&thread_id)
     .fetch_optional(&mut *connection)
     .await?
     .is_some_and(|selected| selected != 0);
-    let deleted =
-        sqlx::query("DELETE FROM codex_storage.memory_stage1_outputs WHERE thread_id = $1::uuid")
-            .bind(&thread_id)
-            .execute(&mut *connection)
-            .await?
-            .rows_affected();
-    sqlx::query("DELETE FROM codex_storage.memory_jobs WHERE kind = $1 AND job_key = $2")
+    let deleted = sqlx::query("DELETE FROM memory_stage1_outputs WHERE thread_id = $1::uuid")
+        .bind(&thread_id)
+        .execute(&mut *connection)
+        .await?
+        .rows_affected();
+    sqlx::query("DELETE FROM memory_jobs WHERE kind = $1 AND job_key = $2")
         .bind(JOB_KIND_MEMORY_STAGE1)
         .bind(&thread_id)
         .execute(&mut *connection)
@@ -189,7 +186,7 @@ async fn enqueue_global_consolidation_in(
     input_watermark: i64,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO codex_storage.memory_jobs (kind, job_key, status, worker_id, \
+        "INSERT INTO memory_jobs (kind, job_key, status, worker_id, \
          ownership_token, started_at, finished_at, lease_until, retry_at, retry_remaining, \
          last_error, input_watermark, last_success_watermark) \
          VALUES ($1, $2, 'pending', NULL, NULL, NULL, NULL, NULL, NULL, $3, NULL, $4, 0) \
@@ -216,15 +213,13 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
     fn clear_memory_data(&self) -> MemoryStoreFuture<'_, ()> {
         Box::pin(self.run(|connection| {
             Box::pin(async move {
-                sqlx::query(
-                    "UPDATE codex_storage.memory_consolidation_progress SET max_thread_count = 0",
-                )
-                .execute(&mut *connection)
-                .await?;
-                sqlx::query("DELETE FROM codex_storage.memory_stage1_outputs")
+                sqlx::query("UPDATE memory_consolidation_progress SET max_thread_count = 0")
                     .execute(&mut *connection)
                     .await?;
-                sqlx::query("DELETE FROM codex_storage.memory_jobs WHERE kind = $1 OR kind = $2")
+                sqlx::query("DELETE FROM memory_stage1_outputs")
+                    .execute(&mut *connection)
+                    .await?;
+                sqlx::query("DELETE FROM memory_jobs WHERE kind = $1 OR kind = $2")
                     .bind(JOB_KIND_MEMORY_STAGE1)
                     .bind(JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL)
                     .execute(&mut *connection)
@@ -255,7 +250,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                     let mut updated = 0;
                     for thread_id in &ids {
                         updated += sqlx::query(
-                            "UPDATE codex_storage.memory_stage1_outputs \
+                            "UPDATE memory_stage1_outputs \
                              SET usage_count = COALESCE(usage_count, 0) + 1, last_usage = $1 \
                              WHERE thread_id = $2::uuid",
                         )
@@ -298,7 +293,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                     sqlx::query(concat!(
                         "SELECT ",
                         thread_columns!(),
-                        " FROM codex_storage.threads \
+                        " FROM threads \
                          WHERE threads.archived_at_s IS NULL \
                            AND COALESCE(threads.preview, '') <> '' \
                            AND (cardinality($1::text[]) = 0 OR threads.source = ANY($1::text[])) \
@@ -359,8 +354,8 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                     sqlx::query(concat!(
                         "SELECT ",
                         output_columns!(),
-                        " FROM codex_storage.memory_stage1_outputs AS so \
-                         JOIN codex_storage.threads \
+                        " FROM memory_stage1_outputs AS so \
+                         JOIN threads \
                            ON threads.id = so.thread_id AND threads.memory_mode = 'enabled' \
                          WHERE length(trim(so.raw_memory)) > 0 \
                             OR length(trim(so.rollout_summary)) > 0 \
@@ -387,8 +382,8 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
             self.run(move |connection| {
                 Box::pin(async move {
                     Ok(sqlx::query(
-                        "DELETE FROM codex_storage.memory_stage1_outputs WHERE thread_id IN ( \
-                           SELECT thread_id FROM codex_storage.memory_stage1_outputs \
+                        "DELETE FROM memory_stage1_outputs WHERE thread_id IN ( \
+                           SELECT thread_id FROM memory_stage1_outputs \
                            WHERE selected_for_phase2 = 0 \
                              AND COALESCE(last_usage, source_updated_at) < $1 \
                            ORDER BY COALESCE(last_usage, source_updated_at) ASC, \
@@ -421,8 +416,8 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                     sqlx::query(concat!(
                         "SELECT ",
                         output_columns!(),
-                        " FROM codex_storage.memory_stage1_outputs AS so \
-                         JOIN codex_storage.threads \
+                        " FROM memory_stage1_outputs AS so \
+                         JOIN threads \
                            ON threads.id = so.thread_id AND threads.memory_mode = 'enabled' \
                          WHERE (length(trim(so.raw_memory)) > 0 \
                                 OR length(trim(so.rollout_summary)) > 0) \
@@ -452,7 +447,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 let now = Utc::now().timestamp();
                 let thread_id = thread_id.to_string();
                 let selected = sqlx::query_scalar::<_, i64>(
-                    "SELECT selected_for_phase2 FROM codex_storage.memory_stage1_outputs \
+                    "SELECT selected_for_phase2 FROM memory_stage1_outputs \
                      WHERE thread_id = $1::uuid",
                 )
                 .bind(&thread_id)
@@ -460,7 +455,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 .await?
                 .unwrap_or(0);
                 let changed = sqlx::query(
-                    "UPDATE codex_storage.threads SET memory_mode = 'polluted' \
+                    "UPDATE threads SET memory_mode = 'polluted' \
                      WHERE id = $1::uuid AND memory_mode <> 'polluted'",
                 )
                 .bind(&thread_id)
@@ -490,9 +485,9 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 let ownership_token = Uuid::new_v4().to_string();
                 let thread_id = thread_id.to_string();
                 let status = sqlx::query(
-                    "SELECT (SELECT source_updated_at FROM codex_storage.memory_stage1_outputs \
+                    "SELECT (SELECT source_updated_at FROM memory_stage1_outputs \
                              WHERE thread_id = $1::uuid) AS output_source_updated_at, \
-                            (SELECT last_success_watermark FROM codex_storage.memory_jobs \
+                            (SELECT last_success_watermark FROM memory_jobs \
                              WHERE kind = $2 AND job_key = $1) AS last_success_watermark",
                 )
                 .bind(&thread_id)
@@ -508,12 +503,12 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 }
 
                 let claimed = sqlx::query(
-                    "INSERT INTO codex_storage.memory_jobs (kind, job_key, status, worker_id, \
+                    "INSERT INTO memory_jobs (kind, job_key, status, worker_id, \
                      ownership_token, started_at, finished_at, lease_until, retry_at, \
                      retry_remaining, last_error, input_watermark, last_success_watermark) \
                      SELECT $1, $2, 'running', $3, $4, $5::bigint, NULL, $6::bigint, NULL, \
                             $7::bigint, NULL, $8::bigint, NULL \
-                     WHERE (SELECT COUNT(*) FROM codex_storage.memory_jobs \
+                     WHERE (SELECT COUNT(*) FROM memory_jobs \
                             WHERE kind = $1 AND status = 'running' \
                               AND lease_until IS NOT NULL AND lease_until > $5) < $9 \
                      ON CONFLICT (kind, job_key) DO UPDATE SET \
@@ -537,7 +532,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                             OR excluded.input_watermark > COALESCE(memory_jobs.input_watermark, -1)) \
                        AND (memory_jobs.retry_remaining > 0 \
                             OR excluded.input_watermark > COALESCE(memory_jobs.input_watermark, -1)) \
-                       AND (SELECT COUNT(*) FROM codex_storage.memory_jobs AS running_jobs \
+                       AND (SELECT COUNT(*) FROM memory_jobs AS running_jobs \
                             WHERE running_jobs.kind = excluded.kind \
                               AND running_jobs.status = 'running' \
                               AND running_jobs.lease_until IS NOT NULL \
@@ -562,7 +557,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
 
                 let existing = sqlx::query(
                     "SELECT status, lease_until, retry_at, retry_remaining \
-                     FROM codex_storage.memory_jobs WHERE kind = $1 AND job_key = $2",
+                     FROM memory_jobs WHERE kind = $1 AND job_key = $2",
                 )
                 .bind(JOB_KIND_MEMORY_STAGE1)
                 .bind(&thread_id)
@@ -601,7 +596,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 let now = Utc::now().timestamp();
                 let thread_id = thread_id.to_string();
                 let owned = sqlx::query(
-                    "UPDATE codex_storage.memory_jobs SET status = 'done', finished_at = $1, \
+                    "UPDATE memory_jobs SET status = 'done', finished_at = $1, \
                      lease_until = NULL, last_error = NULL, \
                      last_success_watermark = input_watermark \
                      WHERE kind = $2 AND job_key = $3 \
@@ -618,7 +613,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                     return Ok(false);
                 }
                 sqlx::query(
-                    "INSERT INTO codex_storage.memory_stage1_outputs (thread_id, \
+                    "INSERT INTO memory_stage1_outputs (thread_id, \
                      source_updated_at, raw_memory, rollout_summary, rollout_slug, generated_at) \
                      VALUES ($1::uuid, $2, $3, $4, $5, $6) \
                      ON CONFLICT (thread_id) DO UPDATE SET \
@@ -654,7 +649,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 let now = Utc::now().timestamp();
                 let thread_id = thread_id.to_string();
                 let owned = sqlx::query(
-                    "UPDATE codex_storage.memory_jobs SET status = 'done', finished_at = $1, \
+                    "UPDATE memory_jobs SET status = 'done', finished_at = $1, \
                      lease_until = NULL, last_error = NULL, \
                      last_success_watermark = input_watermark \
                      WHERE kind = $2 AND job_key = $3 \
@@ -671,7 +666,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                     return Ok(false);
                 }
                 let source_updated_at: i64 = sqlx::query_scalar(
-                    "SELECT input_watermark FROM codex_storage.memory_jobs \
+                    "SELECT input_watermark FROM memory_jobs \
                      WHERE kind = $1 AND job_key = $2 AND ownership_token = $3",
                 )
                 .bind(JOB_KIND_MEMORY_STAGE1)
@@ -679,13 +674,12 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 .bind(ownership_token.as_str())
                 .fetch_one(&mut *connection)
                 .await?;
-                let deleted = sqlx::query(
-                    "DELETE FROM codex_storage.memory_stage1_outputs WHERE thread_id = $1::uuid",
-                )
-                .bind(&thread_id)
-                .execute(&mut *connection)
-                .await?
-                .rows_affected();
+                let deleted =
+                    sqlx::query("DELETE FROM memory_stage1_outputs WHERE thread_id = $1::uuid")
+                        .bind(&thread_id)
+                        .execute(&mut *connection)
+                        .await?
+                        .rows_affected();
                 if deleted > 0 {
                     enqueue_global_consolidation_in(connection, source_updated_at).await?;
                 }
@@ -708,7 +702,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 let now = Utc::now().timestamp();
                 let retry_at = now.saturating_add(retry_delay_seconds.max(0));
                 Ok(sqlx::query(
-                    "UPDATE codex_storage.memory_jobs SET status = 'error', finished_at = $1, \
+                    "UPDATE memory_jobs SET status = 'error', finished_at = $1, \
                      lease_until = NULL, retry_at = $2, retry_remaining = retry_remaining - 1, \
                      last_error = $3 \
                      WHERE kind = $4 AND job_key = $5 \
@@ -748,7 +742,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 let worker_id = worker_id.to_string();
                 let existing = sqlx::query(
                     "SELECT status, lease_until, retry_at, input_watermark, finished_at, \
-                     last_error FROM codex_storage.memory_jobs WHERE kind = $1 AND job_key = $2",
+                     last_error FROM memory_jobs WHERE kind = $1 AND job_key = $2",
                 )
                 .bind(JOB_KIND_MEMORY_CONSOLIDATE_GLOBAL)
                 .bind(MEMORY_CONSOLIDATION_JOB_KEY)
@@ -756,7 +750,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 .await?;
                 let Some(existing) = existing else {
                     sqlx::query(
-                        "INSERT INTO codex_storage.memory_jobs (kind, job_key, status, worker_id, \
+                        "INSERT INTO memory_jobs (kind, job_key, status, worker_id, \
                          ownership_token, started_at, finished_at, lease_until, retry_at, \
                          retry_remaining, last_error, input_watermark, last_success_watermark) \
                          VALUES ($1, $2, 'running', $3, $4, $5, NULL, $6, NULL, $7, NULL, 0, 0)",
@@ -797,7 +791,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 }
 
                 let claimed = sqlx::query(
-                    "UPDATE codex_storage.memory_jobs SET status = 'running', worker_id = $1, \
+                    "UPDATE memory_jobs SET status = 'running', worker_id = $1, \
                      ownership_token = $2, started_at = $3, finished_at = NULL, \
                      lease_until = $4, retry_at = NULL, last_error = NULL \
                      WHERE kind = $5 AND job_key = $6 \
@@ -837,7 +831,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
             Box::pin(async move {
                 let lease_until = Utc::now().timestamp().saturating_add(lease_seconds.max(0));
                 Ok(sqlx::query(
-                    "UPDATE codex_storage.memory_jobs SET lease_until = $1 \
+                    "UPDATE memory_jobs SET lease_until = $1 \
                      WHERE kind = $2 AND job_key = $3 \
                        AND status = 'running' AND ownership_token = $4",
                 )
@@ -873,7 +867,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
             Box::pin(async move {
                 let now = Utc::now().timestamp();
                 let owned = sqlx::query(
-                    "UPDATE codex_storage.memory_jobs SET status = 'done', finished_at = $1, \
+                    "UPDATE memory_jobs SET status = 'done', finished_at = $1, \
                      lease_until = NULL, last_error = NULL, \
                      last_success_watermark = GREATEST(COALESCE(last_success_watermark, 0), $2) \
                      WHERE kind = $3 AND job_key = $4 \
@@ -891,7 +885,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                     return Ok(false);
                 }
                 sqlx::query(
-                    "UPDATE codex_storage.memory_stage1_outputs SET selected_for_phase2 = 0, \
+                    "UPDATE memory_stage1_outputs SET selected_for_phase2 = 0, \
                      selected_for_phase2_source_updated_at = NULL \
                      WHERE selected_for_phase2 <> 0 \
                         OR selected_for_phase2_source_updated_at IS NOT NULL",
@@ -900,7 +894,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                 .await?;
                 for (source_updated_at, thread_id) in &selected {
                     sqlx::query(
-                        "UPDATE codex_storage.memory_stage1_outputs SET selected_for_phase2 = 1, \
+                        "UPDATE memory_stage1_outputs SET selected_for_phase2 = 1, \
                          selected_for_phase2_source_updated_at = $1 \
                          WHERE thread_id = $2::uuid AND source_updated_at = $1",
                     )
@@ -910,7 +904,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
                     .await?;
                 }
                 sqlx::query(
-                    "UPDATE codex_storage.memory_consolidation_progress \
+                    "UPDATE memory_consolidation_progress \
                      SET max_thread_count = GREATEST(max_thread_count, $1)",
                 )
                 .bind(i64::try_from(selected.len())?)
@@ -933,7 +927,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
             Box::pin(async move {
                 let now = Utc::now().timestamp();
                 Ok(sqlx::query(
-                    "UPDATE codex_storage.memory_jobs SET status = 'error', finished_at = $1, \
+                    "UPDATE memory_jobs SET status = 'error', finished_at = $1, \
                      lease_until = NULL, retry_at = $2, \
                      retry_remaining = GREATEST(retry_remaining - 1, 0), last_error = $3 \
                      WHERE kind = $4 AND job_key = $5 \
@@ -965,7 +959,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
             Box::pin(async move {
                 let now = Utc::now().timestamp();
                 Ok(sqlx::query(
-                    "UPDATE codex_storage.memory_jobs SET status = 'error', finished_at = $1, \
+                    "UPDATE memory_jobs SET status = 'error', finished_at = $1, \
                      lease_until = NULL, retry_at = $2, \
                      retry_remaining = GREATEST(retry_remaining - 1, 0), last_error = $3 \
                      WHERE kind = $4 AND job_key = $5 AND status = 'running' \
@@ -989,7 +983,7 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
         Box::pin(async move {
             let rows = self
                 .read_rows(sqlx::query(
-                    "SELECT max_thread_count FROM codex_storage.memory_consolidation_progress \
+                    "SELECT max_thread_count FROM memory_consolidation_progress \
                      WHERE singleton",
                 ))
                 .await?;

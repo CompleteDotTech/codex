@@ -75,7 +75,7 @@ impl DomainOps for Goals {
     async fn import(connection: &mut PgConnection, records: &[GoalRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.thread_goals (thread_id, goal_id, objective, status, \
+                "INSERT INTO thread_goals (thread_id, goal_id, objective, status, \
                  token_budget, tokens_used, time_used_seconds, created_at_ms, updated_at_ms) \
                  VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9) \
                  ON CONFLICT (thread_id) DO UPDATE SET goal_id = excluded.goal_id, \
@@ -97,7 +97,7 @@ impl DomainOps for Goals {
             .await?;
             if record.deferred {
                 sqlx::query(
-                    "INSERT INTO codex_storage.thread_goal_continuation_deferrals (thread_id) \
+                    "INSERT INTO thread_goal_continuation_deferrals (thread_id) \
                      VALUES ($1::uuid) ON CONFLICT (thread_id) DO NOTHING",
                 )
                 .bind(&record.thread_id)
@@ -117,8 +117,8 @@ impl DomainOps for Goals {
             "SELECT g.thread_id::text AS thread_id, g.goal_id, g.objective, g.status, \
              g.token_budget, g.tokens_used, g.time_used_seconds, g.created_at_ms, \
              g.updated_at_ms, (d.thread_id IS NOT NULL) AS deferred \
-             FROM codex_storage.thread_goals g \
-             LEFT JOIN codex_storage.thread_goal_continuation_deferrals d \
+             FROM thread_goals g \
+             LEFT JOIN thread_goal_continuation_deferrals d \
              ON d.thread_id = g.thread_id \
              WHERE ($1::uuid IS NULL OR g.thread_id > $1::uuid) \
              ORDER BY g.thread_id LIMIT $2",

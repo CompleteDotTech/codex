@@ -32,7 +32,7 @@ impl PostgresAgentMessageBoard {
             .map_err(storage)?;
         for root in roots {
             sqlx::query(
-                "INSERT INTO codex_storage.agent_board_deleted (board) VALUES ($1) \
+                "INSERT INTO agent_board_deleted (board) VALUES ($1) \
                  ON CONFLICT DO NOTHING",
             )
             .bind(root.to_string())
@@ -40,10 +40,10 @@ impl PostgresAgentMessageBoard {
             .await
             .map_err(storage)?;
             for statement in [
-                "DELETE FROM codex_storage.agent_board_subscriptions WHERE board = $1",
-                "DELETE FROM codex_storage.agent_board_opt_outs WHERE board = $1",
-                "DELETE FROM codex_storage.agent_board_posts WHERE board = $1",
-                "DELETE FROM codex_storage.agent_board_channels WHERE board = $1",
+                "DELETE FROM agent_board_subscriptions WHERE board = $1",
+                "DELETE FROM agent_board_opt_outs WHERE board = $1",
+                "DELETE FROM agent_board_posts WHERE board = $1",
+                "DELETE FROM agent_board_channels WHERE board = $1",
             ] {
                 sqlx::query(statement)
                     .bind(root.to_string())

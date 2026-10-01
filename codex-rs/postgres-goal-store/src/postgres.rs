@@ -54,7 +54,7 @@ impl PostgresGoalStore {
         let row = timeout(
             QUERY_TIMEOUT,
             sqlx::query(AssertSqlSafe(format!(
-                "SELECT {GOAL_COLUMNS} FROM codex_storage.thread_goals WHERE thread_id = $1::uuid"
+                "SELECT {GOAL_COLUMNS} FROM thread_goals WHERE thread_id = $1::uuid"
             )))
             .bind(thread_id.to_string())
             .fetch_optional(&mut *connection),
@@ -73,7 +73,7 @@ impl PostgresGoalStore {
                 .await
                 .map_err(|_| sqlx::Error::PoolClosed)?;
             sqlx::query(
-                "INSERT INTO codex_storage.thread_goals \
+                "INSERT INTO thread_goals \
                  (thread_id, goal_id, objective, status, token_budget, tokens_used, \
                   time_used_seconds, created_at_ms, updated_at_ms) \
                  VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8, $9) \
@@ -96,7 +96,7 @@ impl PostgresGoalStore {
             .execute(&mut *transaction)
             .await?;
             sqlx::query(
-                "INSERT INTO codex_storage.thread_goal_continuation_deferrals (thread_id) \
+                "INSERT INTO thread_goal_continuation_deferrals (thread_id) \
                  VALUES ($1::uuid) ON CONFLICT (thread_id) DO NOTHING",
             )
             .bind(goal.thread_id.to_string())
@@ -114,7 +114,7 @@ impl PostgresGoalStore {
         timeout(
             QUERY_TIMEOUT,
             sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM codex_storage.thread_goal_continuation_deferrals \
+                "SELECT EXISTS (SELECT 1 FROM thread_goal_continuation_deferrals \
                  WHERE thread_id = $1::uuid)",
             )
             .bind(thread_id.to_string())
@@ -131,7 +131,7 @@ impl PostgresGoalStore {
         timeout(
             QUERY_TIMEOUT,
             sqlx::query(
-                "DELETE FROM codex_storage.thread_goal_continuation_deferrals \
+                "DELETE FROM thread_goal_continuation_deferrals \
                  WHERE thread_id = $1::uuid",
             )
             .bind(thread_id.to_string())
@@ -164,7 +164,7 @@ impl PostgresGoalStore {
         let row = timeout(
             QUERY_TIMEOUT,
             sqlx::query(AssertSqlSafe(format!(
-                "INSERT INTO codex_storage.thread_goals \
+                "INSERT INTO thread_goals \
                  (thread_id, goal_id, objective, status, token_budget, tokens_used, \
                   time_used_seconds, created_at_ms, updated_at_ms) \
                  VALUES ($1::uuid, $2, $3, $4, $5, 0, 0, $6, $6) \
@@ -212,7 +212,7 @@ impl PostgresGoalStore {
             match (status, token_budget) {
                 (Some(status), Some(token_budget)) => {
                     sqlx::query(AssertSqlSafe(format!(
-                        "UPDATE codex_storage.thread_goals SET                          objective = COALESCE($1::text, objective),                          status = CASE                            WHEN status = 'budget_limited' AND $2::text IN ('paused', 'blocked')                              THEN status                            WHEN $2::text = 'active' AND $3::bigint IS NOT NULL                              AND tokens_used >= $3::bigint THEN 'budget_limited'                            ELSE $2::text END,                          token_budget = $3::bigint, updated_at_ms = $4                          WHERE thread_id = $5::uuid AND ($6::text IS NULL OR goal_id = $6::text)                          RETURNING {GOAL_COLUMNS}"
+                        "UPDATE thread_goals SET                          objective = COALESCE($1::text, objective),                          status = CASE                            WHEN status = 'budget_limited' AND $2::text IN ('paused', 'blocked')                              THEN status                            WHEN $2::text = 'active' AND $3::bigint IS NOT NULL                              AND tokens_used >= $3::bigint THEN 'budget_limited'                            ELSE $2::text END,                          token_budget = $3::bigint, updated_at_ms = $4                          WHERE thread_id = $5::uuid AND ($6::text IS NULL OR goal_id = $6::text)                          RETURNING {GOAL_COLUMNS}"
                     )))
                     .bind(objective.as_deref())
                     .bind(status.as_str())
@@ -225,7 +225,7 @@ impl PostgresGoalStore {
                 }
                 (Some(status), None) => {
                     sqlx::query(AssertSqlSafe(format!(
-                        "UPDATE codex_storage.thread_goals SET                          objective = COALESCE($1::text, objective),                          status = CASE                            WHEN status = 'budget_limited' AND $2::text IN ('paused', 'blocked')                              THEN status                            WHEN $2::text = 'active' AND token_budget IS NOT NULL                              AND tokens_used >= token_budget THEN 'budget_limited'                            ELSE $2::text END,                          updated_at_ms = $3                          WHERE thread_id = $4::uuid AND ($5::text IS NULL OR goal_id = $5::text)                          RETURNING {GOAL_COLUMNS}"
+                        "UPDATE thread_goals SET                          objective = COALESCE($1::text, objective),                          status = CASE                            WHEN status = 'budget_limited' AND $2::text IN ('paused', 'blocked')                              THEN status                            WHEN $2::text = 'active' AND token_budget IS NOT NULL                              AND tokens_used >= token_budget THEN 'budget_limited'                            ELSE $2::text END,                          updated_at_ms = $3                          WHERE thread_id = $4::uuid AND ($5::text IS NULL OR goal_id = $5::text)                          RETURNING {GOAL_COLUMNS}"
                     )))
                     .bind(objective.as_deref())
                     .bind(status.as_str())
@@ -237,7 +237,7 @@ impl PostgresGoalStore {
                 }
                 (None, Some(token_budget)) => {
                     sqlx::query(AssertSqlSafe(format!(
-                        "UPDATE codex_storage.thread_goals SET                          objective = COALESCE($1::text, objective),                          token_budget = $2::bigint,                          status = CASE                            WHEN status = 'active' AND $2::bigint IS NOT NULL                              AND tokens_used >= $2::bigint THEN 'budget_limited'                            ELSE status END,                          updated_at_ms = $3                          WHERE thread_id = $4::uuid AND ($5::text IS NULL OR goal_id = $5::text)                          RETURNING {GOAL_COLUMNS}"
+                        "UPDATE thread_goals SET                          objective = COALESCE($1::text, objective),                          token_budget = $2::bigint,                          status = CASE                            WHEN status = 'active' AND $2::bigint IS NOT NULL                              AND tokens_used >= $2::bigint THEN 'budget_limited'                            ELSE status END,                          updated_at_ms = $3                          WHERE thread_id = $4::uuid AND ($5::text IS NULL OR goal_id = $5::text)                          RETURNING {GOAL_COLUMNS}"
                     )))
                     .bind(objective.as_deref())
                     .bind(token_budget)
@@ -250,7 +250,7 @@ impl PostgresGoalStore {
                 (None, None) => match objective.as_deref() {
                     Some(objective) => {
                         sqlx::query(AssertSqlSafe(format!(
-                            "UPDATE codex_storage.thread_goals SET objective = $1::text,                              updated_at_ms = $2                              WHERE thread_id = $3::uuid AND ($4::text IS NULL OR goal_id = $4::text)                              RETURNING {GOAL_COLUMNS}"
+                            "UPDATE thread_goals SET objective = $1::text,                              updated_at_ms = $2                              WHERE thread_id = $3::uuid AND ($4::text IS NULL OR goal_id = $4::text)                              RETURNING {GOAL_COLUMNS}"
                         )))
                         .bind(objective)
                         .bind(now_ms)
@@ -262,7 +262,7 @@ impl PostgresGoalStore {
                     None => {
                         // A no-op update only reads the goal and applies the expected-ID check.
                         sqlx::query(AssertSqlSafe(format!(
-                            "SELECT {GOAL_COLUMNS} FROM codex_storage.thread_goals                              WHERE thread_id = $1::uuid AND ($2::text IS NULL OR goal_id = $2::text)"
+                            "SELECT {GOAL_COLUMNS} FROM thread_goals                              WHERE thread_id = $1::uuid AND ($2::text IS NULL OR goal_id = $2::text)"
                         )))
                         .bind(&thread)
                         .bind(expected_goal_id.as_deref())
@@ -289,7 +289,7 @@ impl PostgresGoalStore {
         let row = timeout(
             QUERY_TIMEOUT,
             sqlx::query(AssertSqlSafe(format!(
-                "UPDATE codex_storage.thread_goals SET status = $1, updated_at_ms = $2 \
+                "UPDATE thread_goals SET status = $1, updated_at_ms = $2 \
                  WHERE thread_id = $3::uuid AND (status = 'active' \
                    OR ($1::text = 'usage_limited' AND status = 'budget_limited')) \
                  RETURNING {GOAL_COLUMNS}"
@@ -312,7 +312,7 @@ impl PostgresGoalStore {
         let row = timeout(
             QUERY_TIMEOUT,
             sqlx::query(AssertSqlSafe(format!(
-                "DELETE FROM codex_storage.thread_goals WHERE thread_id = $1::uuid \
+                "DELETE FROM thread_goals WHERE thread_id = $1::uuid \
                  RETURNING {GOAL_COLUMNS}"
             )))
             .bind(thread_id.to_string())
@@ -355,7 +355,7 @@ impl PostgresGoalStore {
             GoalAccountingMode::ActiveOrStopped => active_or_stopped,
         };
         let sql = format!(
-            "UPDATE codex_storage.thread_goals SET \
+            "UPDATE thread_goals SET \
              time_used_seconds = time_used_seconds + $1, \
              tokens_used = tokens_used + $2, \
              status = CASE WHEN {budget_limit_filter} AND token_budget IS NOT NULL \

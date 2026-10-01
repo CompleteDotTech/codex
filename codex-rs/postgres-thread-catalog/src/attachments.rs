@@ -43,7 +43,7 @@ impl PostgresThreadCatalog {
                 lock_thread(connection, destination_thread_id).await?;
                 let rows = sqlx::query(
                     "SELECT attachment_type, identity_key, payload \
-                     FROM codex_storage.thread_attachments \
+                     FROM thread_attachments \
                      WHERE thread_id = $1::uuid ORDER BY created_at, id",
                 )
                 .bind(source_thread_id.to_string())
@@ -52,7 +52,7 @@ impl PostgresThreadCatalog {
                 let created_at = Utc::now().timestamp();
                 for row in rows {
                     sqlx::query(
-                        "INSERT INTO codex_storage.thread_attachments (id, thread_id, \
+                        "INSERT INTO thread_attachments (id, thread_id, \
                          attachment_type, identity_key, payload, created_at) \
                          VALUES ($1, $2::uuid, $3, $4, $5, $6)",
                     )
@@ -97,7 +97,7 @@ impl PostgresThreadCatalog {
                 let existing = sqlx::query(concat!(
                     "SELECT ",
                     attachment_columns!(),
-                    " FROM codex_storage.thread_attachments ",
+                    " FROM thread_attachments ",
                     "WHERE thread_id = $1::uuid AND attachment_type = $2 AND identity_key = $3"
                 ))
                 .bind(thread_id.to_string())
@@ -111,7 +111,7 @@ impl PostgresThreadCatalog {
                     )?));
                 }
                 let identity_count: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM codex_storage.thread_attachments \
+                    "SELECT COUNT(*) FROM thread_attachments \
                      WHERE thread_id = $1::uuid",
                 )
                 .bind(thread_id.to_string())
@@ -131,7 +131,7 @@ impl PostgresThreadCatalog {
                     created_at: Utc::now().timestamp(),
                 };
                 sqlx::query(
-                    "INSERT INTO codex_storage.thread_attachments (id, thread_id, \
+                    "INSERT INTO thread_attachments (id, thread_id, \
                      attachment_type, identity_key, payload, created_at) \
                      VALUES ($1, $2::uuid, $3, $4, $5, $6)",
                 )
@@ -163,7 +163,7 @@ impl PostgresThreadCatalog {
             Box::pin(async move {
                 lock_thread(connection, thread_id).await?;
                 let removed = sqlx::query(concat!(
-                    "DELETE FROM codex_storage.thread_attachments ",
+                    "DELETE FROM thread_attachments ",
                     "WHERE thread_id = $1::uuid AND attachment_type = $2 AND identity_key = $3 ",
                     "RETURNING ",
                     attachment_columns!()
@@ -204,7 +204,7 @@ impl PostgresThreadCatalog {
         let mut query = QueryBuilder::<Postgres>::new(concat!(
             "SELECT ",
             attachment_columns!(),
-            " FROM codex_storage.thread_attachments WHERE thread_id = "
+            " FROM thread_attachments WHERE thread_id = "
         ));
         query.push_bind(thread_id_string).push("::uuid");
         if let Some((_, created_at, attachment_id)) = anchor {
@@ -243,13 +243,12 @@ impl PostgresThreadCatalog {
 
 /// Lock the owning thread row, which also proves the thread exists.
 async fn lock_thread(connection: &mut PgConnection, thread_id: ThreadId) -> Result<()> {
-    let exists = sqlx::query_scalar::<_, i32>(
-        "SELECT 1 FROM codex_storage.threads WHERE id = $1::uuid FOR UPDATE",
-    )
-    .bind(thread_id.to_string())
-    .fetch_optional(connection)
-    .await?
-    .is_some();
+    let exists =
+        sqlx::query_scalar::<_, i32>("SELECT 1 FROM threads WHERE id = $1::uuid FOR UPDATE")
+            .bind(thread_id.to_string())
+            .fetch_optional(connection)
+            .await?
+            .is_some();
     if !exists {
         anyhow::bail!("thread not found: {thread_id}");
     }

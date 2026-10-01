@@ -37,7 +37,7 @@ impl AgentGraphStore for PostgresAgentGraphStore {
             timeout(
                 QUERY_TIMEOUT,
                 sqlx::query(
-                    "INSERT INTO codex_storage.thread_spawn_edges \
+                    "INSERT INTO thread_spawn_edges \
                      (parent_thread_id, child_thread_id, status) VALUES ($1::uuid, $2::uuid, $3) \
                      ON CONFLICT (child_thread_id) DO UPDATE SET \
                      parent_thread_id = excluded.parent_thread_id, status = excluded.status",
@@ -64,7 +64,7 @@ impl AgentGraphStore for PostgresAgentGraphStore {
             timeout(
                 QUERY_TIMEOUT,
                 sqlx::query(
-                    "UPDATE codex_storage.thread_spawn_edges SET status = $2 \
+                    "UPDATE thread_spawn_edges SET status = $2 \
                      WHERE child_thread_id = $1::uuid",
                 )
                 .bind(child_thread_id.to_string())
@@ -89,7 +89,7 @@ impl AgentGraphStore for PostgresAgentGraphStore {
                 QUERY_TIMEOUT,
                 sqlx::query(
                     "SELECT child_thread_id::text AS child_thread_id \
-                     FROM codex_storage.thread_spawn_edges \
+                     FROM thread_spawn_edges \
                      WHERE parent_thread_id = $1::uuid \
                      AND ($2::text IS NULL OR status = $2) \
                      ORDER BY child_thread_id",
@@ -118,14 +118,14 @@ impl AgentGraphStore for PostgresAgentGraphStore {
                     "WITH RECURSIVE subtree(child_thread_id, depth, path, cycle) AS ( \
                      SELECT child_thread_id, 1, ARRAY[$1::uuid, child_thread_id], \
                             child_thread_id = $1::uuid \
-                     FROM codex_storage.thread_spawn_edges \
+                     FROM thread_spawn_edges \
                      WHERE parent_thread_id = $1::uuid \
                        AND ($2::text IS NULL OR status = $2) \
                      UNION ALL \
                      SELECT edge.child_thread_id, subtree.depth + 1, \
                             subtree.path || edge.child_thread_id, \
                             edge.child_thread_id = ANY(subtree.path) \
-                     FROM codex_storage.thread_spawn_edges AS edge \
+                     FROM thread_spawn_edges AS edge \
                      JOIN subtree ON edge.parent_thread_id = subtree.child_thread_id \
                      WHERE NOT subtree.cycle AND ($2::text IS NULL OR edge.status = $2) \
                      ) \

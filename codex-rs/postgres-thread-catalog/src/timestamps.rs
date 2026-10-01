@@ -20,7 +20,7 @@ pub(crate) struct Marks {
 /// Lock the shared marks. Callers allocate from the returned value, then call [`Marks::save`].
 pub(crate) async fn lock_marks(connection: &mut PgConnection) -> Result<Marks> {
     let row = sqlx::query(
-        "SELECT updated_at_ms, recency_at_ms FROM codex_storage.thread_timestamp_marks \
+        "SELECT updated_at_ms, recency_at_ms FROM thread_timestamp_marks \
          WHERE singleton FOR UPDATE",
     )
     .fetch_one(connection)
@@ -46,7 +46,7 @@ impl Marks {
     pub(crate) async fn save(self, connection: &mut PgConnection) -> Result<()> {
         if self.changed {
             sqlx::query(
-                "UPDATE codex_storage.thread_timestamp_marks \
+                "UPDATE thread_timestamp_marks \
                  SET updated_at_ms = $1, recency_at_ms = $2 WHERE singleton",
             )
             .bind(self.updated_at_ms)

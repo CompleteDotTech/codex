@@ -97,13 +97,12 @@ impl PostgresRolloutStore {
     pub async fn next_position(&self, thread_id: ThreadId) -> Result<u64, RolloutStoreError> {
         self.run(move |connection| {
             Box::pin(async move {
-                let exists: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM codex_storage.threads WHERE id = $1::uuid)",
-                )
-                .bind(thread_id.to_string())
-                .fetch_one(&mut *connection)
-                .await
-                .map_err(database)?;
+                let exists: bool =
+                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM threads WHERE id = $1::uuid)")
+                        .bind(thread_id.to_string())
+                        .fetch_one(&mut *connection)
+                        .await
+                        .map_err(database)?;
                 if !exists {
                     return Err(RolloutStoreError::MissingThread(thread_id));
                 }
@@ -171,7 +170,7 @@ impl PostgresRolloutStore {
             Box::pin(async move {
                 lock_thread(connection, thread_id).await?;
                 Ok(sqlx::query(
-                    "DELETE FROM codex_storage.thread_rollout_lines \
+                    "DELETE FROM thread_rollout_lines \
                      WHERE thread_id = $1::uuid AND position >= $2",
                 )
                 .bind(thread_id.to_string())
@@ -203,10 +202,10 @@ impl PostgresRolloutStore {
                     });
                 }
                 let copied = sqlx::query(
-                    "INSERT INTO codex_storage.thread_rollout_lines \
+                    "INSERT INTO thread_rollout_lines \
                      (thread_id, position, ordinal, line) \
                      SELECT $1::uuid, position, ordinal, line \
-                     FROM codex_storage.thread_rollout_lines \
+                     FROM thread_rollout_lines \
                      WHERE thread_id = $2::uuid AND position < $3",
                 )
                 .bind(destination.to_string())
@@ -271,7 +270,7 @@ pub async fn append_in(
         let position = i64::try_from(expected_position + offset as u64)
             .map_err(|_| RolloutStoreError::Corrupt("position overflow".to_string()))?;
         sqlx::query(
-            "INSERT INTO codex_storage.thread_rollout_lines              (thread_id, position, ordinal, line) VALUES ($1::uuid, $2, $3, $4)",
+            "INSERT INTO thread_rollout_lines              (thread_id, position, ordinal, line) VALUES ($1::uuid, $2, $3, $4)",
         )
         .bind(thread_id.to_string())
         .bind(position)
@@ -293,15 +292,13 @@ async fn lock_thread(
     require_storage_open(connection)
         .await
         .map_err(|error| RolloutStoreError::Unavailable(error.to_string()))?;
-    sqlx::query_scalar::<_, i32>(
-        "SELECT 1 FROM codex_storage.threads WHERE id = $1::uuid FOR UPDATE",
-    )
-    .bind(thread_id.to_string())
-    .fetch_optional(connection)
-    .await
-    .map_err(database)?
-    .map(|_| ())
-    .ok_or(RolloutStoreError::MissingThread(thread_id))
+    sqlx::query_scalar::<_, i32>("SELECT 1 FROM threads WHERE id = $1::uuid FOR UPDATE")
+        .bind(thread_id.to_string())
+        .fetch_optional(connection)
+        .await
+        .map_err(database)?
+        .map(|_| ())
+        .ok_or(RolloutStoreError::MissingThread(thread_id))
 }
 
 async fn next_position_in(
@@ -309,7 +306,7 @@ async fn next_position_in(
     thread_id: ThreadId,
 ) -> Result<u64, RolloutStoreError> {
     let next: Option<i64> = sqlx::query_scalar(
-        "SELECT MAX(position) FROM codex_storage.thread_rollout_lines WHERE thread_id = $1::uuid",
+        "SELECT MAX(position) FROM thread_rollout_lines WHERE thread_id = $1::uuid",
     )
     .bind(thread_id.to_string())
     .fetch_one(connection)
@@ -330,7 +327,7 @@ async fn read_in(
     limit: usize,
 ) -> Result<Vec<StoredRolloutLine>, RolloutStoreError> {
     let rows = sqlx::query(
-        "SELECT position, ordinal, line FROM codex_storage.thread_rollout_lines \
+        "SELECT position, ordinal, line FROM thread_rollout_lines \
          WHERE thread_id = $1::uuid AND position >= $2 ORDER BY position LIMIT $3",
     )
     .bind(thread_id.to_string())

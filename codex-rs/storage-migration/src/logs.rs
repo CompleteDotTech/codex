@@ -93,7 +93,7 @@ impl DomainOps for Logs {
             // The runtime role cannot rewrite log rows, and log rows never change, so a replay
             // leaves the row it already wrote.
             sqlx::query(
-                "INSERT INTO codex_storage.logs (id, ts, ts_nanos, level, target, \
+                "INSERT INTO logs (id, ts, ts_nanos, level, target, \
                  feedback_log_body, module_path, file, line, thread_id, process_uuid, \
                  estimated_bytes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
                  ON CONFLICT (id) DO NOTHING",
@@ -116,7 +116,7 @@ impl DomainOps for Logs {
         // New rows must be numbered after every imported id.
         if let Some(highest) = records.iter().map(|record| record.id).max() {
             sqlx::query(
-                "UPDATE codex_storage.log_id_counter \
+                "UPDATE log_id_counter \
                  SET last_id = GREATEST(last_id, $1) WHERE singleton",
             )
             .bind(highest)
@@ -133,7 +133,7 @@ impl DomainOps for Logs {
     ) -> Result<Vec<LogRecord>> {
         let rows = sqlx::query(
             "SELECT id, ts, ts_nanos, level, target, feedback_log_body, module_path, file, \
-             line, thread_id, process_uuid, estimated_bytes FROM codex_storage.logs \
+             line, thread_id, process_uuid, estimated_bytes FROM logs \
              WHERE id > $1 ORDER BY id LIMIT $2",
         )
         .bind(after_id(after)?)

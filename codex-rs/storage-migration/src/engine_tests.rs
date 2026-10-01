@@ -3,8 +3,10 @@ use chrono::DateTime;
 use chrono::Utc;
 use codex_postgres_rollout_store::PostgresRolloutStore;
 use codex_postgres_runtime::ConnectionSettings;
+use codex_postgres_runtime::NamedNamespace;
 use codex_postgres_runtime::PoolLimits;
 use codex_postgres_runtime::bootstrap_codex_storage;
+use codex_postgres_runtime::bootstrap_named_namespace;
 use codex_postgres_thread_catalog::PostgresThreadCatalog;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
@@ -26,6 +28,11 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
+    settings_for(state, &format!("codex_{role}"), role)
+}
+
+/// Settings for any login, reading the password the fixture stored for `password_role`.
+fn settings_for(state: &Path, username: &str, password_role: &str) -> ConnectionSettings {
     let receipt: serde_json::Value = serde_json::from_slice(
         &std::fs::read(state.join("receipt.json")).expect("read isolated PostgreSQL receipt"),
     )
@@ -34,8 +41,8 @@ fn settings(state: &Path, role: &str) -> ConnectionSettings {
         host: "localhost".to_string(),
         port: receipt["port"].as_u64().expect("PostgreSQL port") as u16,
         database: "codex".to_string(),
-        username: format!("codex_{role}"),
-        password: std::fs::read_to_string(state.join(format!("secrets/{role}.password")))
+        username: username.to_string(),
+        password: std::fs::read_to_string(state.join(format!("secrets/{password_role}.password")))
             .expect("read private role credential")
             .trim()
             .to_string()
@@ -63,24 +70,24 @@ async fn connect(state: &Path, role: &str) -> Arc<PostgresPool> {
 pub(super) async fn reset_target(pool: &PostgresPool) {
     let mut connection = pool.acquire().await.expect("connection");
     for statement in [
-        "DELETE FROM codex_storage.storage_migration_runs",
-        "UPDATE codex_storage.storage_activation SET state = 'open', run_id = NULL",
-        "DELETE FROM codex_storage.thread_spawn_edges",
-        "DELETE FROM codex_storage.threads",
-        "DELETE FROM codex_storage.projects",
-        "DELETE FROM codex_storage.thread_sections WHERE id <> '01984de2-8f74-7c91-a3b2-5c5e937cf318'",
-        "DELETE FROM codex_storage.logs",
-        "DELETE FROM codex_storage.memory_stage1_outputs",
-        "DELETE FROM codex_storage.memory_jobs",
-        "UPDATE codex_storage.memory_consolidation_progress SET max_thread_count = 0",
-        "DELETE FROM codex_storage.agent_board_posts",
-        "DELETE FROM codex_storage.agent_board_channels",
-        "DELETE FROM codex_storage.agent_board_subscriptions",
-        "DELETE FROM codex_storage.agent_board_opt_outs",
-        "UPDATE codex_storage.log_id_counter SET last_id = 0",
-        "UPDATE codex_storage.queue_change_counter SET version = 0",
-        "UPDATE codex_storage.agent_board_post_counter SET last_seq = 0",
-        "UPDATE codex_storage.thread_timestamp_marks SET updated_at_ms = 0, recency_at_ms = 0",
+        "DELETE FROM storage_migration_runs",
+        "UPDATE storage_activation SET state = 'open', run_id = NULL",
+        "DELETE FROM thread_spawn_edges",
+        "DELETE FROM threads",
+        "DELETE FROM projects",
+        "DELETE FROM thread_sections WHERE id <> '01984de2-8f74-7c91-a3b2-5c5e937cf318'",
+        "DELETE FROM logs",
+        "DELETE FROM memory_stage1_outputs",
+        "DELETE FROM memory_jobs",
+        "UPDATE memory_consolidation_progress SET max_thread_count = 0",
+        "DELETE FROM agent_board_posts",
+        "DELETE FROM agent_board_channels",
+        "DELETE FROM agent_board_subscriptions",
+        "DELETE FROM agent_board_opt_outs",
+        "UPDATE log_id_counter SET last_id = 0",
+        "UPDATE queue_change_counter SET version = 0",
+        "UPDATE agent_board_post_counter SET last_seq = 0",
+        "UPDATE thread_timestamp_marks SET updated_at_ms = 0, recency_at_ms = 0",
     ] {
         sqlx::query(statement)
             .execute(&mut *connection)
@@ -402,7 +409,37 @@ async fn real_postgres_catalog_migration() {
     bootstrap_codex_storage(&*connect(state, "migrator").await)
         .await
         .expect("bootstrap migration schema");
-    let pool = connect(state, "runtime").await;
+    let default_pool = Arc::new(
+        PostgresPool::connect_in_namespace(settings(state, "runtime"), /*namespace*/ None)
+            .await
+            .expect("default namespace pool"),
+    );
+    scenario(default_pool).await;
+
+    // The same scenario runs unchanged in a separate named namespace of the same database.
+    let namespace = NamedNamespace::new("codex_storage_isolation").expect("named namespace");
+    let migrator = PostgresPool::connect(settings_for(
+        state,
+        namespace.migrator_login(),
+        "isolation_migrator",
+    ))
+    .await
+    .expect("named migrator pool");
+    bootstrap_named_namespace(&migrator, &namespace)
+        .await
+        .expect("bootstrap named namespace");
+    let named_pool = Arc::new(
+        PostgresPool::connect_in_namespace(
+            settings_for(state, namespace.runtime_login(), "isolation_runtime"),
+            Some(&namespace),
+        )
+        .await
+        .expect("named namespace pool"),
+    );
+    scenario(named_pool).await;
+}
+
+async fn scenario(pool: Arc<PostgresPool>) {
     let home = tempfile::tempdir().expect("source home");
     let threads = populate(home.path()).await;
     let config = SqliteConfig::new_for_testing(home.path().abs());
@@ -475,24 +512,24 @@ async fn real_postgres_catalog_migration() {
     // Counters resume after every imported value, so new work never reuses an imported id.
     let counters: [(&str, &str); 5] = [
         (
-            "SELECT last_id FROM codex_storage.log_id_counter",
-            "SELECT MAX(id) FROM codex_storage.logs",
+            "SELECT last_id FROM log_id_counter",
+            "SELECT MAX(id) FROM logs",
         ),
         (
-            "SELECT version FROM codex_storage.queue_change_counter",
-            "SELECT MAX(revision) FROM codex_storage.queued_thread_revisions",
+            "SELECT version FROM queue_change_counter",
+            "SELECT MAX(revision) FROM queued_thread_revisions",
         ),
         (
-            "SELECT last_seq FROM codex_storage.agent_board_post_counter",
-            "SELECT MAX(seq) FROM codex_storage.agent_board_posts",
+            "SELECT last_seq FROM agent_board_post_counter",
+            "SELECT MAX(seq) FROM agent_board_posts",
         ),
         (
-            "SELECT updated_at_ms FROM codex_storage.thread_timestamp_marks",
-            "SELECT MAX(updated_at_ms) FROM codex_storage.threads",
+            "SELECT updated_at_ms FROM thread_timestamp_marks",
+            "SELECT MAX(updated_at_ms) FROM threads",
         ),
         (
-            "SELECT recency_at_ms FROM codex_storage.thread_timestamp_marks",
-            "SELECT MAX(recency_at_ms) FROM codex_storage.threads",
+            "SELECT recency_at_ms FROM thread_timestamp_marks",
+            "SELECT MAX(recency_at_ms) FROM threads",
         ),
     ];
     for (counter, highest) in counters {
@@ -558,7 +595,7 @@ async fn real_postgres_catalog_migration() {
         .import()
         .await
         .expect("import again");
-    sqlx::query("UPDATE codex_storage.threads SET title = 'tampered' WHERE id = $1::uuid")
+    sqlx::query("UPDATE threads SET title = 'tampered' WHERE id = $1::uuid")
         .bind(threads[3].id.to_string())
         .execute(&mut *pool.acquire().await.expect("connection"))
         .await
@@ -582,7 +619,7 @@ async fn real_postgres_catalog_migration() {
         .expect("late thread");
     drop(runtime);
     // Repair the tampered row so only the late source change remains.
-    sqlx::query("UPDATE codex_storage.threads SET title = $2 WHERE id = $1::uuid")
+    sqlx::query("UPDATE threads SET title = $2 WHERE id = $1::uuid")
         .bind(threads[3].id.to_string())
         .bind(&threads[3].title)
         .execute(&mut *pool.acquire().await.expect("connection"))

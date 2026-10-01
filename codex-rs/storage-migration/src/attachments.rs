@@ -63,7 +63,7 @@ impl DomainOps for Attachments {
     async fn import(connection: &mut PgConnection, records: &[AttachmentRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.thread_attachments \
+                "INSERT INTO thread_attachments \
                  (id, thread_id, attachment_type, identity_key, payload, created_at) \
                  VALUES ($1, $2::uuid, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING",
             )
@@ -86,7 +86,7 @@ impl DomainOps for Attachments {
     ) -> Result<Vec<AttachmentRecord>> {
         let rows = sqlx::query(
             "SELECT id, thread_id::text AS thread_id, attachment_type, identity_key, payload, \
-             created_at FROM codex_storage.thread_attachments \
+             created_at FROM thread_attachments \
              WHERE ($1::text IS NULL OR id > $1) ORDER BY id LIMIT $2",
         )
         .bind(after)
@@ -156,7 +156,7 @@ impl DomainOps for SpawnEdges {
     async fn import(connection: &mut PgConnection, records: &[EdgeRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.thread_spawn_edges \
+                "INSERT INTO thread_spawn_edges \
                  (parent_thread_id, child_thread_id, status) VALUES ($1::uuid, $2::uuid, $3) \
                  ON CONFLICT (child_thread_id) DO UPDATE SET \
                  parent_thread_id = excluded.parent_thread_id, status = excluded.status",
@@ -178,7 +178,7 @@ impl DomainOps for SpawnEdges {
         let rows = sqlx::query(
             "SELECT child_thread_id::text AS child_thread_id, \
              parent_thread_id::text AS parent_thread_id, status \
-             FROM codex_storage.thread_spawn_edges \
+             FROM thread_spawn_edges \
              WHERE ($1::uuid IS NULL OR child_thread_id > $1::uuid) \
              ORDER BY child_thread_id LIMIT $2",
         )

@@ -195,16 +195,14 @@ impl DomainOps for Rollouts {
 
     async fn import(connection: &mut PgConnection, records: &[RolloutRecord]) -> Result<()> {
         for record in records {
-            sqlx::query(
-                "DELETE FROM codex_storage.thread_rollout_lines WHERE thread_id = $1::uuid",
-            )
-            .bind(&record.thread_id)
-            .execute(&mut *connection)
-            .await?;
+            sqlx::query("DELETE FROM thread_rollout_lines WHERE thread_id = $1::uuid")
+                .bind(&record.thread_id)
+                .execute(&mut *connection)
+                .await?;
             for (chunk_index, chunk) in record.lines.chunks(INSERT_CHUNK).enumerate() {
                 let offset = i64::try_from(chunk_index * INSERT_CHUNK)?;
                 sqlx::query(
-                    "INSERT INTO codex_storage.thread_rollout_lines \
+                    "INSERT INTO thread_rollout_lines \
                      (thread_id, position, ordinal, line) \
                      SELECT $1::uuid, $2 + item.index - 1, NULL, item.line \
                      FROM UNNEST($3::text[]) WITH ORDINALITY AS item(line, index)",
@@ -225,7 +223,7 @@ impl DomainOps for Rollouts {
         limit: usize,
     ) -> Result<Vec<RolloutRecord>> {
         let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id::text FROM codex_storage.threads \
+            "SELECT id::text FROM threads \
              WHERE ($1::uuid IS NULL OR id > $1::uuid) ORDER BY id LIMIT $2",
         )
         .bind(after)
@@ -235,7 +233,7 @@ impl DomainOps for Rollouts {
         let mut records = Vec::with_capacity(ids.len());
         for id in ids {
             let lines: Vec<String> = sqlx::query_scalar(
-                "SELECT line FROM codex_storage.thread_rollout_lines \
+                "SELECT line FROM thread_rollout_lines \
                  WHERE thread_id = $1::uuid ORDER BY position",
             )
             .bind(&id)

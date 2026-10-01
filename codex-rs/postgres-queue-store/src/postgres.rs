@@ -84,7 +84,7 @@ pub async fn delete_thread_queue_in(
     thread_id: ThreadId,
 ) -> Result<bool, sqlx::Error> {
     let version = next_version(connection).await?;
-    let deleted = sqlx::query("DELETE FROM codex_storage.queued_items WHERE thread_id = $1::uuid")
+    let deleted = sqlx::query("DELETE FROM queued_items WHERE thread_id = $1::uuid")
         .bind(thread_id.to_string())
         .execute(&mut *connection)
         .await?
@@ -111,7 +111,7 @@ impl From<sqlx::Error> for WriteError {
 /// Take the counter-row lock and return the version this transaction will publish.
 async fn next_version(connection: &mut PgConnection) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
-        "UPDATE codex_storage.queue_change_counter SET version = version + 1 \
+        "UPDATE queue_change_counter SET version = version + 1 \
          WHERE singleton RETURNING version",
     )
     .fetch_one(connection)
@@ -124,7 +124,7 @@ async fn record_revision(
     version: i64,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO codex_storage.queued_thread_revisions (thread_id, revision) \
+        "INSERT INTO queued_thread_revisions (thread_id, revision) \
          VALUES ($1::uuid, $2) \
          ON CONFLICT (thread_id) DO UPDATE SET revision = excluded.revision",
     )
@@ -141,7 +141,7 @@ impl QueueStore for PostgresQueueStore {
             let mut connection = self.pool.acquire().await.map_err(classify_pool)?;
             timeout(
                 QUERY_TIMEOUT,
-                sqlx::query_scalar("SELECT version FROM codex_storage.queue_change_counter")
+                sqlx::query_scalar("SELECT version FROM queue_change_counter")
                     .fetch_one(&mut *connection),
             )
             .await
@@ -165,7 +165,7 @@ impl QueueStore for PostgresQueueStore {
                 QUERY_TIMEOUT,
                 sqlx::query(
                     "SELECT thread_id::text AS thread_id, revision \
-                     FROM codex_storage.queued_thread_revisions \
+                     FROM queued_thread_revisions \
                      WHERE revision > $1 AND thread_id = ANY($2::uuid[]) \
                      ORDER BY revision",
                 )
@@ -202,7 +202,7 @@ impl QueueStore for PostgresQueueStore {
                 Box::pin(async move {
                     let version = next_version(connection).await?;
                     let queued: i64 = sqlx::query_scalar(
-                        "SELECT COUNT(*) FROM codex_storage.queued_items WHERE thread_id = $1::uuid",
+                        "SELECT COUNT(*) FROM queued_items WHERE thread_id = $1::uuid",
                     )
                     .bind(thread_id.to_string())
                     .fetch_one(&mut *connection)
@@ -216,10 +216,10 @@ impl QueueStore for PostgresQueueStore {
                     }
                     let now_ms = Utc::now().timestamp_millis();
                     let row = sqlx::query(
-                        "INSERT INTO codex_storage.queued_items \
+                        "INSERT INTO queued_items \
                          (id, thread_id, payload_json, queue_order, created_at_ms, updated_at_ms) \
                          VALUES ($1, $2::uuid, $3, \
-                           COALESCE((SELECT MAX(queue_order) FROM codex_storage.queued_items \
+                           COALESCE((SELECT MAX(queue_order) FROM queued_items \
                                      WHERE thread_id = $2::uuid), -1) + 1, $4, $4) \
                          RETURNING id, thread_id::text AS thread_id, payload_json",
                     )
@@ -252,7 +252,7 @@ impl QueueStore for PostgresQueueStore {
                 QUERY_TIMEOUT,
                 sqlx::query(
                     "SELECT id, thread_id::text AS thread_id, payload_json \
-                     FROM codex_storage.queued_items WHERE thread_id = $1::uuid \
+                     FROM queued_items WHERE thread_id = $1::uuid \
                      ORDER BY queue_order LIMIT $2 OFFSET $3",
                 )
                 .bind(thread_id.to_string())
@@ -278,7 +278,7 @@ impl QueueStore for PostgresQueueStore {
                 Box::pin(async move {
                     let version = next_version(connection).await?;
                     let row = sqlx::query(
-                        "UPDATE codex_storage.queued_items \
+                        "UPDATE queued_items \
                          SET payload_json = $1, updated_at_ms = $2 \
                          WHERE thread_id = $3::uuid AND id = $4 \
                          RETURNING id, thread_id::text AS thread_id, payload_json",
@@ -308,7 +308,7 @@ impl QueueStore for PostgresQueueStore {
                 Box::pin(async move {
                     let version = next_version(connection).await?;
                     let deleted = sqlx::query(
-                        "DELETE FROM codex_storage.queued_items \
+                        "DELETE FROM queued_items \
                          WHERE thread_id = $1::uuid AND id = $2",
                     )
                     .bind(thread_id.to_string())
@@ -333,7 +333,7 @@ impl QueueStore for PostgresQueueStore {
                 Box::pin(async move {
                     let version = next_version(connection).await?;
                     let rows: Vec<(String, i64)> = sqlx::query_as(
-                        "SELECT id, queue_order FROM codex_storage.queued_items \
+                        "SELECT id, queue_order FROM queued_items \
                          WHERE thread_id = $1::uuid ORDER BY queue_order FOR UPDATE",
                     )
                     .bind(thread_id.to_string())
@@ -356,7 +356,7 @@ impl QueueStore for PostgresQueueStore {
                     let base = rows.last().map_or(-1, |(_, order)| *order);
                     for (index, item_id) in item_ids.iter().enumerate() {
                         sqlx::query(
-                            "UPDATE codex_storage.queued_items \
+                            "UPDATE queued_items \
                              SET queue_order = $1, updated_at_ms = $2 \
                              WHERE thread_id = $3::uuid AND id = $4",
                         )

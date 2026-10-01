@@ -72,7 +72,7 @@ impl DomainOps for Projects {
     async fn import(connection: &mut PgConnection, records: &[ProjectRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.projects \
+                "INSERT INTO projects \
                  (id, name, metadata, position, created_at_ms, updated_at_ms) \
                  VALUES ($1, $2, $3, $4, $5, $6) \
                  ON CONFLICT (id) DO UPDATE SET name = excluded.name, \
@@ -87,13 +87,13 @@ impl DomainOps for Projects {
             .bind(record.updated_at_ms)
             .execute(&mut *connection)
             .await?;
-            sqlx::query("DELETE FROM codex_storage.project_roots WHERE project_id = $1")
+            sqlx::query("DELETE FROM project_roots WHERE project_id = $1")
                 .bind(&record.id)
                 .execute(&mut *connection)
                 .await?;
             for (position, path) in record.roots.iter().enumerate() {
                 sqlx::query(
-                    "INSERT INTO codex_storage.project_roots (project_id, position, path) \
+                    "INSERT INTO project_roots (project_id, position, path) \
                      VALUES ($1, $2, $3)",
                 )
                 .bind(&record.id)
@@ -113,7 +113,7 @@ impl DomainOps for Projects {
     ) -> Result<Vec<ProjectRecord>> {
         let rows = sqlx::query(
             "SELECT id, name, metadata, position, created_at_ms, updated_at_ms \
-             FROM codex_storage.projects \
+             FROM projects \
              WHERE ($1::text IS NULL OR id COLLATE \"C\" > $1 COLLATE \"C\") \
              ORDER BY id COLLATE \"C\" LIMIT $2",
         )
@@ -125,7 +125,7 @@ impl DomainOps for Projects {
         for row in rows {
             let id: String = row.try_get("id")?;
             let roots = sqlx::query_scalar::<_, String>(
-                "SELECT path FROM codex_storage.project_roots \
+                "SELECT path FROM project_roots \
                  WHERE project_id = $1 ORDER BY position",
             )
             .bind(&id)
@@ -193,7 +193,7 @@ impl DomainOps for ProjectKeys {
     async fn import(connection: &mut PgConnection, records: &[ProjectKeyRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.project_idempotency_keys \
+                "INSERT INTO project_idempotency_keys \
                  (key, project_id, created_at_ms) VALUES ($1, $2, $3) \
                  ON CONFLICT (key) DO NOTHING",
             )
@@ -212,7 +212,7 @@ impl DomainOps for ProjectKeys {
         limit: usize,
     ) -> Result<Vec<ProjectKeyRecord>> {
         let rows = sqlx::query(
-            "SELECT key, project_id, created_at_ms FROM codex_storage.project_idempotency_keys \
+            "SELECT key, project_id, created_at_ms FROM project_idempotency_keys \
              WHERE ($1::text IS NULL OR key COLLATE \"C\" > $1 COLLATE \"C\") \
              ORDER BY key COLLATE \"C\" LIMIT $2",
         )

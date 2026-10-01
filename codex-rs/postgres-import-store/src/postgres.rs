@@ -50,7 +50,7 @@ impl PostgresExternalAgentImportStore {
         timeout(
             QUERY_TIMEOUT,
             sqlx::query(
-                "INSERT INTO codex_storage.external_agent_config_imports \
+                "INSERT INTO external_agent_config_imports \
                  (import_id, provider_id, completed_at_ms, successes, failures) \
                  VALUES ($1, $2, $3, $4, $5) \
                  ON CONFLICT (import_id) DO UPDATE SET \
@@ -79,7 +79,7 @@ impl PostgresExternalAgentImportStore {
         let row = timeout(
             QUERY_TIMEOUT,
             sqlx::query(
-                "SELECT successes, failures FROM codex_storage.external_agent_config_imports \
+                "SELECT successes, failures FROM external_agent_config_imports \
                  WHERE import_id = $1",
             )
             .bind(import_id)
@@ -113,7 +113,7 @@ impl PostgresExternalAgentImportStore {
             QUERY_TIMEOUT,
             sqlx::query(
                 "SELECT import_id, provider_id, completed_at_ms, successes, failures \
-                 FROM codex_storage.external_agent_config_imports \
+                 FROM external_agent_config_imports \
                  ORDER BY completed_at_ms DESC, import_id ASC",
             )
             .fetch_all(&mut *connection),

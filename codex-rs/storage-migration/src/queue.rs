@@ -65,7 +65,7 @@ impl DomainOps for QueuedItems {
             // Orders are unique per thread, so a replay that finds the item already present
             // must update it in place instead of inserting a second copy.
             sqlx::query(
-                "INSERT INTO codex_storage.queued_items \
+                "INSERT INTO queued_items \
                  (id, thread_id, payload_json, queue_order, created_at_ms, updated_at_ms) \
                  VALUES ($1, $2::uuid, $3, $4, $5, $6) \
                  ON CONFLICT (id) DO UPDATE SET thread_id = excluded.thread_id, \
@@ -91,7 +91,7 @@ impl DomainOps for QueuedItems {
     ) -> Result<Vec<QueuedItemRecord>> {
         let rows = sqlx::query(
             "SELECT id, thread_id::text AS thread_id, payload_json, queue_order, \
-             created_at_ms, updated_at_ms FROM codex_storage.queued_items \
+             created_at_ms, updated_at_ms FROM queued_items \
              WHERE ($1::text IS NULL OR id > $1) ORDER BY id LIMIT $2",
         )
         .bind(after)
@@ -159,7 +159,7 @@ impl DomainOps for QueueRevisions {
     async fn import(connection: &mut PgConnection, records: &[RevisionRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.queued_thread_revisions (thread_id, revision) \
+                "INSERT INTO queued_thread_revisions (thread_id, revision) \
                  VALUES ($1::uuid, $2) ON CONFLICT (thread_id) DO UPDATE \
                  SET revision = excluded.revision",
             )
@@ -171,7 +171,7 @@ impl DomainOps for QueueRevisions {
         // New changes must be numbered after every imported revision.
         if let Some(highest) = records.iter().map(|record| record.revision).max() {
             sqlx::query(
-                "UPDATE codex_storage.queue_change_counter \
+                "UPDATE queue_change_counter \
                  SET version = GREATEST(version, $1) WHERE singleton",
             )
             .bind(highest)
@@ -188,7 +188,7 @@ impl DomainOps for QueueRevisions {
     ) -> Result<Vec<RevisionRecord>> {
         let rows = sqlx::query(
             "SELECT thread_id::text AS thread_id, revision \
-             FROM codex_storage.queued_thread_revisions \
+             FROM queued_thread_revisions \
              WHERE ($1::uuid IS NULL OR thread_id > $1::uuid) ORDER BY thread_id LIMIT $2",
         )
         .bind(after)

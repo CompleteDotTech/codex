@@ -62,7 +62,7 @@ impl DomainOps for ExternalImports {
     async fn import(connection: &mut PgConnection, records: &[ExternalImportRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.external_agent_config_imports \
+                "INSERT INTO external_agent_config_imports \
                  (import_id, provider_id, completed_at_ms, successes, failures) \
                  VALUES ($1, $2, $3, $4, $5) ON CONFLICT (import_id) DO UPDATE SET \
                  provider_id = excluded.provider_id, completed_at_ms = excluded.completed_at_ms, \
@@ -86,7 +86,7 @@ impl DomainOps for ExternalImports {
     ) -> Result<Vec<ExternalImportRecord>> {
         let rows = sqlx::query(
             "SELECT import_id, provider_id, completed_at_ms, successes, failures \
-             FROM codex_storage.external_agent_config_imports \
+             FROM external_agent_config_imports \
              WHERE ($1::text IS NULL OR import_id COLLATE \"C\" > $1 COLLATE \"C\") \
              ORDER BY import_id COLLATE \"C\" LIMIT $2",
         )

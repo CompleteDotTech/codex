@@ -49,7 +49,7 @@ impl DomainOps for Sections {
     async fn import(connection: &mut PgConnection, records: &[SectionRecord]) -> Result<()> {
         for record in records {
             sqlx::query(
-                "INSERT INTO codex_storage.thread_sections (id, name, appearance) \
+                "INSERT INTO thread_sections (id, name, appearance) \
                  VALUES ($1, $2, $3) \
                  ON CONFLICT (id) DO UPDATE SET name = excluded.name, \
                  appearance = excluded.appearance",
@@ -69,7 +69,7 @@ impl DomainOps for Sections {
         limit: usize,
     ) -> Result<Vec<SectionRecord>> {
         let rows = sqlx::query(
-            "SELECT id, name, appearance FROM codex_storage.thread_sections \
+            "SELECT id, name, appearance FROM thread_sections \
              WHERE ($1::text IS NULL OR id > $1) ORDER BY id LIMIT $2",
         )
         .bind(after)

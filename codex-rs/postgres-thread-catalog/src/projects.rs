@@ -21,11 +21,11 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 const PROJECT_SELECT: &str = "SELECT projects.*, \
-    (SELECT MAX(recency_at_ms) FROM codex_storage.threads \
+    (SELECT MAX(recency_at_ms) FROM threads \
      WHERE project_id = projects.id AND archived_at_s IS NULL) AS recency_at_ms \
-    FROM codex_storage.projects";
+    FROM projects";
 
-const LOCK_PROJECTS: &str = "LOCK TABLE codex_storage.projects IN SHARE ROW EXCLUSIVE MODE";
+const LOCK_PROJECTS: &str = "LOCK TABLE projects IN SHARE ROW EXCLUSIVE MODE";
 
 impl PostgresThreadCatalog {
     pub async fn set_thread_project(
@@ -38,12 +38,11 @@ impl PostgresThreadCatalog {
             Box::pin(async move {
                 lock_projects(connection).await?;
                 if let Some(project_id) = &project_id {
-                    let exists: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM codex_storage.projects WHERE id = $1)",
-                    )
-                    .bind(project_id)
-                    .fetch_one(&mut *connection)
-                    .await?;
+                    let exists: bool =
+                        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1)")
+                            .bind(project_id)
+                            .fetch_one(&mut *connection)
+                            .await?;
                     if !exists {
                         anyhow::bail!("project not found: {project_id}");
                     }
@@ -52,7 +51,7 @@ impl PostgresThreadCatalog {
                     return Ok(None);
                 }
                 let Some(previous) = sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT project_id FROM codex_storage.threads WHERE id = $1::uuid",
+                    "SELECT project_id FROM threads WHERE id = $1::uuid",
                 )
                 .bind(&thread_id)
                 .fetch_optional(&mut *connection)
@@ -61,13 +60,11 @@ impl PostgresThreadCatalog {
                     return Ok(None);
                 };
                 if previous != project_id {
-                    sqlx::query(
-                        "UPDATE codex_storage.threads SET project_id = $1 WHERE id = $2::uuid",
-                    )
-                    .bind(&project_id)
-                    .bind(&thread_id)
-                    .execute(&mut *connection)
-                    .await?;
+                    sqlx::query("UPDATE threads SET project_id = $1 WHERE id = $2::uuid")
+                        .bind(&project_id)
+                        .bind(&thread_id)
+                        .execute(&mut *connection)
+                        .await?;
                 }
                 Ok(Some(previous))
             })
@@ -120,7 +117,7 @@ impl PostgresThreadCatalog {
         self.read(move |connection| {
             Box::pin(async move {
                 let project_id = sqlx::query_scalar::<_, String>(
-                    "SELECT project_id FROM codex_storage.project_idempotency_keys WHERE key = $1",
+                    "SELECT project_id FROM project_idempotency_keys WHERE key = $1",
                 )
                 .bind(&key)
                 .fetch_optional(&mut *connection)
@@ -150,7 +147,7 @@ impl PostgresThreadCatalog {
             Box::pin(async move {
                 lock_projects(connection).await?;
                 let existing = sqlx::query_scalar::<_, String>(
-                    "SELECT project_id FROM codex_storage.project_idempotency_keys WHERE key = $1",
+                    "SELECT project_id FROM project_idempotency_keys WHERE key = $1",
                 )
                 .bind(&key)
                 .fetch_optional(&mut *connection)
@@ -167,7 +164,7 @@ impl PostgresThreadCatalog {
                 for thread_id in &thread_ids {
                     let exists = Uuid::parse_str(thread_id).is_ok()
                         && sqlx::query_scalar::<_, bool>(
-                            "SELECT EXISTS(SELECT 1 FROM codex_storage.threads WHERE id = $1::uuid)",
+                            "SELECT EXISTS(SELECT 1 FROM threads WHERE id = $1::uuid)",
                         )
                         .bind(thread_id)
                         .fetch_one(&mut *connection)
@@ -178,16 +175,15 @@ impl PostgresThreadCatalog {
                 }
                 let id = Uuid::now_v7().to_string();
                 let now = chrono::Utc::now().timestamp_millis();
-                let position = sqlx::query_scalar::<_, Option<i64>>(
-                    "SELECT MAX(position) FROM codex_storage.projects",
-                )
-                .fetch_one(&mut *connection)
-                .await?
-                .unwrap_or(-1)
-                .checked_add(1)
-                .ok_or_else(|| anyhow!("project position overflow"))?;
+                let position =
+                    sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(position) FROM projects")
+                        .fetch_one(&mut *connection)
+                        .await?
+                        .unwrap_or(-1)
+                        .checked_add(1)
+                        .ok_or_else(|| anyhow!("project position overflow"))?;
                 sqlx::query(
-                    "INSERT INTO codex_storage.projects (id, name, metadata, position, \
+                    "INSERT INTO projects (id, name, metadata, position, \
                      created_at_ms, updated_at_ms) VALUES ($1, $2, $3, $4, $5, $5)",
                 )
                 .bind(&id)
@@ -199,16 +195,14 @@ impl PostgresThreadCatalog {
                 .await?;
                 replace_roots(connection, &id, &roots).await?;
                 for thread_id in &thread_ids {
-                    sqlx::query(
-                        "UPDATE codex_storage.threads SET project_id = $1 WHERE id = $2::uuid",
-                    )
-                    .bind(&id)
-                    .bind(thread_id)
-                    .execute(&mut *connection)
-                    .await?;
+                    sqlx::query("UPDATE threads SET project_id = $1 WHERE id = $2::uuid")
+                        .bind(&id)
+                        .bind(thread_id)
+                        .execute(&mut *connection)
+                        .await?;
                 }
                 sqlx::query(
-                    "INSERT INTO codex_storage.project_idempotency_keys (key, project_id, \
+                    "INSERT INTO project_idempotency_keys (key, project_id, \
                      created_at_ms) VALUES ($1, $2, $3)",
                 )
                 .bind(&key)
@@ -256,7 +250,7 @@ impl PostgresThreadCatalog {
                 }
                 let now = chrono::Utc::now().timestamp_millis();
                 sqlx::query(
-                    "UPDATE codex_storage.projects SET name = $1, metadata = $2, \
+                    "UPDATE projects SET name = $1, metadata = $2, \
                      updated_at_ms = $3 WHERE id = $4",
                 )
                 .bind(&next_name)
@@ -302,7 +296,7 @@ impl PostgresThreadCatalog {
             Box::pin(async move {
                 lock_projects(connection).await?;
                 let mut project_ids = sqlx::query_scalar::<_, String>(
-                    "SELECT id FROM codex_storage.projects \
+                    "SELECT id FROM projects \
                      ORDER BY position ASC, id COLLATE \"C\" ASC",
                 )
                 .fetch_all(&mut *connection)
@@ -329,13 +323,13 @@ impl PostgresThreadCatalog {
                     return Ok(Some(false));
                 }
                 for (position, id) in project_ids.iter().enumerate() {
-                    sqlx::query("UPDATE codex_storage.projects SET position = $1 WHERE id = $2")
+                    sqlx::query("UPDATE projects SET position = $1 WHERE id = $2")
                         .bind(position as i64)
                         .bind(id)
                         .execute(&mut *connection)
                         .await?;
                 }
-                sqlx::query("UPDATE codex_storage.projects SET updated_at_ms = $1 WHERE id = $2")
+                sqlx::query("UPDATE projects SET updated_at_ms = $1 WHERE id = $2")
                     .bind(chrono::Utc::now().timestamp_millis())
                     .bind(&project_id)
                     .execute(&mut *connection)
@@ -351,12 +345,11 @@ impl PostgresThreadCatalog {
         self.write(move |connection| {
             Box::pin(async move {
                 lock_projects(connection).await?;
-                let exists: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM codex_storage.projects WHERE id = $1)",
-                )
-                .bind(&id)
-                .fetch_one(&mut *connection)
-                .await?;
+                let exists: bool =
+                    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1)")
+                        .bind(&id)
+                        .fetch_one(&mut *connection)
+                        .await?;
                 if !exists {
                     return Ok(None);
                 }
@@ -364,7 +357,7 @@ impl PostgresThreadCatalog {
                 for archived in [false, true] {
                     member_ids.push(
                         sqlx::query_scalar::<_, String>(
-                            "SELECT id::text FROM codex_storage.threads \
+                            "SELECT id::text FROM threads \
                              WHERE project_id = $1 AND (archived_at_s IS NOT NULL) = $2 \
                              ORDER BY id ASC",
                         )
@@ -374,13 +367,11 @@ impl PostgresThreadCatalog {
                         .await?,
                     );
                 }
-                sqlx::query(
-                    "UPDATE codex_storage.threads SET project_id = NULL WHERE project_id = $1",
-                )
-                .bind(&id)
-                .execute(&mut *connection)
-                .await?;
-                sqlx::query("DELETE FROM codex_storage.projects WHERE id = $1")
+                sqlx::query("UPDATE threads SET project_id = NULL WHERE project_id = $1")
+                    .bind(&id)
+                    .execute(&mut *connection)
+                    .await?;
+                sqlx::query("DELETE FROM projects WHERE id = $1")
                     .bind(&id)
                     .execute(&mut *connection)
                     .await?;
@@ -408,19 +399,18 @@ async fn load_project(connection: &mut PgConnection, id: &str) -> Result<Option<
     let Some(row) = row else {
         return Ok(None);
     };
-    let roots = sqlx::query(
-        "SELECT path FROM codex_storage.project_roots WHERE project_id = $1 ORDER BY position ASC",
-    )
-    .bind(id)
-    .fetch_all(&mut *connection)
-    .await?
-    .into_iter()
-    .map(|row| {
-        Ok(ProjectRoot {
-            path: row.try_get("path")?,
-        })
-    })
-    .collect::<Result<Vec<_>>>()?;
+    let roots =
+        sqlx::query("SELECT path FROM project_roots WHERE project_id = $1 ORDER BY position ASC")
+            .bind(id)
+            .fetch_all(&mut *connection)
+            .await?
+            .into_iter()
+            .map(|row| {
+                Ok(ProjectRoot {
+                    path: row.try_get("path")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
     project_from_row(&row, roots).map(Some)
 }
 
@@ -442,13 +432,13 @@ async fn replace_roots(
     project_id: &str,
     roots: &[ProjectRoot],
 ) -> Result<()> {
-    sqlx::query("DELETE FROM codex_storage.project_roots WHERE project_id = $1")
+    sqlx::query("DELETE FROM project_roots WHERE project_id = $1")
         .bind(project_id)
         .execute(&mut *connection)
         .await?;
     for (position, root) in roots.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO codex_storage.project_roots (project_id, position, path) \
+            "INSERT INTO project_roots (project_id, position, path) \
              VALUES ($1, $2, $3)",
         )
         .bind(project_id)
@@ -509,7 +499,7 @@ fn project_list_query(
     query.push(" LIMIT ").push_bind(query_limit);
     query.push(
         ") SELECT p.*, roots.path AS root_path FROM page p \
-        LEFT JOIN codex_storage.project_roots roots ON roots.project_id = p.id",
+        LEFT JOIN project_roots roots ON roots.project_id = p.id",
     );
     push_project_order(&mut query, sort_key, sort_direction);
     query.push(", roots.position ASC");
