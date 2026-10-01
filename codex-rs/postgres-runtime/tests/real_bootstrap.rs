@@ -446,12 +446,12 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
 
     for (raise_minimum, reset_minimum) in [
         (
-            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 2",
-            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 1",
+            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 5",
+            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 4",
         ),
         (
-            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 2",
-            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 1",
+            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 5",
+            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 4",
         ),
     ] {
         owner_query(&migrator_a, raise_minimum).await;
