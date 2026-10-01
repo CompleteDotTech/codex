@@ -7,6 +7,8 @@ mod mcp_login_tests;
 mod daybreak_tests;
 #[path = "tests/math_interruption_tests.rs"]
 mod math_interruption_tests;
+#[path = "tests/security_setup_tests.rs"]
+mod security_setup_tests;
 
 #[path = "tests/advanced_reasoning_tests.rs"]
 mod advanced_reasoning_tests;
@@ -2865,6 +2867,20 @@ async fn handle_start_side_seeds_navigation_before_thread_started() -> Result<()
     while app_event_rx.try_recv().is_ok() {}
     let mut tui = crate::tui::test_support::make_test_tui()?;
 
+    app.runtime_permission_profile_override = Some(RuntimePermissionProfileOverride::from_config(
+        app.chat_widget.config_ref(),
+    ));
+    app.select_permission_profile(
+        &mut app_server,
+        PermissionProfileSelection {
+            profile_id: ":read-only".into(),
+            approval_policy: Some(AskForApproval::OnRequest),
+            approvals_reviewer: Some(ApprovalsReviewer::User),
+            display_label: "Read Only".into(),
+        },
+    )
+    .await;
+
     let control = Box::pin(app.handle_start_side(
         &mut tui,
         &mut app_server,
@@ -2906,6 +2922,53 @@ async fn handle_start_side_seeds_navigation_before_thread_started() -> Result<()
     }
 
     assert!(saw_thread_started);
+    assert_eq!(
+        app.config.permissions.permission_profile(),
+        &PermissionProfile::read_only()
+    );
+    assert_eq!(
+        app.runtime_permission_profile_override,
+        Some(RuntimePermissionProfileOverride::from_config(
+            app.chat_widget.config_ref()
+        ))
+    );
+    app.select_agent_thread(&mut tui, &mut app_server, parent_thread_id)
+        .await?;
+    app.select_permission_profile(
+        &mut app_server,
+        PermissionProfileSelection {
+            profile_id: ":workspace".into(),
+            approval_policy: Some(AskForApproval::OnRequest),
+            approvals_reviewer: Some(ApprovalsReviewer::User),
+            display_label: "Workspace".into(),
+        },
+    )
+    .await;
+    app.select_agent_thread(&mut tui, &mut app_server, side_thread_id)
+        .await?;
+    let settings = next_thread_settings_updated(&mut app_server, parent_thread_id).await;
+    app.enqueue_thread_notification(
+        parent_thread_id,
+        ServerNotification::ThreadSettingsUpdated(settings),
+    )
+    .await?;
+    app.select_agent_thread(&mut tui, &mut app_server, parent_thread_id)
+        .await?;
+    assert_eq!(
+        app.config
+            .permissions
+            .active_permission_profile()
+            .unwrap()
+            .id,
+        ":workspace"
+    );
+    assert_eq!(
+        app.runtime_permission_profile_override,
+        Some(RuntimePermissionProfileOverride::from_config(
+            app.chat_widget.config_ref()
+        ))
+    );
+
     app_server.shutdown().await?;
     Ok(())
 }
@@ -3115,23 +3178,6 @@ async fn server_only_profile_selection_keeps_turns_on_the_selected_profile() -> 
         @"• Permission selection requested: server-only"
     );
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    app.select_permission_profile(&mut server, selection.clone())
-        .await;
-    insta::assert_snapshot!(
-        next_history_message(&mut events),
-        @"■ Wait for permissions to update before changing permissions."
-    );
-    app.handle_event(
-        &mut tui,
-        &mut server,
-        AppEvent::ForkCurrentSession { name: None },
-    )
-    .await?;
-    let _ = next_history_message(&mut events);
-    insta::assert_snapshot!(
-        next_history_message(&mut events),
-        @"■ Wait for permissions to update before forking."
-    );
     app.chat_widget
         .restore_user_message_to_composer("use the selected profile".into());
     app.chat_widget
@@ -3174,6 +3220,7 @@ async fn server_only_profile_selection_keeps_turns_on_the_selected_profile() -> 
     );
     let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:8765")?;
     app.app_server_target = crate::AppServerTarget::Remote { endpoint };
+    assert!(app.selected_server_profile(thread_id).is_none());
     while events.try_recv().is_ok() {}
     app.change_working_directory(&mut tui, &mut server, home.path().abs())
         .await;
@@ -3209,20 +3256,24 @@ async fn server_only_profile_selection_keeps_turns_on_the_selected_profile() -> 
         .restore_user_message_to_composer("queued follow-up".into());
     app.chat_widget
         .handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    let selection = app
-        .confirmed_server_profile(thread_id)
-        .expect("server profile");
+    let selection = PermissionProfileSelection {
+        profile_id: "server-only".into(),
+        approval_policy: None,
+        approvals_reviewer: None,
+        display_label: "server-only".into(),
+    };
     app.select_permission_profile(&mut server, selection).await;
     insta::assert_snapshot!(
         next_history_message(&mut events),
-        @"■ Wait for the current turn to finish before changing permissions."
+        @"• Permission selection requested: server-only"
     );
     app.handle_event(&mut tui, &mut server, AppEvent::SettingsSelectionSettled)
         .await?;
     app.handle_thread_event_now(ThreadBufferedEvent::Notification(Box::new(
         turn_completed_notification(thread_id, "second", TurnStatus::Completed),
     )));
-    assert!(app.chat_widget.has_queued_follow_up_messages());
+    assert!(!app.chat_widget.has_queued_follow_up_messages());
+    let _ = next_user_turn_op(&mut ops);
     server.shutdown().await?;
     Ok(())
 }
@@ -4193,8 +4244,15 @@ async fn inactive_thread_file_change_approval_recovers_buffered_changes() {
 #[tokio::test]
 async fn active_thread_file_change_approval_recovers_buffered_changes() {
     let (mut app, _app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    let app_server = crate::start_embedded_app_server_for_picker(&app.config)
+        .await
+        .expect("embedded app server");
     let thread_id = ThreadId::new();
     app.active_thread_id = Some(thread_id);
+    app.primary_thread_id = Some(ThreadId::new());
+    app.agents_overview
+        .dispatched_requests
+        .insert(thread_id, Vec::new());
     app.startup_protected_input_boundary = true;
     app.enqueue_thread_notification(
         thread_id,
@@ -4227,10 +4285,15 @@ async fn active_thread_file_change_approval_recovers_buffered_changes() {
             grant_root: None,
         },
     };
-    assert_eq!(
+    app.handle_app_server_event(
+        &app_server,
+        codex_app_server_client::AppServerEvent::ServerRequest(Box::new(request.clone())),
+    )
+    .await;
+    assert!(app.agents_overview.dispatched_requests[&thread_id].is_empty());
+    assert!(
         app.pending_app_server_requests
-            .note_server_request(&request),
-        None
+            .contains_server_request(&request)
     );
     app.chat_widget.handle_server_notification(
         agent_message_delta_notification(thread_id, "turn-active-approval", "agent-1", "streaming"),
@@ -4263,6 +4326,7 @@ async fn active_thread_file_change_approval_recovers_buffered_changes() {
     let destination = app.chat_widget.config_ref().cwd.join("visible-target.md");
     assert!(rendered.contains("Description: Apply proposed file edits"));
     assert!(rendered.contains(&format!("Destination: {}", destination.display())));
+    app_server.shutdown().await.expect("shutdown app server");
 }
 
 #[tokio::test]
@@ -5180,11 +5244,11 @@ async fn side_parent_status_prioritizes_input_over_approval() -> Result<()> {
     );
     assert_snapshot!(
         format!("{input_footer}\n{approval_footer}\n{cleared_footer}"),
-        @r"
-        Side from main thread · main needs input · ctrl+/ to switch · ctrl+c to close
-        Side from main thread · main needs approval · ctrl+/ to switch · ctrl+c to close
-        Side from main thread · ctrl+/ to switch · ctrl+c to close
-        "
+        @"
+    Side from main thread · main needs input · ⌃/ to switch · ⌃c to close
+    Side from main thread · main needs approval · ⌃/ to switch · ⌃c to close
+    Side from main thread · ⌃/ to switch · ⌃c to close
+    "
     );
 
     Ok(())
@@ -6651,7 +6715,7 @@ async fn capped_resize_reflow_renders_recent_suffix_only() {
             .map(rendered_line_text)
             .collect::<Vec<_>>(),
         vec![
-            "Earlier messages are available — press ctrl+t to view the full transcript".to_string(),
+            "Earlier messages are available — press ⌃t to view the full transcript".to_string(),
             String::new(),
             "cell 18".to_string(),
             String::new(),
@@ -9238,7 +9302,10 @@ async fn selecting_cyber_model_defaults_active_thread_to_auto_review() {
         .await
         .expect("pending permission selection should block the cyber model");
         assert_eq!(app.chat_widget.current_model(), previous_model);
-        app.pending_server_profiles.remove(&thread_id);
+        let previous_selection = app.pending_server_profiles.remove(&thread_id).unwrap();
+        app.agents_overview
+            .requested_permission_profiles
+            .insert(thread_id, previous_selection);
         app.handle_event(
             &mut tui,
             &mut app_server,
@@ -9248,6 +9315,11 @@ async fn selecting_cyber_model_defaults_active_thread_to_auto_review() {
         .expect("model selection should succeed");
 
         assert!(app.pending_server_profiles.contains_key(&thread_id));
+        assert!(
+            !app.agents_overview
+                .requested_permission_profiles
+                .contains_key(&thread_id)
+        );
         let notification = next_thread_settings_updated(&mut app_server, thread_id).await;
         assert_eq!(
             notification.thread_settings.approval_policy,
