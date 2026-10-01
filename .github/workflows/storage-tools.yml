@@ -203,6 +203,9 @@ jobs:
           sql(Path(os.environ["CODEX_TEST_POSTGRES_STATE"]), "TRUNCATE codex_storage.project_idempotency_keys, codex_storage.queued_thread_revisions, codex_storage.agent_board_deleted, codex_storage.external_agent_config_imports, codex_storage.threads, codex_storage.projects CASCADE")
           PY
           CODEX_TEST_POSTGRES_MIGRATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-storage-migration real_postgres_catalog_migration
+      - name: Connect through a storage profile in the default and a named namespace
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_REMOTE_STORAGE_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-remote-storage real_postgres_remote_storage
       - name: Test two-namespace role isolation against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_postgres_roles_isolate_two_schemas
