@@ -97,7 +97,7 @@ async fn real_two_clients_reject_stale_thread_owners() {
             .await,
         Ok(None)
     );
-    tokio::time::sleep(Duration::from_millis(2100)).await;
+    tokio::time::sleep(Duration::from_millis(3000)).await;
     let replacement = second
         .claim_thread_ownership(
             namespace.clone(),
