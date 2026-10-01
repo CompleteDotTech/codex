@@ -336,6 +336,14 @@
         }
       ]
     },
+    "AsyncClassifierMode": {
+      "description": "Async classifier experiment, resolved once for each parent task.",
+      "enum": [
+        "snapshot",
+        "conversation"
+      ],
+      "type": "string"
+    },
     "AuthCredentialsStoreMode": {
       "description": "Determine where Codex should store CLI auth credentials.",
       "oneOf": [
@@ -713,6 +721,9 @@
             "analytics_plan_history": {
               "type": "boolean"
             },
+            "api_key_cyber_access_programs": {
+              "type": "boolean"
+            },
             "api_key_model_discovery": {
               "type": "boolean"
             },
@@ -754,6 +765,9 @@
               "type": "boolean"
             },
             "bedrock_setup_wizard": {
+              "type": "boolean"
+            },
+            "browser_annotation_api": {
               "type": "boolean"
             },
             "browser_use": {
@@ -936,6 +950,9 @@
             "in_app_updates": {
               "type": "boolean"
             },
+            "in_app_voice": {
+              "type": "boolean"
+            },
             "instant_interrupt": {
               "type": "boolean"
             },
@@ -954,6 +971,9 @@
             "local_thread_store_shared_compression": {
               "type": "boolean"
             },
+            "login_shell_package_path": {
+              "type": "boolean"
+            },
             "mcp_2026_07_28": {
               "type": "boolean"
             },
@@ -967,6 +987,9 @@
               "type": "boolean"
             },
             "mentions_v2": {
+              "type": "boolean"
+            },
+            "model_catalog_in_context": {
               "type": "boolean"
             },
             "multi_agent": {
@@ -1397,6 +1420,49 @@
         }
       },
       "type": "object"
+    },
+    "CredentialSource": {
+      "description": "A host-owned reference to a protected credential, never its value.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "enum": [
+                "environment"
+              ],
+              "type": "string"
+            },
+            "variable": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "source",
+            "variable"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "keyring"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "source"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "CurrentTimeReminderConfigToml": {
       "additionalProperties": false,
@@ -1838,6 +1904,20 @@
       "additionalProperties": false,
       "description": "User-configurable prompt, approval, and context settings for Guardian v2.",
       "properties": {
+        "async_classifier_conversation_token_limit": {
+          "description": "Reset retained async history when the next request exceeds this token estimate. Defaults to 100,000. Fresh requests remain subject to the model's input limit.",
+          "format": "uint",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "async_classifier_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AsyncClassifierMode"
+            }
+          ],
+          "description": "Classifier experiment override. Otherwise use the model default, then snapshots."
+        },
         "classifier_instructions": {
           "type": "string"
         },
@@ -2795,6 +2875,14 @@
           "description": "Keep the message board in memory for a training session, including ephemeral sessions.",
           "type": "boolean"
         },
+        "message_board_remote": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RemoteMessageBoardConfigToml"
+            }
+          ],
+          "description": "Use a session-scoped remote board instead of local storage."
+        },
         "min_wait_timeout_ms": {
           "format": "int64",
           "maximum": 3600000.0,
@@ -3517,14 +3605,6 @@
           },
           "type": "array"
         },
-        "ema_auth": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/PluginMcpServerEmaAuthConfig"
-            }
-          ],
-          "description": "Host-configured EMA registration; the plugin still owns its endpoint."
-        },
         "enabled": {
           "default": true,
           "description": "When `false`, Codex skips initializing this plugin MCP server.",
@@ -3545,39 +3625,6 @@
           "type": "object"
         }
       },
-      "type": "object"
-    },
-    "PluginMcpServerEmaAuthConfig": {
-      "additionalProperties": false,
-      "description": "Resource registration applied through an existing per-plugin policy overlay. The enterprise IdP is selected separately by trusted host configuration.",
-      "properties": {
-        "authorization_server_issuer": {
-          "type": "string"
-        },
-        "client_id": {
-          "type": "string"
-        },
-        "resource": {
-          "type": "string"
-        },
-        "scopes": {
-          "default": [],
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "url": {
-          "description": "Exact plugin endpoint approved by the host; never overrides the declaration.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "authorization_server_issuer",
-        "client_id",
-        "resource",
-        "url"
-      ],
       "type": "object"
     },
     "ProfileTui": {
@@ -3883,6 +3930,27 @@
         }
       ]
     },
+    "RemoteMessageBoardConfigToml": {
+      "additionalProperties": false,
+      "description": "Connection to a board provisioned by the research host.",
+      "properties": {
+        "bearer_token": {
+          "description": "Board credential supplied directly by a runtime config override.",
+          "type": "string"
+        },
+        "bearer_token_env_var": {
+          "description": "Read the credential from this environment variable instead of bearer_token.",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
     "ResumeCwdMode": {
       "description": "Working directory to use when resuming or forking a session.",
       "oneOf": [
@@ -4175,6 +4243,96 @@
         }
       ]
     },
+    "StorageCandidateProfile": {
+      "description": "A saved proposal, separate from the host-owned active backend identity.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "backend": {
+              "enum": [
+                "local_sqlite"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "backend"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "PostgreSQL connection candidate. Deserialization validates structure only; it does not resolve credentials, open a socket, or claim authority.",
+          "properties": {
+            "backend": {
+              "enum": [
+                "remote_postgres"
+              ],
+              "type": "string"
+            },
+            "connect_timeout_seconds": {
+              "format": "uint16",
+              "maximum": 30.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "credential": {
+              "$ref": "#/definitions/CredentialSource"
+            },
+            "database": {
+              "type": "string"
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "max_connections": {
+              "format": "uint16",
+              "maximum": 32.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "pool_acquire_timeout_seconds": {
+              "format": "uint16",
+              "maximum": 30.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "port": {
+              "format": "uint16",
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "tls": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/TlsSettings"
+                }
+              ],
+              "default": {
+                "ca_certificate": null,
+                "verification": "verify_full"
+              }
+            }
+          },
+          "required": [
+            "backend",
+            "connect_timeout_seconds",
+            "credential",
+            "database",
+            "endpoint",
+            "max_connections",
+            "namespace",
+            "pool_acquire_timeout_seconds",
+            "port"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ThreadStoreToml": {
       "oneOf": [
         {
@@ -4192,6 +4350,31 @@
           "type": "object"
         }
       ]
+    },
+    "TlsSettings": {
+      "additionalProperties": false,
+      "description": "Verify the certificate and server name, using system roots or a host path.",
+      "properties": {
+        "ca_certificate": {
+          "type": "string"
+        },
+        "verification": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TlsVerification"
+            }
+          ],
+          "default": "verify_full"
+        }
+      },
+      "type": "object"
+    },
+    "TlsVerification": {
+      "description": "The only TLS policy admitted by this initial candidate format.",
+      "enum": [
+        "verify_full"
+      ],
+      "type": "string"
     },
     "TokenBudgetConfigToml": {
       "additionalProperties": false,
@@ -4441,6 +4624,7 @@
             "agents": {
               "archive": null,
               "delete": null,
+              "fork": null,
               "hide": null,
               "new_task": null,
               "new_worktree": null,
@@ -4669,6 +4853,11 @@
           "default": "composer",
           "description": "Where the terminal pet should anchor vertically.\n\nDefaults to `composer`, which follows the current TUI composer viewport."
         },
+        "prompt_suggestions": {
+          "default": false,
+          "description": "Deprecated. Accepted for compatibility with older configs but ignored.",
+          "type": "boolean"
+        },
         "question_esc_back": {
           "default": true,
           "description": "Escape returns from async questions to the composer, preserving the answer draft.",
@@ -4794,6 +4983,14 @@
             }
           ],
           "description": "Permanently delete the selected task and its child agents after confirmation."
+        },
+        "fork": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Fork the selected conversation and open the new session."
         },
         "hide": {
           "allOf": [
@@ -5379,6 +5576,7 @@
           "default": {
             "archive": null,
             "delete": null,
+            "fork": null,
             "hide": null,
             "new_task": null,
             "new_worktree": null,
@@ -6749,6 +6947,9 @@
         "analytics_plan_history": {
           "type": "boolean"
         },
+        "api_key_cyber_access_programs": {
+          "type": "boolean"
+        },
         "api_key_model_discovery": {
           "type": "boolean"
         },
@@ -6790,6 +6991,9 @@
           "type": "boolean"
         },
         "bedrock_setup_wizard": {
+          "type": "boolean"
+        },
+        "browser_annotation_api": {
           "type": "boolean"
         },
         "browser_use": {
@@ -6972,6 +7176,9 @@
         "in_app_updates": {
           "type": "boolean"
         },
+        "in_app_voice": {
+          "type": "boolean"
+        },
         "instant_interrupt": {
           "type": "boolean"
         },
@@ -6990,6 +7197,9 @@
         "local_thread_store_shared_compression": {
           "type": "boolean"
         },
+        "login_shell_package_path": {
+          "type": "boolean"
+        },
         "mcp_2026_07_28": {
           "type": "boolean"
         },
@@ -7003,6 +7213,9 @@
           "type": "boolean"
         },
         "mentions_v2": {
+          "type": "boolean"
+        },
+        "model_catalog_in_context": {
           "type": "boolean"
         },
         "multi_agent": {
@@ -7668,6 +7881,14 @@
         }
       ],
       "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`."
+    },
+    "storage_candidate": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/StorageCandidateProfile"
+        }
+      ],
+      "description": "Validated proposal only. Editing this never selects an active backend."
     },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",

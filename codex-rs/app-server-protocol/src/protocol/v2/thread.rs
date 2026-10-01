@@ -113,6 +113,10 @@ pub struct ThreadStartParams {
     pub multi_agent_mode: Option<MultiAgentMode>,
     #[ts(optional = nullable)]
     pub ephemeral: Option<bool>,
+    /// Materialize an empty persistent thread before responding to `thread/start`.
+    #[experimental("thread/start.persistOnStart")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub persist_on_start: bool,
     /// Persisted thread history contract to use for this new thread.
     #[experimental("thread/start.historyMode")]
     #[ts(optional = nullable)]
@@ -187,6 +191,11 @@ pub struct MockExperimentalMethodResponse {
 #[ts(export_to = "v2/")]
 pub struct ThreadStartResponse {
     pub thread: Thread,
+    /// Confirms that the empty thread was persisted before this response.
+    /// Older servers omit this field, which clients interpret as `false`.
+    #[experimental("thread/start.persistedOnStart")]
+    #[serde(default)]
+    pub persisted_on_start: bool,
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,
@@ -841,11 +850,24 @@ impl From<codex_protocol::protocol::ThreadGoal> for ThreadGoal {
     }
 }
 
+/// Distinguishes explicit user actions from automatic goal lifecycle mutations.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub enum ThreadGoalMutationOrigin {
+    User,
+    Automatic,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadGoalSetParams {
     pub thread_id: String,
+    /// Missing provenance does not supply user authorization.
+    #[ts(optional = nullable)]
+    pub origin: Option<ThreadGoalMutationOrigin>,
     #[ts(optional = nullable)]
     pub objective: Option<String>,
     #[ts(optional = nullable)]
@@ -886,6 +908,9 @@ pub struct ThreadGoalGetResponse {
 #[ts(export_to = "v2/")]
 pub struct ThreadGoalClearParams {
     pub thread_id: String,
+    /// Missing provenance does not supply user authorization.
+    #[ts(optional = nullable)]
+    pub origin: Option<ThreadGoalMutationOrigin>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]

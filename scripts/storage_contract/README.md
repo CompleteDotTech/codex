@@ -19,6 +19,15 @@ always includes `"activation_permitted": false`.
 - `coverage_matrix.py`: checked partial inventory of the eight pinned SQLite
   schemas and canonical file classes. `audit_coverage()` rejects missing or extra
   fixture tables and reports unresolved forward/reverse treatment explicitly.
+  Its queue-family source edges are described in `QUEUE_SOURCE_EDGES.md`.
+  Selected goal-table and cross-rollout edges are described in `GOAL_SOURCE_EDGES.md`.
+  Versioned memory-table and generated-file edges are described in `MEMORY_SOURCE_EDGES.md`.
+- `control_plan.py`: a separate, offline operation-plan validator and exclusion
+  preview for initialize, local migration, and attachment; see `CONTROL_PLAN.md`.
+- `compatibility.py`: a strict offline descriptor and observation prefilter for
+  proposed read, write, update and restore operations; see `COMPATIBILITY_PREFILTER.md`.
+- `relocation.py`: a path-free offline disposition preview for source cwd, project
+  roots and rollout paths; see `RELOCATION_CONTRACT.md`.
 - `test_*.py`: synthetic bundle tests and disposable SQLite/process-boundary tests.
 
 No third-party Python packages are required. Source syntax targets the enclosing
@@ -90,9 +99,18 @@ and eight file classes to implementation issues and direct source anchors. Its
 migration decision. Producer/consumer closure and forward/reverse treatment are
 explicitly unresolved. The file-class list has no independent completeness
 check. A successful matrix audit never permits activation.
+For the project/thread primary-state family, the matrix also records selected
+direct read/write SQL clauses in the primary runtime modules. The source test
+checks the emitted mappings and those exact clauses in each module's prefix
+before its first `#[cfg(test)]` marker, excluding test helpers and fixtures.
+This conservative check does not parse Rust or SQL, enumerate every caller, or
+prove cross-host path handling. The transitive producer/consumer audit stays
+partial.
 `CANONICAL_HISTORY_SOURCES.md` separately pins a partial source-level map of
 rollout, fork, archive, compression, and attachment call sites. It does not
 qualify a coherent capture or second-host replay.
+`SPLIT_STORE_FIXTURES.md` documents populated old primary logs/memory rows at
+their drop boundaries alongside distinct or absent modern split stores.
 
 `migrate`, `regenerate`, `retain`, and `absent` are distinct treatments. Only
 `migrate` contributes verified record counts. Non-migrated entries cannot carry

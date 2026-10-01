@@ -490,6 +490,7 @@ impl App {
     /// This helper copies every known nickname/role from `AgentNavigationState` into the
     /// replacement widget so that replayed collab items render agent names immediately.
     pub(super) fn replace_chat_widget(&mut self, mut chat_widget: ChatWidget) {
+        chat_widget.fork_in_progress = self.chat_widget.fork_in_progress;
         self.pending_right_click_paste = None;
         if !self.chat_widget.realtime_conversation_is_running() {
             self.retain_realtime_replay_state_before_replace();
@@ -519,6 +520,7 @@ impl App {
             AppServerTarget::LocalDaemon { .. }
         ));
         chat_widget.inherit_backend_banner_state(&mut self.chat_widget);
+        chat_widget.inherit_security_setup(&mut self.chat_widget);
         for (thread_id, entry) in self.agent_navigation.ordered_threads() {
             chat_widget.set_collab_agent_metadata(
                 thread_id,
@@ -757,6 +759,20 @@ impl App {
         self.app_event_tx
             .send(AppEvent::ResetTranscriptForThreadSwitch);
         self.replay_thread_snapshot(snapshot, resume_restored_queue);
+        if let Some(thread_id) = self.chat_widget.thread_id()
+            && let Some(active) = self
+                .chat_widget
+                .config_ref()
+                .permissions
+                .active_permission_profile()
+            && self
+                .agents_overview
+                .selected_permission_profiles
+                .get(&thread_id)
+                == Some(&active.id)
+        {
+            self.adopt_server_permissions();
+        }
         if external_writer {
             self.chat_widget.show_external_writer_thread();
         }
@@ -781,6 +797,16 @@ impl App {
 
     pub(super) async fn reset_thread_event_state(&mut self) {
         let voice_owner = self.voice_owner_thread_id();
+        // Move retained tasks' approvals to background routing before clearing request bookkeeping.
+        for (thread_id, requests) in &mut self.agents_overview.dispatched_requests {
+            if let Some(channel) = self.thread_event_channels.get(thread_id) {
+                for request in channel.store.lock().await.pending_replay_requests() {
+                    if !requests.iter().any(|pending| pending.id() == request.id()) {
+                        requests.push(request);
+                    }
+                }
+            }
+        }
         if voice_owner.is_some() {
             for (thread_id, channel) in &self.thread_event_channels {
                 if Some(*thread_id) != voice_owner {
@@ -792,7 +818,8 @@ impl App {
             }
         }
         self.thread_event_listener_tasks.retain(|id, task| {
-            if Some(*id) == voice_owner {
+            if Some(*id) == voice_owner || self.agents_overview.dispatched_requests.contains_key(id)
+            {
                 true
             } else {
                 task.abort();
@@ -836,6 +863,9 @@ impl App {
                         thread_id = %thread_id,
                         "failed to unsubscribe stale startup thread: {err}"
                     );
+                }
+                if started.persisted_on_start {
+                    let _ = app_server.thread_archive(thread_id).await;
                 }
                 self.discard_thread_local_state(thread_id).await;
             }
@@ -907,9 +937,7 @@ impl App {
                                     | ServerNotification::ThreadDeleted(_)))
                     })
                 {
-                    self.agents_overview
-                        .blank_sessions
-                        .insert(thread_id, started.clone());
+                    self.retain_blank_session(app_server, started.clone()).await;
                 }
                 // A full usage read can finish before thread/start. Apply its cached fallback
                 // after attachment but before the initial prompt or queued draft is submitted.
@@ -1011,6 +1039,7 @@ impl App {
                 self.local_settings = self.local_settings.reloaded(&config);
                 self.refresh_server_version_overview_notice(CODEX_CLI_VERSION);
                 self.config = config;
+                self.remember_launch_permissions();
 
                 let name_error = if let Some(name) = new_thread_name {
                     match app_server
@@ -1026,24 +1055,23 @@ impl App {
                 } else {
                     None
                 };
-                let thread_id = started.session.thread_id;
                 if !self.config.ephemeral
                     && !matches!(self.app_server_target, AppServerTarget::Embedded)
                 {
-                    self.agents_overview
-                        .blank_sessions
-                        .insert(thread_id, started.clone());
+                    self.retain_blank_session(app_server, started.clone()).await;
                 }
-                if let Err(err) = self
+                let attachment = self
                     .replace_chat_widget_with_app_server_thread(
                         tui,
-                        started,
+                        started.clone(),
                         ThreadAttachPresentation::Fresh,
                         initial_user_message,
                     )
+                    .await;
+                if let Err(err) = self
+                    .finish_blank_session_attachment(app_server, &started, attachment)
                     .await
                 {
-                    self.agents_overview.blank_sessions.remove(&thread_id);
                     self.chat_widget.add_error_message(format!(
                         "Failed to attach to fresh app-server thread: {err}"
                     ));
@@ -1108,7 +1136,7 @@ impl App {
             ThreadAttachPresentation::Fresh | ThreadAttachPresentation::FreshWithDraft
         ) {
             self.chat_widget.mark_fresh_task_for_sparkle(&started);
-            // FreshWithDraft inherits its provisional greeting and replay at the handoff.
+            // FreshWithDraft inherits its provisional replay at the handoff.
             if matches!(presentation, ThreadAttachPresentation::Fresh) {
                 self.chat_widget
                     .empty_state_animation
