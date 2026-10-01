@@ -4723,6 +4723,7 @@ dependencies = [
 name = "codex-thread-store"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "chrono",
  "codex-app-server-protocol",
  "codex-extension-items",
