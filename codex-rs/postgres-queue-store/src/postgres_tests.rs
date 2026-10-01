@@ -245,7 +245,8 @@ async fn scenario(store: &dyn QueueStore, first: ThreadId, second: ThreadId) -> 
     );
     record!("order after delete", page(0, 10).await);
 
-    for index in 0..MAX_QUEUE_ITEMS {
+    // The second thread already holds one item, so one fewer fills it.
+    for index in 0..MAX_QUEUE_ITEMS - 1 {
         store
             .enqueue(second, format!("fill {index}"))
             .await
@@ -298,7 +299,6 @@ async fn real_postgres_queue_matches_sqlite() {
     assert_eq!(actual, expected);
 }
 
-#[tokio::test]
 async fn real_postgres_queue_serializes_writers_and_orders_versions_by_commit() {
     let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_QUEUE_STORE_STATE") else {
         return;
@@ -393,7 +393,6 @@ async fn real_postgres_queue_serializes_writers_and_orders_versions_by_commit() 
     );
 }
 
-#[tokio::test]
 async fn real_postgres_queue_changes_survive_reconnect_and_thread_removal() {
     let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_QUEUE_STORE_STATE") else {
         return;
@@ -482,4 +481,12 @@ async fn real_postgres_queue_changes_survive_reconnect_and_thread_removal() {
             .map_err(failure),
         Err(ThreadStoreError::ThreadNotFound { thread_id: orphan }.to_string())
     );
+}
+
+/// These checks read and compare the single global change counter, so they run one after
+/// another in one test instead of in parallel with other tests on the shared fixture.
+#[tokio::test]
+async fn real_postgres_queue_store_orders_and_persists_changes() {
+    real_postgres_queue_serializes_writers_and_orders_versions_by_commit().await;
+    real_postgres_queue_changes_survive_reconnect_and_thread_removal().await;
 }
