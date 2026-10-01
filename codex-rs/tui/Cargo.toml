@@ -56,6 +56,7 @@ codex-models-manager = { workspace = true }
 codex-otel = { workspace = true }
 codex-plugin = { workspace = true }
 codex-protocol = { workspace = true }
+codex-remote-backend = { workspace = true }
 codex-realtime-webrtc = { workspace = true }
 futures = { workspace = true }
 codex-rollout = { workspace = true }

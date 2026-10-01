@@ -304,11 +304,17 @@ impl MessageProcessor {
         let thread_store = codex_core::thread_store_from_config(config.as_ref(), state_db.clone());
         // Queue persistence requires SQLite, so in-memory thread stores and
         // app servers without a state database do not have a queue backend.
-        let queue_store: Option<Arc<dyn QueueStore>> = match &config.experimental_thread_store {
-            ThreadStoreConfig::Local => state_db.as_ref().map(|state_db| {
-                Arc::new(LocalQueueStore::new(Arc::clone(state_db))) as Arc<dyn QueueStore>
-            }),
-            ThreadStoreConfig::InMemory { .. } => None,
+        let queue_store: Option<Arc<dyn QueueStore>> = if let Some(remote) =
+            codex_core::remote_backend()
+        {
+            Some(Arc::clone(&remote.queue_store))
+        } else {
+            match &config.experimental_thread_store {
+                ThreadStoreConfig::Local => state_db.as_ref().map(|state_db| {
+                    Arc::new(LocalQueueStore::new(Arc::clone(state_db))) as Arc<dyn QueueStore>
+                }),
+                ThreadStoreConfig::InMemory { .. } => None,
+            }
         };
         let environment_manager_for_requests = Arc::clone(&environment_manager);
         let environment_manager_for_extensions = Arc::clone(&environment_manager);

@@ -652,13 +652,27 @@ pub async fn run_main_with_transport_options(
         }
         _ => None,
     };
-    let state_db_init = match init_sqlite_state_db_with_fresh_start_on_corruption(&config).await {
-        Ok(state_db_init) => state_db_init,
-        Err(err) => {
-            return Err(std::io::Error::other(format!(
-                "failed to initialize sqlite state runtime under {}: {err}",
-                config.sqlite_config().home().display()
-            )));
+    // Remote storage is chosen before any local database is touched, so a remote home never
+    // creates, recovers or resets SQLite files.
+    let remote_storage = codex_remote_backend::prepare_storage(&config)
+        .await
+        .map_err(|err| {
+            std::io::Error::other(format!("failed to start against remote storage: {err}"))
+        })?;
+    let state_db_init = if remote_storage {
+        StateDbInitResult {
+            state_db: None,
+            recovery_notice: None,
+        }
+    } else {
+        match init_sqlite_state_db_with_fresh_start_on_corruption(&config).await {
+            Ok(state_db_init) => state_db_init,
+            Err(err) => {
+                return Err(std::io::Error::other(format!(
+                    "failed to initialize sqlite state runtime under {}: {err}",
+                    config.sqlite_config().home().display()
+                )));
+            }
         }
     };
     let state_db = state_db_init.state_db;

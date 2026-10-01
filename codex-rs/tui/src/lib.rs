@@ -386,11 +386,22 @@ async fn init_state_db_for_app_server_target(
     app_server_target: &AppServerTarget,
 ) -> std::io::Result<Option<StateDbHandle>> {
     match app_server_target {
-        AppServerTarget::Embedded => state_db::try_init(config).await.map(Some).map_err(|err| {
-            let database_path = codex_state::runtime_db_path_for_corruption_error(&err)
-                .unwrap_or_else(|| config.sqlite_config().state_db_path());
-            std::io::Error::other(LocalStateDbStartupError::new(database_path, err))
-        }),
+        AppServerTarget::Embedded => {
+            // Remote storage is chosen before any local database is touched.
+            if codex_remote_backend::prepare_storage(config)
+                .await
+                .map_err(|err| {
+                    std::io::Error::other(format!("failed to start against remote storage: {err}"))
+                })?
+            {
+                return Ok(None);
+            }
+            state_db::try_init(config).await.map(Some).map_err(|err| {
+                let database_path = codex_state::runtime_db_path_for_corruption_error(&err)
+                    .unwrap_or_else(|| config.sqlite_config().state_db_path());
+                std::io::Error::other(LocalStateDbStartupError::new(database_path, err))
+            })
+        }
         AppServerTarget::LocalDaemon { .. } | AppServerTarget::Remote { .. } => {
             Ok(state_db::get_state_db(config).await)
         }

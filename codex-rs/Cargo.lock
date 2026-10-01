@@ -2125,6 +2125,7 @@ dependencies = [
  "codex-prompts",
  "codex-protocol",
  "codex-queue-extension",
+ "codex-remote-backend",
  "codex-rmcp-client",
  "codex-rollout",
  "codex-sandboxing",
@@ -3156,6 +3157,7 @@ dependencies = [
  "codex-model-provider-info",
  "codex-otel",
  "codex-protocol",
+ "codex-remote-backend",
  "codex-rollout",
  "codex-utils-absolute-path",
  "codex-utils-cargo-bin",
@@ -4553,6 +4555,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-remote-backend"
+version = "0.0.0"
+dependencies = [
+ "codex-core",
+ "codex-keyring-store",
+ "codex-postgres-runtime",
+ "codex-postgres-thread-store",
+ "codex-remote-storage",
+ "codex-state",
+ "codex-storage-authority",
+ "codex-storage-migration",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "codex-remote-storage"
 version = "0.0.0"
 dependencies = [
@@ -4577,6 +4602,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -4671,6 +4697,7 @@ dependencies = [
  "codex-otel",
  "codex-protocol",
  "codex-state",
+ "codex-storage-authority",
  "codex-utils-absolute-path",
  "codex-utils-path",
  "codex-utils-process",
@@ -5100,6 +5127,7 @@ dependencies = [
  "codex-plugin",
  "codex-protocol",
  "codex-realtime-webrtc",
+ "codex-remote-backend",
  "codex-rollout",
  "codex-sandboxing",
  "codex-shell-command",

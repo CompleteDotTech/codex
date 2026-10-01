@@ -453,6 +453,9 @@ pub fn thread_store_from_config(
     config: &Config,
     state_db: Option<StateDbHandle>,
 ) -> Arc<dyn ThreadStore> {
+    if let Some(remote) = crate::remote_backend::remote_backend() {
+        return Arc::clone(&remote.thread_store);
+    }
     match &config.experimental_thread_store {
         ThreadStoreConfig::Local => {
             let compression_enabled = config
@@ -512,10 +515,14 @@ pub fn passthrough_image_store() -> Arc<dyn AttachmentStore> {
     Arc::new(InlineAttachmentStore)
 }
 
-/// Construct the default SQLite-backed agent graph store when local state is available.
+/// Construct the agent graph store: the remote one when this process runs against remote
+/// storage, otherwise the SQLite-backed one when local state is available.
 pub fn local_agent_graph_store_from_state_db(
     state_db: Option<&StateDbHandle>,
 ) -> Option<Arc<dyn AgentGraphStore>> {
+    if let Some(remote) = crate::remote_backend::remote_backend() {
+        return Some(Arc::clone(&remote.agent_graph_store));
+    }
     state_db.map(|state_db| {
         Arc::new(LocalAgentGraphStore::new(Arc::clone(state_db))) as Arc<dyn AgentGraphStore>
     })

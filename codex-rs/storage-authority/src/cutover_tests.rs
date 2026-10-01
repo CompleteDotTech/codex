@@ -145,3 +145,30 @@ fn an_intent_for_another_dataset_is_refused() {
         ))
     ));
 }
+
+#[test]
+fn authority_state_classifies_every_stage_of_a_home() {
+    let directory = tempdir().unwrap();
+    assert_eq!(
+        authority_state(directory.path()).unwrap(),
+        AuthorityState::Unmanaged
+    );
+    let local = initialize_empty_home(directory.path()).unwrap();
+    assert_eq!(
+        authority_state(directory.path()).unwrap(),
+        AuthorityState::Local(local)
+    );
+    let intent = begin_cutover(directory.path(), remote_run(), ActiveBackend::Remote).unwrap();
+    assert_eq!(
+        authority_state(directory.path()).unwrap(),
+        AuthorityState::CutoverInProgress(intent.clone())
+    );
+    let moved = complete_cutover(directory.path(), &intent).unwrap();
+    assert_eq!(
+        authority_state(directory.path()).unwrap(),
+        AuthorityState::Remote(moved)
+    );
+    // One record without the other is never interpreted.
+    std::fs::remove_file(directory.path().join(ACTIVATION_FILE)).unwrap();
+    assert!(authority_state(directory.path()).is_err());
+}

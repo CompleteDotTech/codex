@@ -33,6 +33,8 @@ pub struct StorageActivation {
     pub migrating: bool,
     /// Increases each time a verified migration is activated.
     pub generation: i64,
+    /// The dataset the last activation published; `None` before the first one.
+    pub dataset_id: Option<uuid::Uuid>,
 }
 
 /// A verified connection to one remote dataset.
@@ -112,21 +114,27 @@ impl RemoteStorage {
             .acquire()
             .await
             .map_err(RemoteStorageError::Connection)?;
-        let row = sqlx::query("SELECT state, generation FROM storage_activation WHERE singleton")
-            .fetch_one(&mut *connection)
-            .await
-            .map_err(|_| {
-                RemoteStorageError::Schema(codex_postgres_runtime::RuntimeSchemaError::Unavailable)
-            })?;
+        let row = sqlx::query(
+            "SELECT state, generation, dataset_id FROM storage_activation WHERE singleton",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|_| {
+            RemoteStorageError::Schema(codex_postgres_runtime::RuntimeSchemaError::Unavailable)
+        })?;
         let state: String = row.try_get("state").map_err(|_| {
             RemoteStorageError::Schema(codex_postgres_runtime::RuntimeSchemaError::Invalid)
         })?;
         let generation: i64 = row.try_get("generation").map_err(|_| {
             RemoteStorageError::Schema(codex_postgres_runtime::RuntimeSchemaError::Invalid)
         })?;
+        let dataset: Option<String> = row.try_get("dataset_id").map_err(|_| {
+            RemoteStorageError::Schema(codex_postgres_runtime::RuntimeSchemaError::Invalid)
+        })?;
         Ok(StorageActivation {
             migrating: state != "open",
             generation,
+            dataset_id: dataset.and_then(|value| uuid::Uuid::parse_str(&value).ok()),
         })
     }
 

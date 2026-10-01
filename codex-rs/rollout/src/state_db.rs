@@ -98,6 +98,21 @@ async fn try_init_with_roots_inner(
     default_model_provider_id: String,
     backfill_lease_seconds: Option<i64>,
 ) -> anyhow::Result<StateDbHandle> {
+    match codex_storage_authority::authority_state(&codex_home) {
+        Ok(
+            codex_storage_authority::AuthorityState::Unmanaged
+            | codex_storage_authority::AuthorityState::Local(_),
+        ) => {}
+        Ok(codex_storage_authority::AuthorityState::Remote(_)) => {
+            anyhow::bail!(
+                "remote storage is authoritative for this home, so the local state database is not opened"
+            );
+        }
+        Ok(codex_storage_authority::AuthorityState::CutoverInProgress(_)) => {
+            anyhow::bail!("a storage cutover was interrupted; recover it before starting");
+        }
+        Err(error) => anyhow::bail!("the storage authority records are unusable: {error}"),
+    }
     let runtime =
         codex_state::StateRuntime::init(sqlite.clone(), default_model_provider_id.clone())
             .await

@@ -694,7 +694,15 @@ pub async fn run_main(cli: Cli, arg0_paths: Arg0DispatchPaths) -> anyhow::Result
     let local_runtime_paths = local_runtime_paths.with_allowed_symlinked_codex_home(
         codex_config::allowed_symlinked_codex_home(&config.config_layer_stack, &config.codex_home),
     );
-    let state_db = codex_core::init_state_db(&config).await;
+    // Remote storage is chosen before any local database is touched.
+    let state_db = if codex_remote_backend::prepare_storage(&config)
+        .await
+        .map_err(|err| anyhow::anyhow!("failed to start against remote storage: {err}"))?
+    {
+        None
+    } else {
+        codex_core::init_state_db(&config).await
+    };
     let environment_manager = if run_loader_overrides.ignore_user_config {
         EnvironmentManager::from_env(
             Some(local_runtime_paths),

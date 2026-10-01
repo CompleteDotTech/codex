@@ -25,6 +25,7 @@ codex-postgres-thread-store = { workspace = true }
 codex-protocol = { workspace = true }
 codex-storage-authority = { workspace = true }
 sqlx = { workspace = true, features = ["postgres"] }
+uuid = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true }

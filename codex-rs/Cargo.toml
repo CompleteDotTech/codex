@@ -162,6 +162,7 @@ members = [
     "storage-candidate-preflight",
     "storage-migration",
     "remote-storage",
+    "remote-backend",
     "terminal-detection",
     "test-binary-support",
     "thread-manager-sample",
@@ -201,6 +202,7 @@ codex-postgres-rollout-store = { path = "postgres-rollout-store" }
 codex-postgres-runtime = { path = "postgres-runtime" }
 codex-storage-candidate-preflight = { path = "storage-candidate-preflight" }
 codex-storage-migration = { path = "storage-migration" }
+codex-remote-backend = { path = "remote-backend" }
 codex-remote-storage = { path = "remote-storage" }
 codex-agent-identity = { path = "agent-identity" }
 codex-agent-roles = { path = "agent-roles" }

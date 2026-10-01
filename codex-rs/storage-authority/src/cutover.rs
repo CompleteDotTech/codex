@@ -78,6 +78,37 @@ fn check_pair(identity: &LocalIdentity, marker: &ActivationMarker) -> Result<(),
     Ok(())
 }
 
+/// What a home's authority records say, for deciding which backend a process may start.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuthorityState {
+    /// No authority records exist: a home that predates storage authority, which stays local.
+    Unmanaged,
+    /// Local files are authoritative.
+    Local(LocalAuthority),
+    /// PostgreSQL is authoritative.
+    Remote(LocalAuthority),
+    /// A cutover was interrupted; recovery must settle it before any backend starts.
+    CutoverInProgress(CutoverIntent),
+}
+
+/// Classify a home without changing it. Partial or inconsistent records are an error, because
+/// guessing a backend from them could expose a second writable history.
+pub fn authority_state(home: &Path) -> Result<AuthorityState, AuthorityError> {
+    if let Some(intent) = read_cutover(home)? {
+        return Ok(AuthorityState::CutoverInProgress(intent));
+    }
+    let identity = home.join(IDENTITY_FILE).exists();
+    let marker = home.join(ACTIVATION_FILE).exists();
+    if !identity && !marker {
+        return Ok(AuthorityState::Unmanaged);
+    }
+    let authority = load_authority(home)?;
+    Ok(match authority.marker.active_backend {
+        ActiveBackend::Local => AuthorityState::Local(authority),
+        ActiveBackend::Remote => AuthorityState::Remote(authority),
+    })
+}
+
 /// The intent a previous run left behind, if any.
 pub fn read_cutover(home: &Path) -> Result<Option<CutoverIntent>, AuthorityError> {
     let path = home.join(CUTOVER_FILE);

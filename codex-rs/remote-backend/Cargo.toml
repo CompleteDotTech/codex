@@ -1,0 +1,32 @@
+[package]
+name = "codex-remote-backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-core = { workspace = true }
+codex-keyring-store = { workspace = true }
+codex-remote-storage = { workspace = true }
+codex-storage-authority = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+codex-postgres-runtime = { workspace = true }
+codex-postgres-thread-store = { workspace = true }
+codex-state = { workspace = true }
+codex-storage-migration = { workspace = true }
+codex-utils-absolute-path = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["postgres"] }
+uuid = { workspace = true, features = ["v4"] }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
