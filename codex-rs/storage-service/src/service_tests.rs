@@ -506,15 +506,15 @@ async fn real_postgres_storage_service() {
         Some("open")
     );
     let plan = service.plan(PlanAction::Return).await.expect("plan again");
-    let second = Uuid::new_v4();
+    let second_return = Uuid::new_v4();
     let ready = service
-        .start_return(second, plan.plan_id, confirmed)
+        .start_return(second_return, plan.plan_id, confirmed)
         .await
         .expect("second export");
     assert_eq!(ready.state, OperationState::Ready);
-    let done = service.activate(second).await.expect("return");
+    let done = service.activate(second_return).await.expect("return");
     assert_eq!(done.state, OperationState::Active);
-    assert_eq!(service.activate(second).await.expect("again"), done);
+    assert_eq!(service.activate(second_return).await.expect("again"), done);
 
     // The home is local again, the dataset is retired, and the local files hold everything.
     let status = service.status(true).await;
