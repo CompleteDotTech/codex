@@ -30,7 +30,8 @@ async fn real_postgres_validates_grown_and_replacement_connections() {
         password: std::fs::read_to_string(state.join("secrets/runtime.password"))
             .expect("read private runtime credential")
             .trim()
-            .to_string(),
+            .to_string()
+            .into(),
         ca_certificate: state.join("secrets/ca.crt"),
         limits: PoolLimits {
             connect_timeout: Duration::from_secs(5),
@@ -80,7 +81,7 @@ fn settings_debug_redacts_credentials() {
         port: 5432,
         database: "hidden_database".to_string(),
         username: "hidden_user".to_string(),
-        password: "hidden_password".to_string(),
+        password: "hidden_password".to_string().into(),
         ca_certificate: PathBuf::from("/hidden/ca.crt"),
         limits: PoolLimits {
             connect_timeout: Duration::from_secs(1),
@@ -98,7 +99,7 @@ async fn invalid_settings_fail_before_connecting() {
         port: 5432,
         database: "codex".to_string(),
         username: "codex_runtime".to_string(),
-        password: "secret".to_string(),
+        password: "secret".to_string().into(),
         ca_certificate: PathBuf::from("relative.crt"),
         limits: PoolLimits {
             connect_timeout: Duration::from_secs(1),
@@ -119,7 +120,7 @@ async fn unix_socket_host_cannot_bypass_tls() {
         port: 5432,
         database: "codex".to_string(),
         username: "codex_runtime".to_string(),
-        password: "secret".to_string(),
+        password: "secret".to_string().into(),
         ca_certificate: PathBuf::from("/trusted/ca.crt"),
         limits: PoolLimits {
             connect_timeout: Duration::from_secs(1),
@@ -140,7 +141,7 @@ async fn excessive_pool_limits_are_rejected() {
         port: 5432,
         database: "codex".to_string(),
         username: "codex_runtime".to_string(),
-        password: "secret".to_string(),
+        password: "secret".to_string().into(),
         ca_certificate: PathBuf::from("/trusted/ca.crt"),
         limits: PoolLimits {
             connect_timeout: Duration::from_secs(31),

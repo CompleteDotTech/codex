@@ -21,6 +21,7 @@ sqlx-macros = { workspace = true }
 sqlx-postgres = { workspace = true }
 sqlx-sqlite = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }

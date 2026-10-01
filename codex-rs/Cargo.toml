@@ -150,6 +150,7 @@ members = [
     "codex-api",
     "state",
     "storage-authority",
+    "storage-candidate-preflight",
     "terminal-detection",
     "test-binary-support",
     "thread-manager-sample",
@@ -178,6 +179,7 @@ codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-postgres-import-store = { path = "postgres-import-store" }
 codex-postgres-runtime = { path = "postgres-runtime" }
+codex-storage-candidate-preflight = { path = "storage-candidate-preflight" }
 codex-agent-identity = { path = "agent-identity" }
 codex-agent-roles = { path = "agent-roles" }
 codex-ansi-escape = { path = "ansi-escape" }
