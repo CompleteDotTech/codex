@@ -100,6 +100,7 @@ members = [
     "postgres-thread-catalog",
     "postgres-thread-rows",
     "postgres-queue-store",
+    "postgres-rollout-store",
     "postgres-runtime",
     "realtime-webrtc",
     "voice-host",
@@ -192,6 +193,7 @@ codex-postgres-message-board = { path = "postgres-message-board" }
 codex-postgres-thread-catalog = { path = "postgres-thread-catalog" }
 codex-postgres-thread-rows = { path = "postgres-thread-rows" }
 codex-postgres-queue-store = { path = "postgres-queue-store" }
+codex-postgres-rollout-store = { path = "postgres-rollout-store" }
 codex-postgres-runtime = { path = "postgres-runtime" }
 codex-storage-candidate-preflight = { path = "storage-candidate-preflight" }
 codex-agent-identity = { path = "agent-identity" }

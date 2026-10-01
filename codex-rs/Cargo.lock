@@ -4348,6 +4348,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-postgres-rollout-store"
+version = "0.0.0"
+dependencies = [
+ "codex-postgres-runtime",
+ "codex-postgres-thread-catalog",
+ "codex-protocol",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "codex-postgres-runtime"
 version = "0.0.0"
 dependencies = [

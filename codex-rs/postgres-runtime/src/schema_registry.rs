@@ -189,6 +189,14 @@ pub(crate) const PROTECTED_TABLES: &[ProtectedTable] = &[
             "idx_thread_attachments_thread_created_id",
         ],
     },
+    ProtectedTable {
+        name: "thread_rollout_lines",
+        runtime_privileges: "SELECT, INSERT, DELETE",
+        indexes: &[
+            "thread_rollout_lines_pkey",
+            "idx_thread_rollout_lines_ordinal",
+        ],
+    },
 ];
 
 /// What a migration must look like before its schema qualifier is rewritten for a named
@@ -466,6 +474,20 @@ CREATE TABLE codex_storage.thread_attachments (
 ",
             "
 CREATE INDEX idx_thread_attachments_thread_created_id
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 4,
+    },
+    MigrationShape {
+        version: 16,
+        starts_with: Some("-- Inactive canonical rollout storage"),
+        contains: &[
+            "
+CREATE TABLE codex_storage.thread_rollout_lines (
+",
+            "
+CREATE INDEX idx_thread_rollout_lines_ordinal
 ",
             META_UPDATE,
         ],

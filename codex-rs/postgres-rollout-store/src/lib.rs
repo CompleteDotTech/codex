@@ -1,0 +1,7 @@
+//! Unwired fixed-namespace PostgreSQL canonical storage for rollout lines.
+
+mod store;
+
+pub use store::PostgresRolloutStore;
+pub use store::RolloutStoreError;
+pub use store::StoredRolloutLine;
