@@ -1,6 +1,7 @@
 use super::*;
 use chrono::DateTime;
 use chrono::Utc;
+use codex_postgres_rollout_store::PostgresRolloutStore;
 use codex_postgres_runtime::ConnectionSettings;
 use codex_postgres_runtime::PoolLimits;
 use codex_postgres_runtime::bootstrap_codex_storage;
@@ -85,13 +86,22 @@ async fn reset_target(pool: &PostgresPool) {
 }
 
 fn metadata(index: i64, base: DateTime<Utc>, source: SessionSource) -> ThreadMetadata {
-    let created = base + chrono::Duration::seconds(index * 11);
-    let mut builder = ThreadMetadataBuilder::new(
-        ThreadId::new(),
-        PathBuf::from(format!("/source-host/rollouts/thread-{index}.jsonl")),
-        created,
+    metadata_at(
+        index,
+        base,
         source,
-    );
+        PathBuf::from(format!("/source-host/rollouts/thread-{index}.jsonl")),
+    )
+}
+
+fn metadata_at(
+    index: i64,
+    base: DateTime<Utc>,
+    source: SessionSource,
+    rollout_path: PathBuf,
+) -> ThreadMetadata {
+    let created = base + chrono::Duration::seconds(index * 11);
+    let mut builder = ThreadMetadataBuilder::new(ThreadId::new(), rollout_path, created, source);
     builder.updated_at = Some(created + chrono::Duration::seconds(7));
     builder.cwd = PathBuf::from(format!("/source-host/work/{index}"));
     builder.git_branch = Some(format!("branch-{index}"));
@@ -145,7 +155,12 @@ async fn populate(home: &Path) -> Vec<ThreadMetadata> {
     let base = Utc::now() - chrono::Duration::days(3);
     let mut threads: Vec<ThreadMetadata> = Vec::new();
     for index in 0..9 {
-        let mut thread = metadata(index, base, SessionSource::Cli);
+        let mut thread = metadata_at(
+            index,
+            base,
+            SessionSource::Cli,
+            home.join(format!("rollouts/thread-{index}.jsonl")),
+        );
         if index >= 6 {
             thread.source =
                 serde_json::to_string(&SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
@@ -268,6 +283,42 @@ async fn populate(home: &Path) -> Vec<ThreadMetadata> {
         )
         .await
         .expect("archive");
+    std::fs::create_dir_all(home.join("rollouts")).expect("rollouts directory");
+    let header = |thread: &ThreadMetadata, history_base: serde_json::Value| {
+        serde_json::json!({
+            "timestamp": "2026-09-18T12:00:00Z",
+            "type": "session_meta",
+            "payload": {"id": thread.id.to_string(), "history_base": history_base},
+        })
+        .to_string()
+    };
+    let parent_lines = [
+        header(&threads[0], serde_json::Value::Null),
+        r#"{"timestamp":"2026-09-18T12:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"héllo 🦀"}}"#.to_string(),
+        r#"{"timestamp":"2026-09-18T12:00:02Z","type":"event_msg","payload":{"type":"agent_message","message":"two"}}"#.to_string(),
+    ];
+    std::fs::write(
+        threads[0].rollout_path.clone(),
+        format!("{}\n", parent_lines.join("\n")),
+    )
+    .expect("parent rollout");
+    // The fork inherits the first two parent records and writes its own after them.
+    let fork_lines = [
+        header(
+            &threads[1],
+            serde_json::json!({
+                "thread_id": threads[0].id.to_string(),
+                "end_ordinal_exclusive": 2,
+                "end_byte_offset": 0
+            }),
+        ),
+        r#"{"timestamp":"2026-09-18T12:00:03Z","type":"event_msg","payload":{"type":"user_message","message":"fork"}}"#.to_string(),
+    ];
+    std::fs::write(
+        threads[1].rollout_path.clone(),
+        format!("{}\n\n", fork_lines.join("\n")),
+    )
+    .expect("fork rollout");
     let run = Uuid::new_v4();
     let entries: Vec<LogEntry> = (0..5)
         .map(|index| LogEntry {
@@ -400,6 +451,7 @@ async fn real_postgres_catalog_migration() {
             ("threads", 9),
             ("attachments", 6),
             ("spawn_edges", 3),
+            ("rollouts", 9),
             ("goals", 2),
             ("queued_items", 4),
             ("queue_revisions", 2),
@@ -430,6 +482,31 @@ async fn real_postgres_catalog_migration() {
         );
     }
     drop(runtime);
+    let rollouts = PostgresRolloutStore::new(pool.clone());
+    let expected_fork = {
+        let parent = std::fs::read_to_string(&threads[0].rollout_path).expect("parent");
+        let fork = std::fs::read_to_string(&threads[1].rollout_path).expect("fork");
+        parent
+            .lines()
+            .take(2)
+            .chain(fork.lines().filter(|line| !line.is_empty()))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        rollouts
+            .read_all(threads[1].id)
+            .await
+            .expect("fork lines")
+            .into_iter()
+            .map(|stored| stored.line)
+            .collect::<Vec<_>>(),
+        expected_fork
+    );
+    assert_eq!(
+        rollouts.next_position(threads[2].id).await.expect("empty"),
+        0
+    );
 
     // A second run on a populated target is refused, a changed source fails verification, and a
     // tampered row is caught.

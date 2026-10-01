@@ -15,6 +15,7 @@ mod logs;
 mod memory;
 mod projects;
 mod queue;
+mod rollouts;
 mod sections;
 mod source;
 mod threads;

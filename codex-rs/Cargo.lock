@@ -4899,6 +4899,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "codex-postgres-rollout-store",
  "codex-postgres-runtime",
  "codex-postgres-thread-catalog",
  "codex-protocol",

@@ -26,6 +26,7 @@ use crate::projects::ProjectKeys;
 use crate::projects::Projects;
 use crate::queue::QueueRevisions;
 use crate::queue::QueuedItems;
+use crate::rollouts::Rollouts;
 use crate::sections::Sections;
 use crate::source::SqliteSource;
 use crate::threads::Threads;
@@ -65,6 +66,10 @@ macro_rules! with_domain {
             }
             Domain::SpawnEdges => {
                 type $ops = SpawnEdges;
+                $body
+            }
+            Domain::Rollouts => {
+                type $ops = Rollouts;
                 $body
             }
             Domain::Goals => {

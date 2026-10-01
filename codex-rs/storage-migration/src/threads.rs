@@ -177,7 +177,16 @@ impl DomainOps for Threads {
         .bind(i64::try_from(limit)?)
         .fetch_all(&pool)
         .await?;
-        rows.iter().map(from_sqlite).collect()
+        // PostgreSQL stores every thread with the legacy history contract, and the rollout
+        // import writes the complete logical history, so the mode is part of the conversion.
+        rows.iter()
+            .map(|row| {
+                from_sqlite(row).map(|mut record| {
+                    record.history_mode = "legacy".to_string();
+                    record
+                })
+            })
+            .collect()
     }
 
     async fn import(connection: &mut PgConnection, records: &[ThreadRecord]) -> Result<()> {

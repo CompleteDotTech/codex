@@ -26,6 +26,7 @@ tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4", "v7"] }
 
 [dev-dependencies]
+codex-postgres-rollout-store = { workspace = true }
 codex-postgres-thread-catalog = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 pretty_assertions = { workspace = true }
