@@ -194,8 +194,8 @@ async fn real_postgres_remote_backend_selection() {
         prepare_storage_with(&config, &keyring).await,
         Err(RemoteBackendError::AlreadyInstalled)
     );
-    // The local state database is never opened for a remote home.
+    // The local state database is never opened for a remote home, even though the migrated
+    // source files are still there.
     assert!(codex_core::init_state_db(&config).await.is_none());
-    assert!(!home.join("state_5.sqlite").exists());
     reset_target(&pool).await;
 }
