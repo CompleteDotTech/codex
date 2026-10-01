@@ -7,6 +7,9 @@ use crate::bootstrap::BASE_MIGRATOR;
 use crate::bootstrap::BOOTSTRAP_TIMEOUT;
 use crate::bootstrap::LOCK_CLASS;
 use crate::bootstrap::LOCK_RESOURCE;
+use crate::schema_registry::MIGRATION_SHAPES;
+use crate::schema_registry::PROTECTED_TABLES;
+use crate::schema_registry::known_relations;
 use sqlx::Acquire;
 use sqlx::AssertSqlSafe;
 use sqlx::SqlSafeStr;
@@ -27,84 +30,26 @@ fn classify(error: &sqlx::Error) -> BootstrapError {
 pub(crate) fn namespaced_migrations(
     namespace: &NamedNamespace,
 ) -> Result<Vec<Migration>, BootstrapError> {
-    let [metadata, graph, imports, threads, sections, ownership] =
-        BASE_MIGRATOR.migrations.as_ref()
-    else {
-        return Err(BootstrapError::Migration);
-    };
-    let source = metadata.sql.as_str();
-    // Version 1 has exactly two schema-qualified identifiers: CREATE and INSERT.
-    // A changed SQL layout needs a new review before identifier substitution.
-    if metadata.version != 1
-        || metadata.no_tx
-        || !source.starts_with("CREATE TABLE codex_storage.codex_schema_meta (")
-        || !source.contains("\nINSERT INTO codex_storage.codex_schema_meta\n")
-        || source.matches("codex_storage.").count() != 2
-    {
+    let base = BASE_MIGRATOR.migrations.as_ref();
+    if base.len() != MIGRATION_SHAPES.len() {
         return Err(BootstrapError::Migration);
     }
-    let graph_source = graph.sql.as_str();
-    // Version 2 has only the reviewed table, index target and metadata update.
-    if graph.version != 2
-        || graph.no_tx
-        || !graph_source.starts_with("CREATE TABLE codex_storage.thread_spawn_edges (")
-        || !graph_source.contains("\n    ON codex_storage.thread_spawn_edges (")
-        || !graph_source.contains("\nUPDATE codex_storage.codex_schema_meta\n")
-        || graph_source.matches("codex_storage.").count() != 3
-    {
-        return Err(BootstrapError::Migration);
-    }
-    let imports_source = imports.sql.as_str();
-    // Version 3 has only the reviewed table, index target and metadata update.
-    if imports.version != 3
-        || imports.no_tx
-        || !imports_source.starts_with("CREATE TABLE codex_storage.external_agent_config_imports (")
-        || !imports_source.contains("\n    ON codex_storage.external_agent_config_imports (")
-        || !imports_source.contains("\nUPDATE codex_storage.codex_schema_meta\n")
-        || imports_source.matches("codex_storage.").count() != 3
-    {
-        return Err(BootstrapError::Migration);
-    }
-    let threads_source = threads.sql.as_str();
-    // Version 4 has only the reviewed table, index target, and metadata update.
-    if threads.version != 4
-        || threads.no_tx
-        || !threads_source.contains("\nCREATE TABLE codex_storage.threads (\n")
-        || !threads_source
-            .contains("\n    ON codex_storage.threads (recency_at_ms DESC, id DESC);\n")
-        || !threads_source.contains("\nUPDATE codex_storage.codex_schema_meta\n")
-        || threads_source.matches("codex_storage.").count() != 3
-    {
-        return Err(BootstrapError::Migration);
-    }
-    let sections_source = sections.sql.as_str();
-    // Version 5 has the reviewed table, pinned insert, FK, two indexes and metadata update.
-    if sections.version != 5
-        || sections.no_tx
-        || !sections_source.starts_with("CREATE TABLE codex_storage.thread_sections (\n")
-        || !sections_source.contains("\nINSERT INTO codex_storage.thread_sections (id, name)\n")
-        || !sections_source.contains("\nALTER TABLE codex_storage.threads\n")
-        || !sections_source
-            .contains("\n    REFERENCES codex_storage.thread_sections (id) ON DELETE SET NULL;\n")
-        || !sections_source.contains("\n    ON codex_storage.threads (thread_section_id COLLATE")
-        || !sections_source.contains("\nUPDATE codex_storage.codex_schema_meta\n")
-        || sections_source.matches("codex_storage.").count() != 7
-    {
-        return Err(BootstrapError::Migration);
-    }
-    let ownership_source = ownership.sql.as_str();
-    if ownership.version != 6
-        || ownership.no_tx
-        || !ownership_source.starts_with("-- Inactive ownership record.")
-        || !ownership_source.contains("\nCREATE TABLE codex_storage.thread_writer_ownership (\n")
-        || !ownership_source.contains("\nUPDATE codex_storage.codex_schema_meta\n")
-        || ownership_source.matches("codex_storage.").count() != 2
-    {
-        return Err(BootstrapError::Migration);
+    for (migration, shape) in base.iter().zip(MIGRATION_SHAPES) {
+        let source = migration.sql.as_str();
+        if migration.version != shape.version
+            || migration.no_tx
+            || shape
+                .starts_with
+                .is_some_and(|opening| !source.starts_with(opening))
+            || shape.contains.iter().any(|needle| !source.contains(needle))
+            || source.matches("codex_storage.").count() != shape.qualified_identifiers
+        {
+            return Err(BootstrapError::Migration);
+        }
     }
     let qualified_prefix = format!("{}.", namespace.quoted_schema());
-    Ok([metadata, graph, imports, threads, sections, ownership]
-        .into_iter()
+    Ok(base
+        .iter()
         .map(|base| {
             let sql = base
                 .sql
@@ -163,9 +108,10 @@ pub async fn bootstrap_named_namespace(
             return Err(BootstrapError::IncompatibleNamespace);
         }
         let unexpected_objects: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND relname NOT IN ('_codex_pg_migrations', '_codex_pg_migrations_pkey', 'codex_schema_meta', 'codex_schema_meta_pkey', 'thread_spawn_edges', 'thread_spawn_edges_pkey', 'idx_thread_spawn_edges_parent_status', 'external_agent_config_imports', 'external_agent_config_imports_pkey', 'idx_external_agent_config_imports_history', 'threads', 'threads_pkey', 'idx_threads_recency_id', 'thread_sections', 'thread_sections_pkey', 'idx_threads_section_recency', 'idx_threads_section_position', 'thread_writer_ownership', 'thread_writer_ownership_pkey')) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND typtype <> 'b' AND typrelid = 0)",
+                "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND relname <> ALL($2)) OR EXISTS (SELECT 1 FROM pg_proc WHERE pronamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)) OR EXISTS (SELECT 1 FROM pg_type WHERE typnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1) AND typtype <> 'b' AND typrelid = 0)",
         )
         .bind(&namespace.schema)
+        .bind(known_relations())
         .fetch_one(&mut *transaction)
         .await
         .map_err(|error| classify(&error))?;
@@ -227,76 +173,26 @@ pub async fn bootstrap_named_namespace(
             .run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
             .await
             .map_err(|_| BootstrapError::Migration)?;
-        sqlx::query(AssertSqlSafe(format!(
-            "REVOKE ALL ON {qualified_schema}.\"thread_spawn_edges\" FROM {}",
-            namespace.quoted_runtime()
-        )))
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| classify(&error))?;
-        sqlx::query(AssertSqlSafe(format!(
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON {qualified_schema}.\"thread_spawn_edges\" TO {}",
-            namespace.quoted_runtime()
-        )))
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| classify(&error))?;
-        sqlx::query(AssertSqlSafe(format!(
-            "REVOKE ALL ON {qualified_schema}.\"external_agent_config_imports\" FROM {}",
-            namespace.quoted_runtime()
-        )))
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| classify(&error))?;
-        sqlx::query(AssertSqlSafe(format!(
-            "GRANT SELECT, INSERT, UPDATE ON {qualified_schema}.\"external_agent_config_imports\" TO {}",
-            namespace.quoted_runtime()
-        )))
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| classify(&error))?;
-        sqlx::query(AssertSqlSafe(format!(
-            "REVOKE ALL ON {qualified_schema}.\"threads\" FROM {}",
-            namespace.quoted_runtime()
-        )))
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| classify(&error))?;
-        sqlx::query(AssertSqlSafe(format!(
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON {qualified_schema}.\"threads\" TO {}",
-            namespace.quoted_runtime()
-        )))
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| classify(&error))?;
-        sqlx::query(AssertSqlSafe(format!(
-            "REVOKE ALL ON {qualified_schema}.\"thread_sections\" FROM {}",
-            namespace.quoted_runtime()
-        )))
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| classify(&error))?;
-        sqlx::query(AssertSqlSafe(format!(
-            "GRANT SELECT, INSERT, UPDATE, DELETE ON {qualified_schema}.\"thread_sections\" TO {}",
-            namespace.quoted_runtime()
-        )))
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| classify(&error))?;
-        sqlx::query(AssertSqlSafe(format!(
-            "REVOKE ALL ON {qualified_schema}.\"thread_writer_ownership\" FROM {}",
-            namespace.quoted_runtime()
-        )))
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| classify(&error))?;
-        sqlx::query(AssertSqlSafe(format!(
-            "GRANT SELECT, INSERT, UPDATE ON {qualified_schema}.\"thread_writer_ownership\" TO {}",
-            namespace.quoted_runtime()
-        )))
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| classify(&error))?;
+        for table in PROTECTED_TABLES {
+            for statement in [
+                format!(
+                    "REVOKE ALL ON {qualified_schema}.\"{}\" FROM {}",
+                    table.name,
+                    namespace.quoted_runtime()
+                ),
+                format!(
+                    "GRANT {} ON {qualified_schema}.\"{}\" TO {}",
+                    table.runtime_privileges,
+                    table.name,
+                    namespace.quoted_runtime()
+                ),
+            ] {
+                sqlx::query(AssertSqlSafe(statement))
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(|error| classify(&error))?;
+            }
+        }
         sqlx::query(AssertSqlSafe(format!(
             "REVOKE ALL ON {qualified_schema}.\"codex_schema_meta\" FROM {}",
             namespace.quoted_runtime()

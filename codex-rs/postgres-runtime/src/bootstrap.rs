@@ -3,6 +3,7 @@
 use crate::PoolError;
 use crate::PostgresPool;
 use sqlx::Acquire;
+use sqlx::AssertSqlSafe;
 use sqlx::PgConnection;
 use sqlx::Row;
 use sqlx::migrate::MigrateError;
@@ -22,7 +23,10 @@ const MIGRATIONS_TABLE: &str = "codex_storage._codex_pg_migrations";
 pub(crate) static BASE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
 
 pub(crate) fn history_matches(rows: &[PgRow], migrations: &[Migration], format: i32) -> bool {
-    if !matches!(format, 1..=6) || rows.len() != format as usize || rows.len() > migrations.len() {
+    if !crate::schema_registry::supported_format(format)
+        || rows.len() != format as usize
+        || rows.len() > migrations.len()
+    {
         return false;
     }
     rows.iter().zip(migrations).all(|(row, migration)| {
@@ -33,29 +37,6 @@ pub(crate) fn history_matches(rows: &[PgRow], migrations: &[Migration], format: 
                 .is_ok_and(|checksum| checksum.as_slice() == migration.checksum.as_ref())
     })
 }
-
-/// Every relation the embedded migrations may create in `codex_storage`, including indexes.
-pub(crate) const KNOWN_RELATIONS: &[&str] = &[
-    "_codex_pg_migrations",
-    "_codex_pg_migrations_pkey",
-    "codex_schema_meta",
-    "codex_schema_meta_pkey",
-    "thread_spawn_edges",
-    "thread_spawn_edges_pkey",
-    "idx_thread_spawn_edges_parent_status",
-    "external_agent_config_imports",
-    "external_agent_config_imports_pkey",
-    "idx_external_agent_config_imports_history",
-    "threads",
-    "threads_pkey",
-    "idx_threads_recency_id",
-    "thread_sections",
-    "thread_sections_pkey",
-    "idx_threads_section_recency",
-    "idx_threads_section_position",
-    "thread_writer_ownership",
-    "thread_writer_ownership_pkey",
-];
 
 /// Whether the recorded history is exactly the first `format` embedded migrations.
 ///
@@ -466,7 +447,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         // default ACLs are policy; effective table privileges are checked below.
         let unexpected_objects = namespace_has_unexpected_objects(
             &mut transaction,
-            KNOWN_RELATIONS,
+            &crate::schema_registry::known_relations(),
         ).await?;
         if unexpected_objects {
             return Err(BootstrapError::IncompatibleNamespace);
@@ -636,66 +617,24 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
             .await
             .map_err(classify_migration)?;
-        sqlx::query("REVOKE ALL ON codex_storage.thread_spawn_edges FROM codex_runtime, codex_backup")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("GRANT SELECT, INSERT, UPDATE, DELETE ON codex_storage.thread_spawn_edges TO codex_runtime")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("GRANT SELECT ON codex_storage.thread_spawn_edges TO codex_backup")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("REVOKE ALL ON codex_storage.external_agent_config_imports FROM codex_runtime, codex_backup")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("GRANT SELECT, INSERT, UPDATE ON codex_storage.external_agent_config_imports TO codex_runtime")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("GRANT SELECT ON codex_storage.external_agent_config_imports TO codex_backup")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("REVOKE ALL ON codex_storage.threads FROM codex_runtime, codex_backup")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("GRANT SELECT, INSERT, UPDATE, DELETE ON codex_storage.threads TO codex_runtime")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("GRANT SELECT ON codex_storage.threads TO codex_backup")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("REVOKE ALL ON codex_storage.thread_sections FROM codex_runtime, codex_backup")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("GRANT SELECT, INSERT, UPDATE, DELETE ON codex_storage.thread_sections TO codex_runtime")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("GRANT SELECT ON codex_storage.thread_sections TO codex_backup")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("REVOKE ALL ON codex_storage.thread_writer_ownership FROM codex_runtime, codex_backup")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("GRANT SELECT, INSERT, UPDATE ON codex_storage.thread_writer_ownership TO codex_runtime")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
-        sqlx::query("GRANT SELECT ON codex_storage.thread_writer_ownership TO codex_backup")
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| classify_sqlx(&error))?;
+        for table in crate::schema_registry::PROTECTED_TABLES {
+            for statement in [
+                format!(
+                    "REVOKE ALL ON codex_storage.{} FROM codex_runtime, codex_backup",
+                    table.name
+                ),
+                format!(
+                    "GRANT {} ON codex_storage.{} TO codex_runtime",
+                    table.runtime_privileges, table.name
+                ),
+                format!("GRANT SELECT ON codex_storage.{} TO codex_backup", table.name),
+            ] {
+                sqlx::query(AssertSqlSafe(statement))
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(|error| classify_sqlx(&error))?;
+            }
+        }
         // The fixture's default grants are broad; metadata and history must be immutable to runtime.
         sqlx::query("REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime")
             .execute(&mut *transaction)
@@ -724,7 +663,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         require_safe_protected_privileges(&mut transaction).await?;
         let unexpected_objects = namespace_has_unexpected_objects(
             &mut transaction,
-            KNOWN_RELATIONS,
+            &crate::schema_registry::known_relations(),
         )
         .await?;
         if unexpected_objects {
