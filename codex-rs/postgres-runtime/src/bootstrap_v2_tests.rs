@@ -9,6 +9,24 @@ use crate::check_codex_storage_compatibility;
 use serde_json::Value;
 use std::path::Path;
 
+/// Applies the metadata and history grants a real bootstrap leaves behind, so hand-built older
+/// formats pass the protected-privilege check the preflight now enforces.
+async fn harden_metadata_grants(transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>) {
+    for statement in [
+        "REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime",
+        "GRANT SELECT ON codex_storage.codex_schema_meta TO codex_runtime",
+        "GRANT SELECT ON codex_storage.codex_schema_meta TO codex_backup",
+        "REVOKE ALL ON codex_storage._codex_pg_migrations FROM codex_runtime, codex_backup",
+        "GRANT SELECT ON codex_storage._codex_pg_migrations TO codex_backup",
+        "GRANT USAGE ON SCHEMA codex_storage TO codex_runtime, codex_backup",
+    ] {
+        sqlx::query(statement)
+            .execute(&mut **transaction)
+            .await
+            .expect("apply bootstrap metadata grants to older fixture");
+    }
+}
+
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
     let receipt: Value = serde_json::from_slice(
         &std::fs::read(state.join("receipt.json")).expect("read isolated PostgreSQL receipt"),
@@ -66,6 +84,7 @@ async fn real_v1_upgrade_through_graph_and_import_schemas_is_atomic() {
     v1.run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
         .await
         .expect("materialize exact embedded v1 migration");
+    harden_metadata_grants(&mut transaction).await;
     transaction.commit().await.expect("commit v1 fixture");
     drop(connection);
 
@@ -237,6 +256,7 @@ async fn real_v2_upgrade_to_import_schema_is_atomic_and_role_scoped() {
     v2.run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
         .await
         .expect("materialize exact v2 migration prefix");
+    harden_metadata_grants(&mut transaction).await;
     transaction.commit().await.expect("commit v2 fixture");
     drop(connection);
     let old = ClientCapabilities {
@@ -388,6 +408,7 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
     v3.run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
         .await
         .expect("materialize exact v3 migration prefix");
+    harden_metadata_grants(&mut transaction).await;
     transaction.commit().await.expect("commit v3 fixture");
     drop(connection);
     let old = ClientCapabilities {
