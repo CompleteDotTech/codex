@@ -289,3 +289,6 @@ impl PostgresPool {
 #[cfg(test)]
 #[path = "lib_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+mod exclusive_fixture;
