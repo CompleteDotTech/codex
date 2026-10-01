@@ -12,6 +12,12 @@ mod projects;
 mod read_thread;
 mod revert_thread;
 mod rollout_migration;
+mod rollout_move_file;
+mod rollout_move_identity;
+#[allow(dead_code)]
+mod rollout_move_noclobber_rename;
+mod rollout_move_path_json;
+mod rollout_move_transaction;
 // This lands before the reader PRs that consume the shared lineage resolver.
 #[allow(dead_code)]
 mod rollout_lineage;
@@ -38,6 +44,9 @@ mod pending_thread_metadata_tests;
 mod read_thread_tests;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+#[path = "timestamp_metadata_tests.rs"]
+mod timestamp_metadata_tests;
 
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;
@@ -306,6 +315,12 @@ impl LocalThreadStore {
         include_archived: bool,
         include_history: bool,
     ) -> ThreadStoreResult<StoredThread> {
+        let _read_guard =
+            if let Some(thread_id) = helpers::thread_id_from_rollout_path(&rollout_path) {
+                Some(self.prepare_thread_read(thread_id).await?)
+            } else {
+                None
+            };
         read_thread::read_thread_by_rollout_path(
             self,
             rollout_path,
@@ -387,10 +402,36 @@ impl LocalThreadStore {
         }
     }
 
+    async fn prepare_thread_read(
+        &self,
+        thread_id: ThreadId,
+    ) -> ThreadStoreResult<OwnedRwLockReadGuard<()>> {
+        loop {
+            let lifecycle_guard = self.live_writer_locks.reserve_lifecycle(thread_id).await;
+            let has_pending = rollout_move_transaction::pending_move_exists(
+                self.config.codex_home.as_path(),
+                thread_id,
+            )
+            .map_err(|err| ThreadStoreError::Internal {
+                message: format!("failed to check pending rollout move: {err}"),
+            })?;
+            if !has_pending {
+                return Ok(lifecycle_guard);
+            }
+            drop(lifecycle_guard);
+            let _lifecycle_guard = self.live_writer_locks.lock_lifecycle(thread_id).await;
+            let _live_writer_guard = self.live_writer_locks.lock(thread_id).await;
+            self.ensure_live_recorder_absent(thread_id).await?;
+            let _writer_guard = self.acquire_writer_lock(thread_id)?;
+            rollout_move_transaction::replay_pending_move(self, thread_id).await?;
+        }
+    }
+
     async fn load_history(
         &self,
         params: LoadThreadHistoryParams,
     ) -> ThreadStoreResult<StoredThreadHistory> {
+        let _read_guard = self.prepare_thread_read(params.thread_id).await?;
         if let Ok(rollout_path) = live_writer::rollout_path(self, params.thread_id).await {
             if !params.include_archived
                 && helpers::rollout_path_is_archived(
@@ -434,8 +475,7 @@ impl LocalThreadStore {
         &self,
         params: ReadThreadByRolloutPathParams,
     ) -> ThreadStoreResult<StoredThread> {
-        read_thread::read_thread_by_rollout_path(
-            self,
+        self.read_thread_by_rollout_path(
             params.rollout_path,
             params.include_archived,
             params.include_history,
@@ -571,7 +611,10 @@ impl ThreadStore for LocalThreadStore {
         &self,
         params: LoadThreadHistoryParams,
     ) -> ThreadStoreFuture<'_, StoredModelContext> {
-        Box::pin(async move { model_context::load_latest_model_context(self, params).await })
+        Box::pin(async move {
+            let _read_guard = self.prepare_thread_read(params.thread_id).await?;
+            model_context::load_latest_model_context(self, params).await
+        })
     }
 
     fn prepare_fork(&self, params: PrepareForkParams) -> ThreadStoreFuture<'_, PreparedFork> {
@@ -583,7 +626,10 @@ impl ThreadStore for LocalThreadStore {
     }
 
     fn read_thread(&self, params: ReadThreadParams) -> ThreadStoreFuture<'_, StoredThread> {
-        Box::pin(async move { read_thread::read_thread(self, params).await })
+        Box::pin(async move {
+            let _read_guard = self.prepare_thread_read(params.thread_id).await?;
+            read_thread::read_thread(self, params).await
+        })
     }
 
     fn read_thread_by_rollout_path(
