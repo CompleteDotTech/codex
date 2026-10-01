@@ -4,7 +4,6 @@ use super::helpers::owned_rollout_paths;
 use super::helpers::rollout_path_is_archived;
 use super::helpers::scoped_rollout_path;
 use super::helpers::validated_rollout_file_name;
-use super::rollout_move_file::move_rollout_noclobber_retained;
 use super::rollout_move_file::touch_modified_time;
 use crate::ArchiveThreadParams;
 use crate::ReadThreadParams;
@@ -117,12 +116,11 @@ pub(super) async fn unarchive_thread(
     .map_err(|err| ThreadStoreError::Internal {
         message: format!("failed to record unarchive move: {err}"),
     })?;
-    for (source, destination) in &rollout_moves {
-        move_rollout_noclobber_retained(source, destination, store.config.codex_home.as_path())
-            .map_err(|err| ThreadStoreError::Internal {
-                message: format!("failed to unarchive thread: {err}"),
-            })?;
-    }
+    pending
+        .move_all(store.config.codex_home.as_path())
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to unarchive thread: {err}"),
+        })?;
     if let Err(err) = touch_modified_time(restored_path.as_path()) {
         return Err(ThreadStoreError::Internal {
             message: format!("failed to update unarchived thread timestamp: {err}"),

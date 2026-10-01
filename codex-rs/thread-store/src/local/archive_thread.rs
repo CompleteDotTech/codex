@@ -4,7 +4,6 @@ use super::helpers::owned_rollout_paths_from_index;
 use super::helpers::rollout_path_is_archived;
 use super::helpers::scoped_rollout_path;
 use super::helpers::validated_rollout_file_name;
-use super::rollout_move_file::move_rollout_noclobber_retained;
 use crate::ArchiveThreadsParams;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
@@ -149,12 +148,11 @@ async fn archive_thread_with_paths(
     .map_err(|err| ThreadStoreError::Internal {
         message: format!("failed to record archive move: {err}"),
     })?;
-    for (source, destination) in &rollout_moves {
-        move_rollout_noclobber_retained(source, destination, store.config.codex_home.as_path())
-            .map_err(|err| ThreadStoreError::Internal {
-                message: format!("failed to archive thread: {err}"),
-            })?;
-    }
+    pending
+        .move_all(store.config.codex_home.as_path())
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to archive thread: {err}"),
+        })?;
 
     if let Some(ctx) = state_db_ctx
         && let Err(err) = ctx
@@ -193,7 +191,8 @@ mod tests {
     use crate::ThreadSortKey;
     use crate::ThreadStore;
     use crate::local::LocalThreadStore;
-    use crate::local::rollout_move_file::move_rollout_noclobber;
+    #[cfg(unix)]
+    use crate::local::rollout_move_file::tests::move_rollout_noclobber;
     use crate::local::test_support::test_config;
     use crate::local::test_support::write_archived_session_file;
     use crate::local::test_support::write_session_file;

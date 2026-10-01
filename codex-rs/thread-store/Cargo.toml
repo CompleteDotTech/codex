@@ -26,6 +26,7 @@ codex-state = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-path = { workspace = true }
 codex-utils-path-uri = { workspace = true }
+dunce = { workspace = true }
 futures = { workspace = true }
 libc = { workspace = true }
 pulldown-cmark = { workspace = true }
