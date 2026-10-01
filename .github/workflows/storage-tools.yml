@@ -88,6 +88,8 @@ jobs:
       - name: Seed owned restore metadata fixture without production bootstrap
         shell: bash
         run: python scripts/postgres/tests/seed_restore_metadata.py --state "$CODEX_TEST_POSTGRES_STATE" --owned-disposable
+      - name: Verify archive cleanup after uncertain source mutations
+        run: python -m unittest discover -s scripts/postgres/tests -p test_restore_archive_cleanup_live.py -v
       - name: Qualify transactional restore guard
         shell: bash
         run: |
