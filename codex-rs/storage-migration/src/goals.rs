@@ -4,6 +4,7 @@ use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::source::SourceDatabase;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -143,5 +144,35 @@ impl DomainOps for Goals {
                 })
             })
             .collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[GoalRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT OR REPLACE INTO thread_goals (thread_id, goal_id, objective, status, \
+                 token_budget, tokens_used, time_used_seconds, created_at_ms, updated_at_ms) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&record.thread_id)
+            .bind(&record.goal_id)
+            .bind(&record.objective)
+            .bind(&record.status)
+            .bind(record.token_budget)
+            .bind(record.tokens_used)
+            .bind(record.time_used_seconds)
+            .bind(record.created_at_ms)
+            .bind(record.updated_at_ms)
+            .execute(&target.goals)
+            .await?;
+            if record.deferred {
+                sqlx::query(
+                    "INSERT OR IGNORE INTO thread_goal_continuation_deferrals (thread_id) VALUES (?)",
+                )
+                .bind(&record.thread_id)
+                .execute(&target.goals)
+                .await?;
+            }
+        }
+        Ok(())
     }
 }

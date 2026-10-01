@@ -7,6 +7,7 @@ use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::source::SourceDatabase;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -98,6 +99,16 @@ impl DomainOps for DeletedBoards {
                 })
             })
             .collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[DeletedBoardRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query("INSERT OR IGNORE INTO deleted_boards (board) VALUES (?)")
+                .bind(&record.board)
+                .execute(&target.board)
+                .await?;
+        }
+        Ok(())
     }
 }
 
@@ -198,6 +209,24 @@ impl DomainOps for Channels {
         .fetch_all(connection)
         .await?;
         rows.iter().map(channel_from_row).collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[ChannelRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT OR IGNORE INTO channels (board, name, name_search, created_at, timestamp, \
+                 author) VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&record.board)
+            .bind(&record.name)
+            .bind(&record.name_search)
+            .bind(&record.created_at)
+            .bind(record.timestamp)
+            .bind(&record.author)
+            .execute(&target.board)
+            .await?;
+        }
+        Ok(())
     }
 }
 
@@ -329,6 +358,30 @@ impl DomainOps for Posts {
         .await?;
         rows.iter().map(post_from_row).collect()
     }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[PostRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT OR IGNORE INTO posts (seq, board, id, channel, root, author, timestamp, \
+                 body_search, payload, request_id, request) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(record.seq)
+            .bind(&record.board)
+            .bind(&record.id)
+            .bind(&record.channel)
+            .bind(&record.root)
+            .bind(&record.author)
+            .bind(record.timestamp)
+            .bind(&record.body_search)
+            .bind(&record.payload)
+            .bind(&record.request_id)
+            .bind(&record.request)
+            .execute(&target.board)
+            .await?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -411,6 +464,25 @@ macro_rules! membership_domain {
                     .bind(&record.target)
                     .bind(&record.agent)
                     .execute(&mut *connection)
+                    .await?;
+                }
+                Ok(())
+            }
+
+            async fn write_sqlite(
+                target: &SqliteTarget,
+                records: &[MembershipRecord],
+            ) -> Result<()> {
+                for record in records {
+                    sqlx::query(concat!(
+                        "INSERT OR IGNORE INTO ",
+                        $sqlite_table,
+                        " (board, target, agent) VALUES (?, ?, ?)"
+                    ))
+                    .bind(&record.board)
+                    .bind(&record.target)
+                    .bind(&record.agent)
+                    .execute(&target.board)
                     .await?;
                 }
                 Ok(())

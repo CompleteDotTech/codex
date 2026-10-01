@@ -4,6 +4,7 @@ use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::source::SourceDatabase;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -138,6 +139,30 @@ impl DomainOps for Stage1Outputs {
                 })
             })
             .collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[Stage1Record]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT OR REPLACE INTO stage1_outputs (thread_id, source_updated_at, raw_memory, \
+                 rollout_summary, rollout_slug, generated_at, usage_count, last_usage, \
+                 selected_for_phase2, selected_for_phase2_source_updated_at) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&record.thread_id)
+            .bind(record.source_updated_at)
+            .bind(&record.raw_memory)
+            .bind(&record.rollout_summary)
+            .bind(&record.rollout_slug)
+            .bind(record.generated_at)
+            .bind(record.usage_count)
+            .bind(record.last_usage)
+            .bind(record.selected_for_phase2)
+            .bind(record.selected_for_phase2_source_updated_at)
+            .execute(&target.memories)
+            .await?;
+        }
+        Ok(())
     }
 }
 
@@ -281,6 +306,33 @@ impl DomainOps for MemoryJobs {
         .await?;
         rows.iter().map(job_from_row).collect()
     }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[JobRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT OR REPLACE INTO jobs (kind, job_key, status, worker_id, ownership_token, \
+                 started_at, finished_at, lease_until, retry_at, retry_remaining, last_error, \
+                 input_watermark, last_success_watermark) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&record.kind)
+            .bind(&record.job_key)
+            .bind(&record.status)
+            .bind(&record.worker_id)
+            .bind(&record.ownership_token)
+            .bind(record.started_at)
+            .bind(record.finished_at)
+            .bind(record.lease_until)
+            .bind(record.retry_at)
+            .bind(record.retry_remaining)
+            .bind(&record.last_error)
+            .bind(record.input_watermark)
+            .bind(record.last_success_watermark)
+            .execute(&target.memories)
+            .await?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -356,5 +408,15 @@ impl DomainOps for MemoryProgress {
                 })
             })
             .collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[ProgressRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query("UPDATE consolidation_progress SET max_thread_count = ?")
+                .bind(record.max_thread_count)
+                .execute(&target.memories)
+                .await?;
+        }
+        Ok(())
     }
 }

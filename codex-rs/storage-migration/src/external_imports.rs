@@ -4,6 +4,7 @@ use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::source::SourceDatabase;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -105,5 +106,23 @@ impl DomainOps for ExternalImports {
                 })
             })
             .collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[ExternalImportRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT OR REPLACE INTO external_agent_config_imports \
+                 (import_id, provider_id, completed_at_ms, successes, failures) \
+                 VALUES (?, ?, ?, ?, ?)",
+            )
+            .bind(&record.import_id)
+            .bind(&record.provider_id)
+            .bind(record.completed_at_ms)
+            .bind(&record.successes)
+            .bind(&record.failures)
+            .execute(&target.state)
+            .await?;
+        }
+        Ok(())
     }
 }

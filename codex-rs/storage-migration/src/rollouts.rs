@@ -10,6 +10,7 @@ use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::source::SourceDatabase;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
@@ -33,9 +34,19 @@ pub(crate) struct RolloutRecord {
     sha256: String,
     #[serde(skip)]
     lines: Vec<String>,
+    /// What a staged home needs to place the file; not part of what verification compares.
+    #[serde(skip)]
+    created_at_ms: i64,
+    #[serde(skip)]
+    archived: bool,
 }
 
-fn summarize(thread_id: String, lines: Vec<String>) -> RolloutRecord {
+fn summarize(
+    thread_id: String,
+    lines: Vec<String>,
+    created_at_ms: i64,
+    archived: bool,
+) -> RolloutRecord {
     let mut hasher = Sha256::new();
     for line in &lines {
         hasher.update((line.len() as u64).to_be_bytes());
@@ -50,6 +61,8 @@ fn summarize(thread_id: String, lines: Vec<String>) -> RolloutRecord {
             .map(|byte| format!("{byte:02x}"))
             .collect(),
         lines,
+        created_at_ms,
+        archived,
     }
 }
 
@@ -174,8 +187,8 @@ impl DomainOps for Rollouts {
             return Ok(Vec::new());
         };
         let rows = sqlx::query(
-            "SELECT id, rollout_path FROM threads WHERE (?1 IS NULL OR id > ?1) \
-             ORDER BY id LIMIT ?2",
+            "SELECT id, rollout_path, created_at_ms, archived_at FROM threads \
+             WHERE (?1 IS NULL OR id > ?1) ORDER BY id LIMIT ?2",
         )
         .bind(after)
         .bind(i64::try_from(limit)?)
@@ -188,7 +201,12 @@ impl DomainOps for Rollouts {
             let lines = materialize(source, resolve(source.home(), &recorded), 0)
                 .await
                 .with_context(|| format!("thread {id}"))?;
-            records.push(summarize(id, lines));
+            records.push(summarize(
+                id,
+                lines,
+                row.try_get::<Option<i64>, _>("created_at_ms")?.unwrap_or(0),
+                row.try_get::<Option<i64>, _>("archived_at")?.is_some(),
+            ));
         }
         Ok(records)
     }
@@ -222,8 +240,8 @@ impl DomainOps for Rollouts {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<RolloutRecord>> {
-        let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id::text FROM threads \
+        let ids: Vec<(String, i64, bool)> = sqlx::query_as(
+            "SELECT id::text, created_at_ms, archived_at_s IS NOT NULL FROM threads \
              WHERE ($1::uuid IS NULL OR id > $1::uuid) ORDER BY id LIMIT $2",
         )
         .bind(after)
@@ -231,7 +249,7 @@ impl DomainOps for Rollouts {
         .fetch_all(&mut *connection)
         .await?;
         let mut records = Vec::with_capacity(ids.len());
-        for id in ids {
+        for (id, created_at_ms, archived) in ids {
             let lines: Vec<String> = sqlx::query_scalar(
                 "SELECT line FROM thread_rollout_lines \
                  WHERE thread_id = $1::uuid ORDER BY position",
@@ -239,8 +257,30 @@ impl DomainOps for Rollouts {
             .bind(&id)
             .fetch_all(&mut *connection)
             .await?;
-            records.push(summarize(id, lines));
+            records.push(summarize(id, lines, created_at_ms, archived));
         }
         Ok(records)
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[RolloutRecord]) -> Result<()> {
+        for record in records {
+            // A thread that never wrote a record has no file, like a local thread before its
+            // first message.
+            if record.lines.is_empty() {
+                continue;
+            }
+            let path = target.staged_path(&target.rollout_path(
+                &record.thread_id,
+                record.created_at_ms,
+                record.archived,
+            ));
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            let mut text = record.lines.join("\n");
+            text.push('\n');
+            tokio::fs::write(&path, text).await?;
+        }
+        Ok(())
     }
 }

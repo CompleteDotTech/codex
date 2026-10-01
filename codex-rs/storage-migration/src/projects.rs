@@ -4,6 +4,7 @@ use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::source::SourceDatabase;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -143,6 +144,40 @@ impl DomainOps for Projects {
         }
         Ok(records)
     }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[ProjectRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT INTO projects (id, name, metadata, position, created_at_ms, updated_at_ms) \
+                 VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, \
+                 metadata = excluded.metadata, position = excluded.position, \
+                 created_at_ms = excluded.created_at_ms, updated_at_ms = excluded.updated_at_ms",
+            )
+            .bind(&record.id)
+            .bind(&record.name)
+            .bind(&record.metadata)
+            .bind(record.position)
+            .bind(record.created_at_ms)
+            .bind(record.updated_at_ms)
+            .execute(&target.state)
+            .await?;
+            sqlx::query("DELETE FROM project_roots WHERE project_id = ?")
+                .bind(&record.id)
+                .execute(&target.state)
+                .await?;
+            for (position, path) in record.roots.iter().enumerate() {
+                sqlx::query(
+                    "INSERT INTO project_roots (project_id, position, path) VALUES (?, ?, ?)",
+                )
+                .bind(&record.id)
+                .bind(position as i64)
+                .bind(path)
+                .execute(&target.state)
+                .await?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -229,5 +264,20 @@ impl DomainOps for ProjectKeys {
                 })
             })
             .collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[ProjectKeyRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT OR REPLACE INTO project_idempotency_keys (key, project_id, created_at_ms) \
+                 VALUES (?, ?, ?)",
+            )
+            .bind(&record.key)
+            .bind(&record.project_id)
+            .bind(record.created_at_ms)
+            .execute(&target.state)
+            .await?;
+        }
+        Ok(())
     }
 }

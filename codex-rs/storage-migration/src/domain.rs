@@ -6,6 +6,7 @@ use sqlx::PgConnection;
 use std::future::Future;
 
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 
 /// One independently verified part of a store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -101,6 +102,13 @@ pub(crate) trait DomainOps {
 
     fn import<'a>(
         connection: &'a mut PgConnection,
+        records: &'a [Self::Record],
+    ) -> impl Future<Output = Result<()>> + Send + 'a;
+
+    /// Write a page into a staged SQLite home. Every statement is an upsert, so a page can be
+    /// written again after a crash.
+    fn write_sqlite<'a>(
+        target: &'a SqliteTarget,
         records: &'a [Self::Record],
     ) -> impl Future<Output = Result<()>> + Send + 'a;
 

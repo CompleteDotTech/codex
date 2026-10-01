@@ -4,6 +4,7 @@ use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::source::SourceDatabase;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -14,6 +15,9 @@ use sqlx::sqlite::SqliteRow;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct ThreadRecord {
     id: String,
+    /// Where the rollout lived on the host that wrote it; relocated on every move, so it is not
+    /// part of what verification compares.
+    #[serde(skip)]
     origin_rollout_path: String,
     created_at_ms: i64,
     updated_at_ms: i64,
@@ -303,5 +307,70 @@ impl DomainOps for Threads {
         .fetch_all(connection)
         .await?;
         rows.iter().map(from_postgres).collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[ThreadRecord]) -> Result<()> {
+        for record in records {
+            let rollout_path = target.rollout_path(
+                &record.id,
+                record.created_at_ms,
+                record.archived_at_s.is_some(),
+            );
+            sqlx::query(
+                "INSERT OR REPLACE INTO threads (id, rollout_path, created_at, updated_at, \
+                 recency_at, created_at_ms, updated_at_ms, recency_at_ms, source, originator, \
+                 creator_user_id, creator_account_id, history_mode, thread_source, agent_nickname, \
+                 agent_role, agent_path, model_provider, model, reasoning_effort, cwd, cli_version, \
+                 title, name, preview, sandbox_policy, approval_mode, tokens_used, \
+                 first_user_message, archived, archived_at, thread_section_id, section_position, \
+                 section_entered_at_ms, git_sha, git_branch, git_origin_url, memory_mode, \
+                 project_id, daybreak_enabled) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, \
+                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&record.id)
+            .bind(rollout_path.display().to_string())
+            .bind(record.created_at_ms.div_euclid(1000))
+            .bind(record.updated_at_ms.div_euclid(1000))
+            .bind(record.recency_at_ms.div_euclid(1000))
+            .bind(record.created_at_ms)
+            .bind(record.updated_at_ms)
+            .bind(record.recency_at_ms)
+            .bind(&record.source)
+            .bind(&record.originator)
+            .bind(&record.creator_user_id)
+            .bind(&record.creator_account_id)
+            .bind(&record.history_mode)
+            .bind(&record.thread_source)
+            .bind(&record.agent_nickname)
+            .bind(&record.agent_role)
+            .bind(&record.agent_path)
+            .bind(&record.model_provider)
+            .bind(&record.model)
+            .bind(&record.reasoning_effort)
+            .bind(&record.origin_cwd)
+            .bind(&record.cli_version)
+            .bind(&record.title)
+            .bind(&record.name)
+            .bind(&record.preview)
+            .bind(&record.sandbox_policy)
+            .bind(&record.approval_mode)
+            .bind(record.tokens_used)
+            .bind(&record.first_user_message)
+            .bind(i64::from(record.archived_at_s.is_some()))
+            .bind(record.archived_at_s)
+            .bind(&record.thread_section_id)
+            .bind(record.section_position)
+            .bind(record.section_entered_at_ms)
+            .bind(&record.git_sha)
+            .bind(&record.git_branch)
+            .bind(&record.git_origin_url)
+            .bind(&record.memory_mode)
+            .bind(&record.project_id)
+            .bind(record.daybreak_enabled)
+            .execute(&target.state)
+            .await?;
+        }
+        Ok(())
     }
 }

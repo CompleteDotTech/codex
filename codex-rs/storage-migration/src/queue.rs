@@ -4,6 +4,7 @@ use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::source::SourceDatabase;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -111,6 +112,25 @@ impl DomainOps for QueuedItems {
             })
             .collect()
     }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[QueuedItemRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT OR REPLACE INTO queued_items \
+                 (id, thread_id, payload_json, queue_order, created_at_ms, updated_at_ms) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&record.id)
+            .bind(&record.thread_id)
+            .bind(&record.payload_json)
+            .bind(record.queue_order)
+            .bind(record.created_at_ms)
+            .bind(record.updated_at_ms)
+            .execute(&target.queue)
+            .await?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -203,5 +223,22 @@ impl DomainOps for QueueRevisions {
                 })
             })
             .collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[RevisionRecord]) -> Result<()> {
+        // Writing items fired the revision triggers, so the recorded revisions replace whatever
+        // they produced.
+        for record in records {
+            sqlx::query("DELETE FROM queued_thread_revisions WHERE thread_id = ?")
+                .bind(&record.thread_id)
+                .execute(&target.queue)
+                .await?;
+            sqlx::query("INSERT INTO queued_thread_revisions (revision, thread_id) VALUES (?, ?)")
+                .bind(record.revision)
+                .bind(&record.thread_id)
+                .execute(&target.queue)
+                .await?;
+        }
+        Ok(())
     }
 }

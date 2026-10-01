@@ -29,6 +29,7 @@ use crate::queue::QueuedItems;
 use crate::rollouts::Rollouts;
 use crate::sections::Sections;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use crate::threads::Threads;
 use codex_postgres_runtime::PostgresPool;
 use sqlx::Acquire;
@@ -147,6 +148,10 @@ pub enum MigrationError {
     NotVerified,
     #[error("the new generation must be higher than the store's current generation")]
     GenerationNotAdvancing,
+    #[error("the store has never been activated, so there is no dataset to export")]
+    NotActivated,
+    #[error("the staged home could not be written: {0}")]
+    Staging(String),
 }
 
 /// The dataset identity and generation a verified import is published as.
@@ -225,13 +230,36 @@ impl Migrator {
     /// Claim the store and write every domain, resuming a run that was interrupted.
     pub async fn import(&self) -> Result<RunSummary, MigrationError> {
         let fingerprint = self.source.fingerprint().await.map_err(source)?;
-        let (run_id, resumed) = self.begin(&fingerprint).await?;
+        let (run_id, resumed) = self.begin(&fingerprint, "import").await?;
         let mut domains = Vec::new();
         let mut batches = 0;
         for domain in Domain::ALL {
             let moved = with_domain!(
                 *domain,
                 Ops => self.import_domain::<Ops>(run_id, &mut batches).await?
+            );
+            domains.push((*domain, moved));
+        }
+        Ok(RunSummary {
+            run_id,
+            resumed,
+            domains,
+        })
+    }
+
+    /// Write the activated PostgreSQL dataset into a staged SQLite home, resuming a run that was
+    /// interrupted. The store stays closed to writers for the whole run, so the copy is a
+    /// consistent snapshot. This migrator's source must be the staged home, because
+    /// verification reads it back.
+    pub async fn export(&self, staged: &SqliteTarget) -> Result<RunSummary, MigrationError> {
+        let fingerprint = self.source.fingerprint().await.map_err(source)?;
+        let (run_id, resumed) = self.begin(&fingerprint, "export").await?;
+        let mut domains = Vec::new();
+        let mut batches = 0;
+        for domain in Domain::ALL {
+            let moved = with_domain!(
+                *domain,
+                Ops => self.export_domain::<Ops>(run_id, staged, &mut batches).await?
             );
             domains.push((*domain, moved));
         }
@@ -397,16 +425,22 @@ impl Migrator {
 
     /// Take the store: only one run may hold it, and an interrupted run of the same source
     /// resumes instead of starting over.
-    async fn begin(&self, fingerprint: &str) -> Result<(Uuid, bool), MigrationError> {
+    async fn begin(
+        &self,
+        fingerprint: &str,
+        direction: &str,
+    ) -> Result<(Uuid, bool), MigrationError> {
         let mut connection = self.connection().await?;
         let mut tx = connection.begin().await.map_err(target)?;
-        let row =
-            sqlx::query("SELECT state, run_id FROM storage_activation WHERE singleton FOR UPDATE")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(target)?;
+        let row = sqlx::query(
+            "SELECT state, run_id, dataset_id FROM storage_activation WHERE singleton FOR UPDATE",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(target)?;
         let state: String = row.try_get("state").map_err(target)?;
         let held: Option<Uuid> = row.try_get("run_id").map_err(target)?;
+        let dataset: Option<String> = row.try_get("dataset_id").map_err(target)?;
         let now = chrono::Utc::now().timestamp_millis();
         let outcome = if state == "migrating" {
             let run_id = held.ok_or(MigrationError::TargetBusy)?;
@@ -441,18 +475,25 @@ impl Migrator {
             .map_err(target)?;
             (run_id, true)
         } else {
-            let occupied: bool = sqlx::query_scalar(
-                "SELECT EXISTS (SELECT 1 FROM threads) \
+            if direction == "export" {
+                // Only an activated dataset has history to hand back.
+                if state != "open" || dataset.is_none() {
+                    return Err(MigrationError::NotActivated);
+                }
+            }
+            let occupied: bool = direction == "import"
+                && sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM threads) \
                  OR EXISTS (SELECT 1 FROM projects) \
                  OR EXISTS (SELECT 1 FROM queued_items) \
                  OR EXISTS (SELECT 1 FROM logs) \
                  OR EXISTS (SELECT 1 FROM agent_board_posts) \
                  OR EXISTS (SELECT 1 FROM memory_stage1_outputs) \
                  OR EXISTS (SELECT 1 FROM thread_goals)",
-            )
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(target)?;
+                )
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(target)?;
             if occupied {
                 return Err(MigrationError::TargetNotEmpty);
             }
@@ -460,9 +501,10 @@ impl Migrator {
             sqlx::query(
                 "INSERT INTO storage_migration_runs \
                  (run_id, direction, source_fingerprint, state, started_at_ms, updated_at_ms) \
-                 VALUES ($1, 'import', $2, 'running', $3, $3)",
+                 VALUES ($1, $2, $3, 'running', $4, $4)",
             )
             .bind(run_id)
+            .bind(direction)
             .bind(fingerprint)
             .bind(now)
             .execute(&mut *tx)
@@ -581,6 +623,80 @@ impl Migrator {
         }
     }
 
+    /// Copy one domain from PostgreSQL into the staged home in key order, committing a
+    /// checkpoint after every page.
+    async fn export_domain<D: DomainOps>(
+        &self,
+        run_id: Uuid,
+        staged: &SqliteTarget,
+        batches: &mut usize,
+    ) -> Result<u64, MigrationError> {
+        let (mut cursor, done, mut moved) = self.load_checkpoint::<D>(run_id).await?;
+        if done {
+            return Ok(moved);
+        }
+        loop {
+            let records = {
+                let mut connection = self.connection().await?;
+                D::read_back(&mut connection, cursor.as_deref(), self.batch_size)
+                    .await
+                    .map_err(target)?
+            };
+            let last = records.last().map(D::key);
+            D::write_sqlite(staged, &records)
+                .await
+                .map_err(|error| MigrationError::Staging(error.to_string()))?;
+            moved += records.len() as u64;
+            let finished = records.len() < self.batch_size;
+            let mut connection = self.connection().await?;
+            let mut tx = connection.begin().await.map_err(target)?;
+            checkpoint(
+                &mut tx,
+                run_id,
+                D::DOMAIN,
+                last.as_deref().or(cursor.as_deref()),
+                finished,
+                moved,
+            )
+            .await?;
+            tx.commit().await.map_err(target)?;
+            *batches += 1;
+            if finished {
+                return Ok(moved);
+            }
+            if self.batch_limit.is_some_and(|limit| *batches >= limit) {
+                return Err(MigrationError::Interrupted);
+            }
+            cursor = last;
+        }
+    }
+
+    /// The saved position of a domain in this run: cursor, whether it finished, rows so far.
+    async fn load_checkpoint<D: DomainOps>(
+        &self,
+        run_id: Uuid,
+    ) -> Result<(Option<String>, bool, u64), MigrationError> {
+        let mut connection = self.connection().await?;
+        let row = sqlx::query(
+            "SELECT resume_cursor, done, row_count \
+             FROM storage_migration_domains WHERE run_id = $1 AND domain = $2",
+        )
+        .bind(run_id)
+        .bind(D::DOMAIN.name())
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(target)?;
+        Ok(match row {
+            Some(row) => (
+                row.try_get::<Option<String>, _>("resume_cursor")
+                    .map_err(target)?,
+                row.try_get::<bool, _>("done").map_err(target)?,
+                row.try_get::<i64, _>("row_count").map_err(target)? as u64,
+            ),
+            None => (None, false, 0),
+        })
+    }
+
     /// The source digest and the digest of what the target now holds, for one domain.
     async fn digests<D: DomainOps>(&self) -> Result<(DomainDigest, DomainDigest), MigrationError> {
         let mut from_source = DigestBuilder::new();
@@ -654,3 +770,7 @@ mod gate_tests;
 #[cfg(test)]
 #[path = "cutover_tests.rs"]
 mod cutover_tests;
+
+#[cfg(test)]
+#[path = "export_tests.rs"]
+mod export_tests;

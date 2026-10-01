@@ -19,6 +19,7 @@ mod queue;
 mod rollouts;
 mod sections;
 mod source;
+mod sqlite_target;
 mod threads;
 
 pub use cutover::Cutover;
@@ -34,3 +35,4 @@ pub use engine::Migrator;
 pub use engine::RunSummary;
 pub use engine::VerificationReport;
 pub use source::SqliteSource;
+pub use sqlite_target::SqliteTarget;

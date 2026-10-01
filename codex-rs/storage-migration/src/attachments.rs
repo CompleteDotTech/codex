@@ -4,6 +4,7 @@ use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::source::SourceDatabase;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -106,6 +107,25 @@ impl DomainOps for Attachments {
             })
             .collect()
     }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[AttachmentRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT OR REPLACE INTO thread_attachments \
+                 (id, thread_id, attachment_type, identity_key, payload, created_at) \
+                 VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&record.id)
+            .bind(&record.thread_id)
+            .bind(&record.attachment_type)
+            .bind(&record.identity_key)
+            .bind(&record.payload)
+            .bind(record.created_at)
+            .execute(&target.state)
+            .await?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -195,5 +215,20 @@ impl DomainOps for SpawnEdges {
                 })
             })
             .collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[EdgeRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT OR REPLACE INTO thread_spawn_edges \
+                 (parent_thread_id, child_thread_id, status) VALUES (?, ?, ?)",
+            )
+            .bind(&record.parent_thread_id)
+            .bind(&record.child_thread_id)
+            .bind(&record.status)
+            .execute(&target.state)
+            .await?;
+        }
+        Ok(())
     }
 }

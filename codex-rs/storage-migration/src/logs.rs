@@ -4,6 +4,7 @@ use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::source::SourceDatabase;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -141,5 +142,30 @@ impl DomainOps for Logs {
         .fetch_all(connection)
         .await?;
         rows.iter().map(from_row).collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[LogRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT OR REPLACE INTO logs (id, ts, ts_nanos, level, target, feedback_log_body, \
+                 module_path, file, line, thread_id, process_uuid, estimated_bytes) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(record.id)
+            .bind(record.ts)
+            .bind(record.ts_nanos)
+            .bind(&record.level)
+            .bind(&record.target)
+            .bind(&record.feedback_log_body)
+            .bind(&record.module_path)
+            .bind(&record.file)
+            .bind(record.line)
+            .bind(&record.thread_id)
+            .bind(&record.process_uuid)
+            .bind(record.estimated_bytes)
+            .execute(&target.logs)
+            .await?;
+        }
+        Ok(())
     }
 }

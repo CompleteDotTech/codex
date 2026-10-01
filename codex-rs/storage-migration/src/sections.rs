@@ -4,6 +4,7 @@ use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::source::SourceDatabase;
 use crate::source::SqliteSource;
+use crate::sqlite_target::SqliteTarget;
 use anyhow::Result;
 use serde::Serialize;
 use sqlx::PgConnection;
@@ -77,6 +78,22 @@ impl DomainOps for Sections {
         .fetch_all(connection)
         .await?;
         rows.iter().map(section_from_row).collect()
+    }
+
+    async fn write_sqlite(target: &SqliteTarget, records: &[SectionRecord]) -> Result<()> {
+        for record in records {
+            sqlx::query(
+                "INSERT INTO thread_sections (id, name, appearance) VALUES (?, ?, ?) \
+                 ON CONFLICT(id) DO UPDATE SET name = excluded.name, \
+                 appearance = excluded.appearance",
+            )
+            .bind(&record.id)
+            .bind(&record.name)
+            .bind(&record.appearance)
+            .execute(&target.state)
+            .await?;
+        }
+        Ok(())
     }
 }
 
