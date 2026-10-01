@@ -117,6 +117,50 @@ def git_output(*args: str, root: Path = ROOT) -> bytes:
     return subprocess.check_output(["git", *args], cwd=root)
 
 
+def storage_manifest_change(base: bytes, head: bytes) -> bool:
+    """Recognize member additions and SQLx's PostgreSQL feature in isolation.
+
+    Neither changes the V8 artifact build or the codex-v8-poc smoke dependency
+    graph. Keep all other manifest changes conservative, including member
+    removals that could remove the smoke crate from the workspace.
+    """
+    try:
+        before = tomllib.loads(base.decode())
+        after = tomllib.loads(head.decode())
+        old_workspace = before["workspace"]
+        new_workspace = after["workspace"]
+        old_members = old_workspace["members"]
+        new_members = new_workspace["members"]
+        if not (
+            isinstance(old_members, list)
+            and isinstance(new_members, list)
+            and all(isinstance(member, str) for member in old_members + new_members)
+            and set(old_members) <= set(new_members)
+        ):
+            return False
+        new_workspace["members"] = old_members
+
+        old_sqlx = old_workspace.get("dependencies", {}).get("sqlx")
+        new_sqlx = new_workspace.get("dependencies", {}).get("sqlx")
+        if old_sqlx != new_sqlx:
+            old_features = old_sqlx["features"]
+            new_features = new_sqlx["features"]
+            if not (
+                isinstance(old_features, list)
+                and isinstance(new_features, list)
+                and all(
+                    isinstance(feature, str) for feature in old_features + new_features
+                )
+                and set(new_features) == set(old_features) | {"postgres"}
+            ):
+                return False
+            new_sqlx["features"] = old_features
+        return before == after
+    except (KeyError, TypeError, AttributeError, UnicodeDecodeError, ValueError):
+        # Missing, malformed, or unfamiliar manifests must not suppress builds.
+        return False
+
+
 def v8_version_at_revision(revision: str, *, root: Path = ROOT) -> str:
     return resolved_v8_version(
         git_output("show", f"{revision}:codex-rs/Cargo.lock", root=root)
@@ -148,7 +192,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
+def main(*, root: Path = ROOT) -> None:
     args = parse_args()
     if args.force:
         # workflow_dispatch has no comparison range, and callers use it as a
@@ -160,9 +204,22 @@ def main() -> None:
     elif not args.base or not args.head:
         raise SystemExit("--base and --head are required unless --force is set")
     else:
-        files = changed_files(args.base, args.head)
-        base_version = v8_version_at_revision(merge_base(args.base, args.head))
-        head_version = v8_version_at_revision(args.head)
+        base = merge_base(args.base, args.head, root=root)
+        files = changed_files(base, args.head, root=root)
+        base_version = v8_version_at_revision(base, root=root)
+        head_version = v8_version_at_revision(args.head, root=root)
+
+        manifest = "codex-rs/Cargo.toml"
+        if manifest in files:
+            try:
+                before = git_output("show", f"{base}:{manifest}", root=root)
+                after = git_output("show", f"{args.head}:{manifest}", root=root)
+            except subprocess.CalledProcessError:
+                # Adding, deleting, or renaming the manifest still runs V8.
+                pass
+            else:
+                if storage_manifest_change(before, after):
+                    files.remove(manifest)
 
         matched_canary_paths = sorted(matching_canary_paths(files))
         canary = canary_required(files, base_version, head_version)
