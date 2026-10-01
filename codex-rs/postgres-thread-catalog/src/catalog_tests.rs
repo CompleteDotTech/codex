@@ -283,10 +283,19 @@ async fn setup(state: &Path) -> Arc<PostgresPool> {
     connect(state, "runtime").await
 }
 
-/// Later runs and the SQLite process-local mark start from the same point, so allocation
-/// behaves identically: the base is always ahead of anything an earlier run allocated.
-fn run_base() -> DateTime<Utc> {
-    Utc.timestamp_opt(Utc::now().timestamp() + 10 * 86_400, 0)
+/// Times for one run, placed well above every mark an earlier run stored. A fresh SQLite
+/// process starts its marks at zero, so PostgreSQL must see the same "newer than anything
+/// allocated" situation for both backends to allocate identically.
+async fn run_base(pool: &PostgresPool) -> DateTime<Utc> {
+    let mut connection = pool.acquire().await.expect("runtime connection");
+    let stored_ms: i64 = sqlx::query_scalar(
+        "SELECT GREATEST(updated_at_ms, recency_at_ms) FROM codex_storage.thread_timestamp_marks",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .expect("stored marks");
+    let floor = Utc::now().timestamp() + 10 * 86_400;
+    Utc.timestamp_opt(floor.max(stored_ms / 1000 + 200_000), 0)
         .single()
         .expect("base time")
 }
@@ -303,7 +312,7 @@ async fn real_postgres_threads_match_sqlite() {
     )
     .await
     .expect("sqlite runtime");
-    let base = run_base();
+    let base = run_base(&pool).await;
     let ids = [
         ThreadId::new(),
         ThreadId::new(),
@@ -331,7 +340,7 @@ async fn real_postgres_delete_removes_thread_state_and_keeps_queue_changes_visib
     let catalog = PostgresThreadCatalog::new(pool.clone());
     let thread_id = ThreadId::new();
     let id = thread_id.to_string();
-    let base = run_base() + chrono::Duration::seconds(5_000);
+    let base = run_base(&pool).await + chrono::Duration::seconds(5_000);
     catalog
         .upsert_thread(&metadata(thread_id, 0, base, SessionSource::Cli))
         .await
@@ -874,7 +883,7 @@ async fn real_postgres_listing_matches_sqlite() {
             .expect("clock")
             .as_nanos()
     );
-    let base = run_base() + chrono::Duration::seconds(20_000);
+    let base = run_base(&pool).await + chrono::Duration::seconds(20_000);
     let ids: Vec<ThreadId> = (0..14).map(|_| ThreadId::new()).collect();
     let expected = listing_scenario(&Backend::Sqlite(sqlite), &token, base, &ids).await;
     let actual = listing_scenario(
