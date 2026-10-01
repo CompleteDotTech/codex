@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::num::NonZeroUsize;
 use std::path::Path;
 
 use crate::HooksToml;
@@ -54,6 +55,7 @@ use codex_protocol::models::PermissionProfile;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::permissions::NetworkSandboxPolicy;
 use codex_protocol::protocol::AskForApproval;
+use codex_storage_authority::StorageCandidateProfile;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::Platform;
 use schemars::JsonSchema;
@@ -367,6 +369,9 @@ pub struct ConfigToml {
     /// Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`.
     pub sqlite_home: Option<AbsolutePathBuf>,
 
+    /// Validated proposal only. Editing this never selects an active backend.
+    pub storage_candidate: Option<StorageCandidateProfile>,
+
     /// Directory where Codex writes log files. Setting this value explicitly
     /// also enables the TUI text log in this directory.
     /// Defaults to `$CODEX_HOME/log`.
@@ -579,6 +584,12 @@ pub struct AutoReviewToml {
     pub extra_policy: Option<String>,
     /// Experimental full Guardian prompt template containing the tenant policy placeholder.
     pub experimental_policy_template: Option<String>,
+    /// Experimental replacement for the history-retrieval instructions when history tools
+    /// and Apps are enabled. Omitted or blank values use the built-in prompt.
+    pub experimental_conversation_history_prompt: Option<String>,
+    /// Maximum estimated tokens per Guardian history-tool response, before the standard
+    /// serialization allowance. Defaults to 4,000; stricter parent tool limits still apply.
+    pub conversation_history_max_output_tokens: Option<NonZeroUsize>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq, JsonSchema)]
