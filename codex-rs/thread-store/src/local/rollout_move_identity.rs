@@ -6,6 +6,7 @@ use serde::Serialize;
 
 /// Stable filesystem identity used to verify a move after its source was unlinked.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(super) enum RolloutFileIdentity {
     #[cfg(unix)]
     Unix { device: u64, inode: u64 },

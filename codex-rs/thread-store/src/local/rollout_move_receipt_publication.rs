@@ -1,10 +1,8 @@
 //! Cleanup authority for aliases left by no-clobber receipt publication.
 //! Pre-publication files without a canonical receipt remain unowned and retained.
 
-use std::fs::File;
 use std::fs::OpenOptions;
 use std::io;
-use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -21,6 +19,7 @@ use crate::local::rollout_move_identity::RolloutFileIdentity;
 const MAX_BYTES: u64 = 4096;
 
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct ReceiptPublication {
     #[serde(with = "crate::local::rollout_move_path_json")]
     path: PathBuf,
@@ -105,31 +104,7 @@ fn write_with_publication_and_sync(
 }
 
 fn read_owned(path: &Path, identity: RolloutFileIdentity) -> io::Result<Vec<u8>> {
-    if !std::fs::symlink_metadata(path)?.file_type().is_file() {
-        return Err(io::Error::other("move receipt is not a regular file"));
-    }
-    let mut file = File::open(path)?;
-    let before = file.metadata()?;
-    if rollout_file_identity_from_handle(&file)? != identity
-        || rollout_file_identity(path)? != identity
-        || before.len() > MAX_BYTES
-    {
-        return Err(io::Error::other("move receipt identity or size changed"));
-    }
-    let mut bytes = Vec::new();
-    Read::by_ref(&mut file)
-        .take(MAX_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    let after = file.metadata()?;
-    if bytes.len() as u64 > MAX_BYTES
-        || bytes.len() as u64 != before.len()
-        || before.len() != after.len()
-        || before.modified()? != after.modified()?
-        || rollout_file_identity(path)? != identity
-    {
-        return Err(io::Error::other("move receipt changed while reading"));
-    }
-    Ok(bytes)
+    super::receipt_io::read_owned(path, identity)
 }
 
 pub(super) fn validate(path: &Path, intent: &RolloutMoveIntent) -> io::Result<()> {
