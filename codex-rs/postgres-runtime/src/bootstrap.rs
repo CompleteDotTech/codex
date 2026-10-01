@@ -11,12 +11,12 @@ use std::fmt;
 use std::time::Duration;
 use tokio::time::timeout;
 
-const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
 // The schema-wide lock must match scripts/postgres/container/restore-guard.sql.
-const LOCK_CLASS: i32 = 1_414_676_819;
-const LOCK_RESOURCE: i32 = 1; // Fixed codex_storage metadata namespace.
+pub(crate) const LOCK_CLASS: i32 = 1_414_676_819;
+pub(crate) const LOCK_RESOURCE: i32 = 1; // Fixed codex_storage metadata namespace.
 const MIGRATIONS_TABLE: &str = "codex_storage._codex_pg_migrations";
-static BASE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
+pub(crate) static BASE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
 
 /// A redacted bootstrap outcome; SQLx diagnostics may contain server details.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,7 +87,7 @@ fn classify_namespace_validation(error: sqlx::Error) -> BootstrapError {
     }
 }
 
-async fn namespace_has_unexpected_objects(
+pub(crate) async fn namespace_has_unexpected_objects(
     connection: &mut PgConnection,
     permitted_relations: &[&str],
 ) -> Result<bool, BootstrapError> {
@@ -122,7 +122,7 @@ async fn namespace_has_unexpected_objects(
     .map_err(|error| classify_sqlx(&error))
 }
 
-async fn require_safe_protected_privileges(
+pub(crate) async fn require_safe_protected_privileges(
     connection: &mut PgConnection,
 ) -> Result<(), BootstrapError> {
     // Check effective access, including column ACLs, PUBLIC, inherited roles,

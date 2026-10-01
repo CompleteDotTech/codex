@@ -29,6 +29,12 @@ use tokio::time::timeout;
 mod bootstrap;
 pub use bootstrap::BootstrapError;
 pub use bootstrap::bootstrap_codex_storage;
+mod compatibility;
+pub use compatibility::ClientCapabilities;
+pub use compatibility::CompatibilityError;
+pub use compatibility::CompatibilityResult;
+pub use compatibility::RequiredAccess;
+pub use compatibility::check_codex_storage_compatibility;
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_CONNECTIONS: u32 = 32;

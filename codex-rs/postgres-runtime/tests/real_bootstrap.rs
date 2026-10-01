@@ -4,10 +4,15 @@
 )]
 
 use codex_postgres_runtime::BootstrapError;
+use codex_postgres_runtime::ClientCapabilities;
+use codex_postgres_runtime::CompatibilityError;
+use codex_postgres_runtime::CompatibilityResult;
 use codex_postgres_runtime::ConnectionSettings;
 use codex_postgres_runtime::PoolLimits;
 use codex_postgres_runtime::PostgresPool;
+use codex_postgres_runtime::RequiredAccess;
 use codex_postgres_runtime::bootstrap_codex_storage;
+use codex_postgres_runtime::check_codex_storage_compatibility;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use sqlx::Acquire;
@@ -719,5 +724,140 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     assert_eq!(
         bootstrap_codex_storage(&runtime).await,
         Err(BootstrapError::Privilege)
+    );
+
+    let capabilities = ClientCapabilities {
+        min_schema_format: 1,
+        max_schema_format: 1,
+        reader_version: 1,
+        writer_version: 1,
+    };
+    let compatible = Ok(CompatibilityResult {
+        schema_format: 1,
+        activation_permitted: false,
+    });
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        compatible
+    );
+    assert_eq!(
+        check_codex_storage_compatibility(&runtime, capabilities, RequiredAccess::ReadOnly).await,
+        Err(CompatibilityError::Privilege)
+    );
+
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 2",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::ReaderTooOld)
+    );
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage.codex_schema_meta SET format_version = 2, min_reader_version = 1, min_writer_version = 1",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::UnsupportedSchema)
+    );
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage.codex_schema_meta SET format_version = 1",
+    )
+    .await;
+
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage._codex_pg_migrations SET success = FALSE WHERE version = 1",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::DirtyMigration)
+    );
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage._codex_pg_migrations SET success = TRUE WHERE version = 1",
+    )
+    .await;
+    let mut connection = migrator_a.acquire().await.expect("save migration checksum");
+    let mut transaction = connection.begin().await.expect("begin checksum read");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for checksum read");
+    let checksum: Vec<u8> = sqlx::query_scalar(
+        "SELECT checksum FROM codex_storage._codex_pg_migrations WHERE version = 1",
+    )
+    .fetch_one(&mut *transaction)
+    .await
+    .expect("read checksum");
+    transaction.rollback().await.expect("finish checksum read");
+    drop(connection);
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage._codex_pg_migrations SET checksum = '\\x00'::bytea WHERE version = 1",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::IncompatibleHistory)
+    );
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage._codex_pg_migrations SET checksum = repeat('x', 1048576)::bytea WHERE version = 1",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::IncompatibleHistory)
+    );
+    let mut connection = migrator_a
+        .acquire()
+        .await
+        .expect("restore migration checksum");
+    let mut transaction = connection.begin().await.expect("begin checksum restore");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for checksum restore");
+    sqlx::query("UPDATE codex_storage._codex_pg_migrations SET checksum = $1 WHERE version = 1")
+        .bind(checksum)
+        .execute(&mut *transaction)
+        .await
+        .expect("restore checksum");
+    transaction.commit().await.expect("commit checksum restore");
+    drop(connection);
+    let mut connection = migrator_a
+        .acquire()
+        .await
+        .expect("begin interrupted migration");
+    let mut transaction = connection
+        .begin()
+        .await
+        .expect("begin interrupted transaction");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for interrupted transaction");
+    sqlx::query("UPDATE codex_storage._codex_pg_migrations SET success = FALSE WHERE version = 1")
+        .execute(&mut *transaction)
+        .await
+        .expect("write uncommitted dirty marker");
+    drop(transaction);
+    drop(connection);
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        compatible
     );
 }
