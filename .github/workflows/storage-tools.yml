@@ -85,6 +85,9 @@ jobs:
       - name: Test PostgreSQL connection pool against real server
         working-directory: codex-rs
         run: just test -p codex-postgres-runtime
+      - name: Verify bootstrap and preflight serialize with restore
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_LOCK_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_restore_lock_serializes_bootstrap_and_preflight
       - name: Reset bootstrapped metadata before seeding the restore fixture
         shell: bash
         run: |
@@ -144,11 +147,17 @@ jobs:
       - name: Test serializable transaction outcomes against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_TRANSACTION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_serializable_conflict_deadlock_and_cancelled_write
+      - name: Test inactive thread ownership against real server
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_OWNERSHIP_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_two_clients_reject_stale_thread_owners
       - name: Provision separate namespace roles in fixture
         run: python scripts/postgres/isolation_fixture.py --state "$CODEX_TEST_POSTGRES_STATE"
       - name: Test named namespace bootstrap against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles
+      - name: Test named thread ownership against real server
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_named_thread_ownership_is_namespace_scoped
       - name: Test PostgreSQL graph adapter and role isolation
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_GRAPH_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-agent-graph-store real_postgres_graph_adapter_preserves_order_and_edge_semantics
