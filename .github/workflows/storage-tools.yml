@@ -188,6 +188,21 @@ jobs:
       - name: Compare thread store behavior across SQLite and PostgreSQL
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_THREAD_STORE_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-thread-store real_postgres_thread_store
+      - name: Migrate a SQLite catalog into PostgreSQL and verify it
+        working-directory: codex-rs
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "../scripts/postgres")
+          from qualification_checks import sql
+
+          # Earlier steps leave project keys behind and the runtime role cannot delete them.
+          sql(Path(os.environ["CODEX_TEST_POSTGRES_STATE"]), "TRUNCATE codex_storage.project_idempotency_keys, codex_storage.queued_thread_revisions, codex_storage.agent_board_deleted, codex_storage.external_agent_config_imports, codex_storage.threads, codex_storage.projects CASCADE")
+          PY
+          CODEX_TEST_POSTGRES_MIGRATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-storage-migration real_postgres_catalog_migration
       - name: Test two-namespace role isolation against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_postgres_roles_isolate_two_schemas
