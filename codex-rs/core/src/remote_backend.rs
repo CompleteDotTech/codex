@@ -26,9 +26,7 @@ static REMOTE_BACKEND: OnceLock<RemoteBackend> = OnceLock::new();
 
 /// Install the process's remote stores. A second call is refused so a process never switches
 /// persistence backend underneath running threads.
-pub fn install_remote_backend(
-    backend: RemoteBackend,
-) -> Result<(), RemoteBackendAlreadyInstalled> {
+pub fn install_remote_backend(backend: RemoteBackend) -> Result<(), RemoteBackendAlreadyInstalled> {
     REMOTE_BACKEND
         .set(backend)
         .map_err(|_| RemoteBackendAlreadyInstalled)
