@@ -956,6 +956,9 @@ async fn project_scenario(
 ) -> Vec<String> {
     let mut log = Vec::new();
     let mut labels = ProjectLabels(Vec::new());
+    // Idempotency keys are never deleted, so each run mints its own.
+    let key = |name: &str| format!("{token}-{name}");
+    let ghost = ids[6];
 
     // Start from an empty project table: leftovers from earlier runs would share the positions.
     loop {
@@ -972,7 +975,7 @@ async fn project_scenario(
         }
     }
 
-    for (index, id) in ids.iter().enumerate() {
+    for (index, id) in ids.iter().take(6).enumerate() {
         let mut thread = metadata(*id, index as i64, base, SessionSource::Cli);
         thread.model_provider = format!("{token}-projects");
         thread.title = format!("member {index}");
@@ -993,7 +996,7 @@ async fn project_scenario(
             roots(&["/a", "/b"]),
             attributes(&[("kind", "one")]),
             &strings[0..2],
-            "key-alpha"
+            &key("alpha")
         )
     )
     .expect("create alpha");
@@ -1010,7 +1013,7 @@ async fn project_scenario(
             Vec::new(),
             BTreeMap::new(),
             &[],
-            "key-alpha"
+            &key("alpha")
         )
     )
     .expect("repeat alpha");
@@ -1027,8 +1030,8 @@ async fn project_scenario(
                 "ghost".to_string(),
                 Vec::new(),
                 BTreeMap::new(),
-                &[ThreadId::new().to_string()],
-                "key-ghost"
+                &[ghost.to_string()],
+                &key("ghost")
             )
         )
         .map(|created| created.created.to_string())
@@ -1043,16 +1046,16 @@ async fn project_scenario(
                 Vec::new(),
                 BTreeMap::new(),
                 &["not-a-thread".to_string()],
-                "key-invalid"
+                &key("invalid")
             )
         )
         .map(|created| created.created.to_string())
         .unwrap_or_else(|error| error.to_string())
     ));
-    for (name, paths, member_range, key) in [
-        ("beta", &["/c"][..], 2..3, "key-beta"),
-        ("gamma", &[][..], 3..6, "key-gamma"),
-        ("delta", &["/d", "/e", "/f"][..], 0..0, "key-delta"),
+    for (name, paths, member_range, name_key) in [
+        ("beta", &["/c"][..], 2..3, "beta"),
+        ("gamma", &[][..], 3..6, "gamma"),
+        ("delta", &["/d", "/e", "/f"][..], 0..0, "delta"),
     ] {
         let created = both!(
             backend,
@@ -1061,7 +1064,7 @@ async fn project_scenario(
                 roots(paths),
                 BTreeMap::new(),
                 &strings[member_range],
-                key
+                &key(name_key)
             )
         )
         .expect("create project");
@@ -1083,10 +1086,10 @@ async fn project_scenario(
     ));
     log.push(format!(
         "by key: {:?} {:?}",
-        both!(backend, get_project_by_idempotency_key("key-beta"))
+        both!(backend, get_project_by_idempotency_key(&key("beta")))
             .expect("by key")
             .map(|p| labels.show(&p)),
-        both!(backend, get_project_by_idempotency_key("key-none"))
+        both!(backend, get_project_by_idempotency_key(&key("none")))
             .expect("by missing key")
             .map(|p| labels.show(&p)),
     ));
@@ -1217,7 +1220,7 @@ async fn project_scenario(
         both!(backend, get_thread(ids[3]))
             .expect("get member")
             .map(|thread| thread.project_id),
-        both!(backend, get_project_by_idempotency_key("key-gamma"))
+        both!(backend, get_project_by_idempotency_key(&key("gamma")))
             .map(|project| project.map(|p| labels.show(&p)))
             .map_err(|error| error.to_string()),
     ));
@@ -1244,7 +1247,7 @@ async fn real_postgres_projects_match_sqlite() {
             .as_nanos()
     );
     let base = run_base(&pool).await + chrono::Duration::seconds(40_000);
-    let ids: Vec<ThreadId> = (0..6).map(|_| ThreadId::new()).collect();
+    let ids: Vec<ThreadId> = (0..7).map(|_| ThreadId::new()).collect();
     let expected = project_scenario(&Backend::Sqlite(sqlite), &token, base, &ids).await;
     let actual = project_scenario(
         &Backend::Postgres(PostgresThreadCatalog::new(pool)),
