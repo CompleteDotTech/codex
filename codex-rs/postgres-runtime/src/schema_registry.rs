@@ -83,6 +83,21 @@ pub(crate) const PROTECTED_TABLES: &[ProtectedTable] = &[
             "queued_thread_revisions_revision_idx",
         ],
     },
+    ProtectedTable {
+        name: "logs",
+        runtime_privileges: "SELECT, INSERT, DELETE",
+        indexes: &[
+            "logs_pkey",
+            "logs_ts_idx",
+            "logs_thread_id_ts_idx",
+            "logs_threadless_process_ts_idx",
+        ],
+    },
+    ProtectedTable {
+        name: "log_id_counter",
+        runtime_privileges: "SELECT, UPDATE",
+        indexes: &["log_id_counter_pkey"],
+    },
 ];
 
 /// What a migration must look like before its schema qualifier is rewritten for a named
@@ -194,6 +209,32 @@ CREATE INDEX queued_thread_revisions_revision_idx
             META_UPDATE,
         ],
         qualified_identifiers: 9,
+    },
+    MigrationShape {
+        version: 9,
+        starts_with: Some("-- Inactive runtime log persistence"),
+        contains: &[
+            "
+CREATE TABLE codex_storage.logs (
+",
+            "
+CREATE INDEX logs_ts_idx
+",
+            "
+CREATE INDEX logs_thread_id_ts_idx
+",
+            "
+CREATE INDEX logs_threadless_process_ts_idx
+",
+            "
+CREATE TABLE codex_storage.log_id_counter (
+",
+            "
+INSERT INTO codex_storage.log_id_counter (singleton, last_id) VALUES (TRUE, 0);
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 7,
     },
 ];
 

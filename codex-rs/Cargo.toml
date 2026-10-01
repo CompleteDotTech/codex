@@ -94,6 +94,7 @@ members = [
     "process-hardening",
     "postgres-goal-store",
     "postgres-import-store",
+    "postgres-log-store",
     "postgres-queue-store",
     "postgres-runtime",
     "realtime-webrtc",
@@ -181,6 +182,7 @@ codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
 codex-postgres-goal-store = { path = "postgres-goal-store" }
 codex-postgres-import-store = { path = "postgres-import-store" }
+codex-postgres-log-store = { path = "postgres-log-store" }
 codex-postgres-queue-store = { path = "postgres-queue-store" }
 codex-postgres-runtime = { path = "postgres-runtime" }
 codex-storage-candidate-preflight = { path = "storage-candidate-preflight" }

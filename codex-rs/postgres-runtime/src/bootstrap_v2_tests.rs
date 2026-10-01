@@ -186,7 +186,7 @@ async fn real_v1_upgrade_through_graph_and_import_schemas_is_atomic() {
     .fetch_all(&mut *transaction)
     .await
     .expect("read v3 history");
-    assert_eq!(versions, (8, 8, 8));
+    assert_eq!(versions, (9, 9, 9));
     assert!(history_matches(
         &rows,
         BASE_MIGRATOR.migrations.as_ref(),
@@ -202,15 +202,15 @@ async fn real_v1_upgrade_through_graph_and_import_schemas_is_atomic() {
         Err(CompatibilityError::UnsupportedSchema)
     );
     let current = ClientCapabilities {
-        min_schema_format: 8,
-        max_schema_format: 8,
-        reader_version: 8,
-        writer_version: 8,
+        min_schema_format: 9,
+        max_schema_format: 9,
+        reader_version: 9,
+        writer_version: 9,
     };
     assert_eq!(
         check_codex_storage_compatibility(&first, current, RequiredAccess::ReadWrite).await,
         Ok(CompatibilityResult {
-            schema_format: 8,
+            schema_format: 9,
             activation_permitted: false,
         })
     );
@@ -352,7 +352,7 @@ async fn real_v2_upgrade_to_import_schema_is_atomic_and_role_scoped() {
     .fetch_all(&mut *inspection)
     .await
     .expect("read v3 history");
-    assert_eq!(versions, (8, 8, 8));
+    assert_eq!(versions, (9, 9, 9));
     assert!(history_matches(
         &history,
         BASE_MIGRATOR.migrations.as_ref(),
@@ -365,15 +365,15 @@ async fn real_v2_upgrade_to_import_schema_is_atomic_and_role_scoped() {
         Err(CompatibilityError::UnsupportedSchema)
     );
     let current = ClientCapabilities {
-        min_schema_format: 8,
-        max_schema_format: 8,
-        reader_version: 8,
-        writer_version: 8,
+        min_schema_format: 9,
+        max_schema_format: 9,
+        reader_version: 9,
+        writer_version: 9,
     };
     assert_eq!(
         check_codex_storage_compatibility(&first, current, RequiredAccess::ReadWrite).await,
         Ok(CompatibilityResult {
-            schema_format: 8,
+            schema_format: 9,
             activation_permitted: false
         })
     );
@@ -487,15 +487,15 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
     );
     assert_eq!((a, b), (Ok(()), Ok(())));
     let current = ClientCapabilities {
-        min_schema_format: 8,
-        max_schema_format: 8,
-        reader_version: 8,
-        writer_version: 8,
+        min_schema_format: 9,
+        max_schema_format: 9,
+        reader_version: 9,
+        writer_version: 9,
     };
     assert_eq!(
         check_codex_storage_compatibility(&first, current, RequiredAccess::ReadWrite).await,
         Ok(CompatibilityResult {
-            schema_format: 8,
+            schema_format: 9,
             activation_permitted: false,
         })
     );
@@ -712,15 +712,15 @@ async fn real_v4_upgrade_to_section_catalog_rejects_orphans_and_preserves_join()
     );
     assert_eq!((a, b), (Ok(()), Ok(())));
     let current = ClientCapabilities {
-        min_schema_format: 8,
-        max_schema_format: 8,
-        reader_version: 8,
-        writer_version: 8,
+        min_schema_format: 9,
+        max_schema_format: 9,
+        reader_version: 9,
+        writer_version: 9,
     };
     assert_eq!(
         check_codex_storage_compatibility(&first, current, RequiredAccess::ReadWrite).await,
         Ok(CompatibilityResult {
-            schema_format: 8,
+            schema_format: 9,
             activation_permitted: false,
         })
     );
@@ -732,13 +732,13 @@ async fn real_v4_upgrade_to_section_catalog_rejects_orphans_and_preserves_join()
         check_verified_target_compatibility(&first, &old_target, RequiredAccess::ReadWrite).await,
         Err(CompatibilityError::UnsupportedSchema)
     );
-    let current_fixture = SignedFixture::new(8);
+    let current_fixture = SignedFixture::new(9);
     let current_target = current_fixture.verify();
     assert_eq!(
         check_verified_target_compatibility(&first, &current_target, RequiredAccess::ReadWrite)
             .await,
         Ok(CompatibilityResult {
-            schema_format: 8,
+            schema_format: 9,
             activation_permitted: false,
         })
     );
