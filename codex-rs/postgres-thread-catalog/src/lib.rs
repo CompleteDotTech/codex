@@ -8,3 +8,4 @@ mod sections;
 mod timestamps;
 
 pub use catalog::PostgresThreadCatalog;
+pub use catalog::upsert_thread_in;

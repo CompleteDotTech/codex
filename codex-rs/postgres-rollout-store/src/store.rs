@@ -124,60 +124,9 @@ impl PostgresRolloutStore {
         lines: Vec<(Option<u64>, String)>,
     ) -> Result<u64, RolloutStoreError> {
         self.run(move |connection| {
-            Box::pin(async move {
-                let count = u64::try_from(lines.len())
-                    .map_err(|_| RolloutStoreError::Corrupt("batch is too large".to_string()))?;
-                lock_thread(connection, thread_id).await?;
-                let stored = next_position_in(connection, thread_id).await?;
-                if stored > expected_position {
-                    let end = expected_position.checked_add(count).ok_or(
-                        RolloutStoreError::Conflict {
-                            expected: expected_position,
-                            stored,
-                        },
-                    )?;
-                    if stored >= end {
-                        let existing =
-                            read_in(connection, thread_id, expected_position, lines.len()).await?;
-                        let same = existing.len() == lines.len()
-                            && existing
-                                .iter()
-                                .zip(&lines)
-                                .all(|(stored, (ordinal, line))| {
-                                    stored.ordinal == *ordinal && stored.line == *line
-                                });
-                        if same && count > 0 {
-                            return Ok(end);
-                        }
-                    }
-                    return Err(RolloutStoreError::Conflict {
-                        expected: expected_position,
-                        stored,
-                    });
-                }
-                if stored < expected_position {
-                    return Err(RolloutStoreError::Conflict {
-                        expected: expected_position,
-                        stored,
-                    });
-                }
-                for (offset, (ordinal, line)) in lines.iter().enumerate() {
-                    let position = i64::try_from(expected_position + offset as u64)
-                        .map_err(|_| RolloutStoreError::Corrupt("position overflow".to_string()))?;
-                    sqlx::query(
-                        "INSERT INTO codex_storage.thread_rollout_lines \
-                         (thread_id, position, ordinal, line) VALUES ($1::uuid, $2, $3, $4)",
-                    )
-                    .bind(thread_id.to_string())
-                    .bind(position)
-                    .bind(ordinal.map(|ordinal| ordinal as i64))
-                    .bind(line)
-                    .execute(&mut *connection)
-                    .await
-                    .map_err(database)?;
-                }
-                Ok(expected_position + count)
-            })
+            Box::pin(
+                async move { append_in(connection, thread_id, expected_position, &lines).await },
+            )
         })
         .await
     }
@@ -276,6 +225,62 @@ impl PostgresRolloutStore {
         })
         .await
     }
+}
+
+/// Compare-and-extend inside the caller's transaction; see [`PostgresRolloutStore::append`].
+pub async fn append_in(
+    connection: &mut PgConnection,
+    thread_id: ThreadId,
+    expected_position: u64,
+    lines: &[(Option<u64>, String)],
+) -> Result<u64, RolloutStoreError> {
+    let count = u64::try_from(lines.len())
+        .map_err(|_| RolloutStoreError::Corrupt("batch is too large".to_string()))?;
+    lock_thread(connection, thread_id).await?;
+    let stored = next_position_in(connection, thread_id).await?;
+    if stored > expected_position {
+        let end = expected_position
+            .checked_add(count)
+            .ok_or(RolloutStoreError::Conflict {
+                expected: expected_position,
+                stored,
+            })?;
+        if stored >= end {
+            let existing = read_in(connection, thread_id, expected_position, lines.len()).await?;
+            let same = existing.len() == lines.len()
+                && existing.iter().zip(lines).all(|(stored, (ordinal, line))| {
+                    stored.ordinal == *ordinal && stored.line == *line
+                });
+            if same && count > 0 {
+                return Ok(end);
+            }
+        }
+        return Err(RolloutStoreError::Conflict {
+            expected: expected_position,
+            stored,
+        });
+    }
+    if stored < expected_position {
+        return Err(RolloutStoreError::Conflict {
+            expected: expected_position,
+            stored,
+        });
+    }
+    for (offset, (ordinal, line)) in lines.iter().enumerate() {
+        let position = i64::try_from(expected_position + offset as u64)
+            .map_err(|_| RolloutStoreError::Corrupt("position overflow".to_string()))?;
+        sqlx::query(
+            "INSERT INTO codex_storage.thread_rollout_lines              (thread_id, position, ordinal, line) VALUES ($1::uuid, $2, $3, $4)",
+        )
+        .bind(thread_id.to_string())
+        .bind(position)
+        .bind(ordinal.map(|ordinal| ordinal as i64))
+        .bind(line)
+        .execute(&mut *connection)
+        .await
+        .map_err(database)?;
+    }
+    Ok(expected_position + count)
 }
 
 /// Lock the thread row, which also proves the thread exists.

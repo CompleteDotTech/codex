@@ -99,6 +99,7 @@ members = [
     "postgres-message-board",
     "postgres-thread-catalog",
     "postgres-thread-rows",
+    "postgres-thread-store",
     "postgres-queue-store",
     "postgres-rollout-store",
     "postgres-runtime",
@@ -192,6 +193,7 @@ codex-postgres-memory-store = { path = "postgres-memory-store" }
 codex-postgres-message-board = { path = "postgres-message-board" }
 codex-postgres-thread-catalog = { path = "postgres-thread-catalog" }
 codex-postgres-thread-rows = { path = "postgres-thread-rows" }
+codex-postgres-thread-store = { path = "postgres-thread-store" }
 codex-postgres-queue-store = { path = "postgres-queue-store" }
 codex-postgres-rollout-store = { path = "postgres-rollout-store" }
 codex-postgres-runtime = { path = "postgres-runtime" }

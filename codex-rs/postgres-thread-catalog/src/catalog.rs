@@ -532,6 +532,16 @@ async fn get_thread_in(
         .transpose()
 }
 
+/// Insert or replace thread metadata inside the caller's transaction, so a thread row and the
+/// data that references it can commit together.
+pub async fn upsert_thread_in(
+    connection: &mut PgConnection,
+    metadata: &ThreadMetadata,
+    memory_mode: &str,
+) -> Result<()> {
+    upsert_in(connection, metadata, memory_mode).await
+}
+
 /// Insert or replace thread metadata. Daybreak, project and section choices are insert-only;
 /// explicit changes use their own setters.
 async fn upsert_in(

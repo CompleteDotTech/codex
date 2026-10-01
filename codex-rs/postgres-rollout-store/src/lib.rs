@@ -5,3 +5,4 @@ mod store;
 pub use store::PostgresRolloutStore;
 pub use store::RolloutStoreError;
 pub use store::StoredRolloutLine;
+pub use store::append_in;

@@ -4419,6 +4419,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-postgres-thread-store"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "codex-git-utils",
+ "codex-postgres-rollout-store",
+ "codex-postgres-runtime",
+ "codex-postgres-thread-catalog",
+ "codex-protocol",
+ "codex-rollout",
+ "codex-state",
+ "codex-thread-store",
+ "codex-utils-absolute-path",
+ "codex-utils-path",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "codex-process-hardening"
 version = "0.0.0"
 dependencies = [

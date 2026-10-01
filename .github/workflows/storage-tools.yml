@@ -185,6 +185,9 @@ jobs:
       - name: Test canonical rollout storage against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_ROLLOUT_STORE_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-rollout-store real_postgres_rollouts
+      - name: Compare thread store behavior across SQLite and PostgreSQL
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_THREAD_STORE_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-thread-store real_postgres_thread_store
       - name: Test two-namespace role isolation against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_postgres_roles_isolate_two_schemas
