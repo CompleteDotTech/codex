@@ -12,6 +12,9 @@ mod errors;
 #[path = "agents_overview_loading.rs"]
 mod loading;
 
+#[path = "agents_overview_retention.rs"]
+mod retention;
+
 use super::agents_overview_view::AgentsOverviewGroup;
 use super::agents_overview_view::AgentsOverviewRow;
 use super::agents_overview_view::AgentsOverviewView;
@@ -27,6 +30,7 @@ use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_protocol::protocol::SubAgentSource;
+use std::collections::VecDeque;
 
 pub(crate) const AGENTS_OVERVIEW_VIEW_ID: &str = "agents-overview";
 
@@ -61,6 +65,7 @@ pub(super) struct AgentsOverviewState {
     pub(super) selected_permission_profiles: HashMap<ThreadId, String>,
     /// Keep new tasks subscribed and reusable until a first turn makes them resumable.
     pub(super) blank_sessions: HashMap<ThreadId, crate::app_server_session::AppServerStartedThread>,
+    pub(super) blank_session_order: VecDeque<ThreadId>,
     pub(super) input_states: HashMap<ThreadId, ThreadInputState>,
     pub(super) new_session_draft: Option<Box<StartupDraftPump>>,
     pub(super) dispatched_requests: HashMap<ThreadId, Vec<ServerRequest>>,
@@ -419,6 +424,8 @@ impl App {
             loading::draw(tui)?;
         }
         let mut restored_blank_session = false;
+        let mut settings_from_server = false;
+        let mut resumed_collaboration_mode = false;
         if self.primary_thread_id != Some(root_thread_id) {
             let previous_displayed_thread_id = self.current_displayed_thread_id();
             if let Some(id) = previous_displayed_thread_id
@@ -620,7 +627,11 @@ impl App {
                     )
                     .await
                 {
-                    Ok(resumed) => (resumed, false),
+                    Ok(resumed) => {
+                        settings_from_server = true;
+                        resumed_collaboration_mode = resumed.session.collaboration_mode.is_some();
+                        (resumed, false)
+                    }
                     Err(error) if crate::app_server_session::is_active_writer_error(&error) => {
                         match app_server
                             .read_thread_for_viewing(
@@ -632,6 +643,7 @@ impl App {
                         {
                             Ok((thread, notice)) => {
                                 history_notice = notice;
+                                settings_from_server = true;
                                 (thread, true)
                             }
                             Err(_) => {
@@ -838,7 +850,19 @@ impl App {
         if self.current_displayed_thread_id() == Some(root_thread_id)
             && let Some(mut input_state) = self.agents_overview.input_states.remove(&root_thread_id)
         {
-            // A saved draft includes model settings, so apply newer server settings after it.
+            // Keep the resumed server settings while restoring the local draft.
+            if settings_from_server
+                && let Some(current) = self.chat_widget.capture_thread_input_state()
+            {
+                input_state.current_collaboration_mode = current.current_collaboration_mode;
+                if resumed_collaboration_mode {
+                    input_state.active_collaboration_mask = current.active_collaboration_mask;
+                    input_state.plan_mode_reasoning_effort = current.plan_mode_reasoning_effort;
+                } else if let Some(mask) = input_state.active_collaboration_mask.as_mut() {
+                    mask.model = Some(self.chat_widget.current_model().to_string());
+                    mask.reasoning_effort = Some(self.chat_widget.current_reasoning_effort());
+                }
+            }
             let pending_settings = restored_blank_session
                 .then(|| input_state.pending_thread_settings.take())
                 .flatten();
