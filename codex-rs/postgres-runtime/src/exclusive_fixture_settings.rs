@@ -151,7 +151,7 @@ where
         port: port as u16,
         database: "codex".to_string(),
         username: format!("codex_{role}"),
-        password: password.trim().to_string(),
+        password: password.trim().to_string().into(),
         ca_certificate: state.join("secrets/ca.crt"),
         limits: PoolLimits {
             connect_timeout: Duration::from_secs(/*secs*/ 5),

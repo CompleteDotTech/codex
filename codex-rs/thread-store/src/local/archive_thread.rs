@@ -1,6 +1,6 @@
 use super::LocalThreadStore;
+use super::helpers::ensure_unambiguous_rollout;
 use super::helpers::owned_rollout_paths_from_index;
-use super::helpers::restore_rollout_moves;
 use super::helpers::rollout_path_is_archived;
 use super::helpers::scoped_rollout_path;
 use super::helpers::validated_rollout_file_name;
@@ -11,6 +11,9 @@ use chrono::Utc;
 use codex_rollout::RolloutReferenceIndex;
 use tracing::warn;
 
+use super::rollout_move_transaction::MoveDirection;
+use super::rollout_move_transaction::begin_move;
+use super::rollout_move_transaction::replay_pending_move;
 use super::thread_rollout_resolver;
 pub(super) async fn archive_threads(
     store: &LocalThreadStore,
@@ -39,19 +42,34 @@ pub(super) async fn archive_threads(
         }
     }
     let _writer_guards = store.acquire_writer_locks(&lock_thread_ids).await?;
+    let mut replayed_archives = std::collections::HashSet::new();
+    for &thread_id in &thread_ids {
+        if replay_pending_move(store, thread_id).await? == Some(MoveDirection::Archive) {
+            replayed_archives.insert(thread_id);
+        }
+    }
     // Only inspect active files whose names belong to the threads being archived.
     let reference_index = RolloutReferenceIndex::scan_unarchived_threads(
         store.config.codex_home.as_path(),
         &thread_ids,
     )
     .await
-    .map_err(|err| ThreadStoreError::Internal {
-        message: format!("failed to scan thread rollout files: {err}"),
+    .map_err(|err| match err.kind() {
+        std::io::ErrorKind::AlreadyExists => ThreadStoreError::Conflict {
+            message: err.to_string(),
+        },
+        _ => ThreadStoreError::Internal {
+            message: format!("failed to scan thread rollout files: {err}"),
+        },
     })?;
 
     let parent_thread_id = thread_ids[0];
     let mut archived_thread_ids = Vec::new();
     for thread_id in thread_ids {
+        if replayed_archives.contains(&thread_id) {
+            archived_thread_ids.push(thread_id);
+            continue;
+        }
         let rollout_paths = owned_rollout_paths_from_index(&reference_index, thread_id);
         match archive_thread_with_paths(store, thread_id, rollout_paths).await {
             Ok(()) => archived_thread_ids.push(thread_id),
@@ -87,6 +105,11 @@ async fn archive_thread_with_paths(
     if !rollout_paths.contains(&selected_rollout_path) {
         rollout_paths.push(selected_rollout_path.clone());
     }
+    for rollout_path in &rollout_paths {
+        if !rollout_path_is_archived(store.config.codex_home.as_path(), rollout_path) {
+            ensure_unambiguous_rollout(rollout_path)?;
+        }
+    }
     let mut archived_path = None;
     let mut rollout_moves = Vec::new();
     for rollout_path in rollout_paths {
@@ -115,37 +138,36 @@ async fn archive_thread_with_paths(
         message: format!("failed to archive selected rollout for thread {thread_id}"),
     })?;
 
-    for (index, (source, destination)) in rollout_moves.iter().enumerate() {
-        if let Err(err) = std::fs::rename(source, destination) {
-            if let Err(restore_err) = restore_rollout_moves(&rollout_moves[..index]) {
-                return Err(ThreadStoreError::Internal {
-                    message: format!(
-                        "failed to archive thread: {err}; failed to restore moved rollouts: {restore_err}"
-                    ),
-                });
-            }
-            return Err(ThreadStoreError::Internal {
-                message: format!("failed to archive thread: {err}"),
-            });
-        }
-    }
+    let pending = begin_move(
+        store.config.codex_home.as_path(),
+        thread_id,
+        MoveDirection::Archive,
+        archived_path.as_path(),
+        &rollout_moves,
+    )
+    .map_err(|err| ThreadStoreError::Internal {
+        message: format!("failed to record archive move: {err}"),
+    })?;
+    pending
+        .move_all(store.config.codex_home.as_path())
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to archive thread: {err}"),
+        })?;
 
     if let Some(ctx) = state_db_ctx
         && let Err(err) = ctx
             .mark_archived(thread_id, archived_path.as_path(), Utc::now())
             .await
     {
-        if let Err(restore_err) = restore_rollout_moves(&rollout_moves) {
-            return Err(ThreadStoreError::Internal {
-                message: format!(
-                    "failed to update archived thread metadata: {err}; failed to restore moved rollouts: {restore_err}"
-                ),
-            });
-        }
         return Err(ThreadStoreError::Internal {
             message: format!("failed to update archived thread metadata: {err}"),
         });
     }
+    pending
+        .complete()
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to finish archive move: {err}"),
+        })?;
     Ok(())
 }
 
@@ -169,9 +191,34 @@ mod tests {
     use crate::ThreadSortKey;
     use crate::ThreadStore;
     use crate::local::LocalThreadStore;
+    #[cfg(unix)]
+    use crate::local::rollout_move_file::tests::move_rollout_noclobber;
     use crate::local::test_support::test_config;
+    use crate::local::test_support::write_archived_session_file;
     use crate::local::test_support::write_session_file;
     use crate::local::test_support::write_session_file_with_history_mode;
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_move_accepts_symlinked_sessions_collection() {
+        let home = TempDir::new().expect("temp home");
+        let external = TempDir::new().expect("external sessions");
+        std::os::unix::fs::symlink(external.path(), home.path().join("sessions"))
+            .expect("link sessions collection");
+        let archive = home.path().join(ARCHIVED_SESSIONS_SUBDIR);
+        std::fs::create_dir(&archive).expect("archive collection");
+        let source = external.path().join("rollout.jsonl");
+        std::fs::write(&source, b"owned rollout").expect("source rollout");
+        let destination = archive.join("rollout.jsonl");
+
+        move_rollout_noclobber(&source, &destination, home.path()).expect("archive rollout");
+
+        assert!(!source.exists());
+        assert_eq!(
+            std::fs::read(destination).expect("archived rollout"),
+            b"owned rollout"
+        );
+    }
 
     #[tokio::test]
     async fn archive_waits_for_fork_reservation_without_holding_writer_lock() {
@@ -367,5 +414,58 @@ mod tests {
         assert_eq!(updated.rollout_path, archived_path);
         assert!(updated.archived_at.is_some());
         assert_eq!(updated.recency_at, metadata.recency_at);
+    }
+
+    #[tokio::test]
+    async fn archive_does_not_replace_an_existing_canonical_file() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(/*v*/ 303);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let source = write_session_file(home.path(), "2025-01-03T12-00-00", uuid)
+            .expect("active canonical file");
+        let destination = write_archived_session_file(home.path(), "2025-01-03T12-00-00", uuid)
+            .expect("occupied archived file");
+        let source_bytes = std::fs::read(&source).expect("read source");
+        let destination_bytes = std::fs::read(&destination).expect("read destination");
+        assert_ne!(source_bytes, destination_bytes);
+
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db");
+        let mut builder = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            source.clone(),
+            Utc::now(),
+            SessionSource::Cli,
+        );
+        builder.cwd = home.path().to_path_buf();
+        let metadata = builder.build(config.default_model_provider_id.as_str());
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("upsert thread");
+        let store = LocalThreadStore::new(config, Some(runtime.clone()));
+
+        let error = store
+            .archive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect_err("occupied destination must prevent archive");
+        assert!(matches!(error, ThreadStoreError::Internal { .. }));
+        assert_eq!(
+            std::fs::read(source).expect("source retained"),
+            source_bytes
+        );
+        assert_eq!(
+            std::fs::read(destination).expect("destination retained"),
+            destination_bytes
+        );
+        assert_eq!(
+            runtime.get_thread(thread_id).await.expect("state read"),
+            Some(metadata)
+        );
     }
 }
