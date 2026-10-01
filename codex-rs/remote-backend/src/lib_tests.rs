@@ -139,7 +139,14 @@ async fn real_postgres_remote_backend_selection() {
     codex_storage_authority::abandon_cutover(home, &intent).expect("abandon");
 
     // A real cutover of an empty home makes PostgreSQL authoritative.
-    let source = SqliteSource::new(SqliteConfig::new_for_testing(home.abs()));
+    let sqlite = SqliteConfig::new_for_testing(home.abs());
+    // A real home has its databases, with the rows every fresh home starts with.
+    let runtime = codex_state::StateRuntime::init(sqlite.clone(), "test-provider".to_string())
+        .await
+        .expect("create the source databases");
+    runtime.close().await;
+    drop(runtime);
+    let source = SqliteSource::new(sqlite);
     let migrator = Migrator::new(source.clone(), pool.clone());
     let summary = migrator.import().await.expect("import");
     migrator.verify(summary.run_id).await.expect("verify");
