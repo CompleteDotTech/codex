@@ -85,18 +85,24 @@ async fn real_postgres_roles_isolate_two_schemas() {
         .await
         .expect("isolation runtime");
 
-    owner_sql(
-        &default_migrator,
-        "SET LOCAL ROLE codex_owner",
-        "DROP TABLE IF EXISTS codex_storage.isolation_probe; CREATE TABLE codex_storage.isolation_probe (value INTEGER NOT NULL)",
-    )
-    .await;
-    owner_sql(
-        &isolation_migrator,
-        "SET LOCAL ROLE codex_isolation_owner",
-        "DROP TABLE IF EXISTS codex_storage_isolation.isolation_probe; CREATE TABLE codex_storage_isolation.isolation_probe (value INTEGER NOT NULL)",
-    )
-    .await;
+    for (pool, role, drop, create) in [
+        (
+            &default_migrator,
+            "SET LOCAL ROLE codex_owner",
+            "DROP TABLE IF EXISTS codex_storage.isolation_probe",
+            "CREATE TABLE codex_storage.isolation_probe (value INTEGER NOT NULL)",
+        ),
+        (
+            &isolation_migrator,
+            "SET LOCAL ROLE codex_isolation_owner",
+            "DROP TABLE IF EXISTS codex_storage_isolation.isolation_probe",
+            "CREATE TABLE codex_storage_isolation.isolation_probe (value INTEGER NOT NULL)",
+        ),
+    ] {
+        // Clear a probe left by an interrupted run before creating a fresh one.
+        owner_sql(pool, role, drop).await;
+        owner_sql(pool, role, create).await;
+    }
 
     for (pool, own, other) in [
         (
