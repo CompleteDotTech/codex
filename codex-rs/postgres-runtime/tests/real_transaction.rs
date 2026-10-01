@@ -163,10 +163,7 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
         .acquire()
         .await
         .expect("acquire migrator for cleanup");
-    let mut owner = connection
-        .begin()
-        .await
-        .expect("begin cleanup transaction");
+    let mut owner = connection.begin().await.expect("begin cleanup transaction");
     sqlx::query("SET LOCAL ROLE codex_owner")
         .execute(&mut *owner)
         .await

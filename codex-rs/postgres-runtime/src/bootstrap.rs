@@ -66,8 +66,14 @@ pub(crate) async fn recorded_history_matches(
     if expected_len == 0 || expected_len > migrations.len() {
         return Ok(false);
     }
-    let versions: Vec<i64> = migrations.iter().map(|migration| migration.version).collect();
-    let checksums: Vec<&[u8]> = migrations.iter().map(|migration| migration.checksum.as_ref()).collect();
+    let versions: Vec<i64> = migrations
+        .iter()
+        .map(|migration| migration.version)
+        .collect();
+    let checksums: Vec<&[u8]> = migrations
+        .iter()
+        .map(|migration| migration.checksum.as_ref())
+        .collect();
     let rows = sqlx::query(
         "SELECT history.version, history.success, COALESCE(history.checksum = expected.checksum, FALSE) AS checksum_matches
          FROM ONLY codex_storage._codex_pg_migrations history
