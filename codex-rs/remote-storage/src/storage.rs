@@ -25,6 +25,7 @@ use std::time::Duration;
 /// The schema every client without an explicit named namespace uses.
 const DEFAULT_SCHEMA: &str = "codex_storage";
 const DEFAULT_RUNTIME_LOGIN: &str = "codex_runtime";
+const DEFAULT_MIGRATOR_LOGIN: &str = "codex_migrator";
 
 /// Whether the dataset accepts writes, and which activation it is at.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +38,66 @@ pub struct StorageActivation {
     pub generation: i64,
     /// The dataset the last activation published; `None` before the first one.
     pub dataset_id: Option<uuid::Uuid>,
+}
+
+/// Which of the dataset's two logins a connection uses.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LoginRole {
+    /// Reads and writes data through the stores.
+    Runtime,
+    /// Creates and upgrades tables; used only by the explicit initialize and upgrade actions.
+    Migrator,
+}
+
+/// Connection settings and the namespace for one login of the profile's dataset.
+///
+/// The runtime login uses the profile's `credential`. The migrator login uses its
+/// `migrator_credential`, and a profile without one cannot initialize or upgrade a dataset.
+pub fn connection_settings(
+    profile: &RemotePostgresProfile,
+    resolver: &HostCredentialResolver<'_>,
+    role: LoginRole,
+) -> Result<(ConnectionSettings, Option<NamedNamespace>), RemoteStorageError> {
+    let namespace = if profile.namespace() == DEFAULT_SCHEMA {
+        None
+    } else {
+        Some(
+            NamedNamespace::new(profile.namespace())
+                .map_err(|_| RemoteStorageError::UnsupportedNamespace)?,
+        )
+    };
+    let ca_certificate = profile
+        .ca_certificate()
+        .ok_or(RemoteStorageError::CaCertificateRequired)?;
+    let source = match role {
+        LoginRole::Runtime => profile.credential(),
+        LoginRole::Migrator => profile
+            .migrator_credential()
+            .ok_or(RemoteStorageError::MigratorCredentialMissing)?,
+    };
+    let credential = resolver
+        .resolve(source)
+        .map_err(RemoteStorageError::Credential)?;
+    let username = match (role, namespace.as_ref()) {
+        (LoginRole::Runtime, None) => DEFAULT_RUNTIME_LOGIN,
+        (LoginRole::Migrator, None) => DEFAULT_MIGRATOR_LOGIN,
+        (LoginRole::Runtime, Some(namespace)) => namespace.runtime_login(),
+        (LoginRole::Migrator, Some(namespace)) => namespace.migrator_login(),
+    };
+    let settings = ConnectionSettings {
+        host: profile.endpoint().to_owned(),
+        port: profile.port(),
+        database: profile.database().to_owned(),
+        username: username.to_owned(),
+        password: credential.into_zeroizing().into(),
+        ca_certificate: ca_certificate.to_path_buf(),
+        limits: PoolLimits {
+            connect_timeout: Duration::from_secs(u64::from(profile.connect_timeout_seconds())),
+            acquire_timeout: Duration::from_secs(u64::from(profile.pool_acquire_timeout_seconds())),
+            max_connections: u32::from(profile.max_connections()),
+        },
+    };
+    Ok((settings, namespace))
 }
 
 /// A verified connection to one remote dataset.
@@ -59,38 +120,7 @@ impl RemoteStorage {
         profile: &RemotePostgresProfile,
         resolver: &HostCredentialResolver<'_>,
     ) -> Result<Self, RemoteStorageError> {
-        let namespace = if profile.namespace() == DEFAULT_SCHEMA {
-            None
-        } else {
-            Some(
-                NamedNamespace::new(profile.namespace())
-                    .map_err(|_| RemoteStorageError::UnsupportedNamespace)?,
-            )
-        };
-        let ca_certificate = profile
-            .ca_certificate()
-            .ok_or(RemoteStorageError::CaCertificateRequired)?;
-        let credential = resolver
-            .resolve(profile.credential())
-            .map_err(RemoteStorageError::Credential)?;
-        let username = namespace
-            .as_ref()
-            .map_or(DEFAULT_RUNTIME_LOGIN, NamedNamespace::runtime_login);
-        let settings = ConnectionSettings {
-            host: profile.endpoint().to_owned(),
-            port: profile.port(),
-            database: profile.database().to_owned(),
-            username: username.to_owned(),
-            password: credential.into_zeroizing().into(),
-            ca_certificate: ca_certificate.to_path_buf(),
-            limits: PoolLimits {
-                connect_timeout: Duration::from_secs(u64::from(profile.connect_timeout_seconds())),
-                acquire_timeout: Duration::from_secs(u64::from(
-                    profile.pool_acquire_timeout_seconds(),
-                )),
-                max_connections: u32::from(profile.max_connections()),
-            },
-        };
+        let (settings, namespace) = connection_settings(profile, resolver, LoginRole::Runtime)?;
         let pool = Arc::new(
             PostgresPool::connect_in_namespace(settings, namespace.as_ref())
                 .await
@@ -139,6 +169,16 @@ impl RemoteStorage {
             generation,
             dataset_id: dataset.and_then(|value| uuid::Uuid::parse_str(&value).ok()),
         })
+    }
+
+    /// The pool every store of this handle shares, for hosts that run storage operations.
+    pub fn pool(&self) -> &Arc<PostgresPool> {
+        &self.pool
+    }
+
+    /// The named namespace this handle addresses; `None` is the default schema.
+    pub fn namespace(&self) -> Option<&NamedNamespace> {
+        self.namespace.as_ref()
     }
 
     /// The generation this connection was opened against.

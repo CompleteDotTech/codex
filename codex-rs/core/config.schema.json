@@ -4292,6 +4292,14 @@
               "minimum": 1.0,
               "type": "integer"
             },
+            "migrator_credential": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/CredentialSource"
+                }
+              ],
+              "description": "The login that creates and upgrades tables. Only the explicit initialize and upgrade actions read it; ordinary operation uses `credential` alone."
+            },
             "namespace": {
               "type": "string"
             },

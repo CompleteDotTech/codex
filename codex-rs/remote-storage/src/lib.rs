@@ -10,5 +10,7 @@ mod error;
 mod storage;
 
 pub use error::RemoteStorageError;
+pub use storage::LoginRole;
 pub use storage::RemoteStorage;
 pub use storage::StorageActivation;
+pub use storage::connection_settings;

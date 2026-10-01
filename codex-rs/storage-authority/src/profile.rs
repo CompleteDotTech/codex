@@ -149,6 +149,10 @@ pub struct RemotePostgresProfile {
     database: String,
     namespace: String,
     credential: CredentialSource,
+    /// The login that creates and upgrades tables. Only the explicit initialize and upgrade
+    /// actions read it; ordinary operation uses `credential` alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    migrator_credential: Option<CredentialSource>,
     #[serde(default)]
     tls: TlsSettings,
     #[schemars(range(min = 1, max = 30))]
@@ -174,6 +178,8 @@ struct RawRemotePostgresProfile {
     namespace: String,
     credential: CredentialSource,
     #[serde(default)]
+    migrator_credential: Option<CredentialSource>,
+    #[serde(default)]
     tls: TlsSettings,
     connect_timeout_seconds: u16,
     pool_acquire_timeout_seconds: u16,
@@ -189,6 +195,7 @@ impl<'de> Deserialize<'de> for RemotePostgresProfile {
             database: raw.database,
             namespace: raw.namespace,
             credential: raw.credential,
+            migrator_credential: raw.migrator_credential,
             tls: raw.tls,
             connect_timeout_seconds: raw.connect_timeout_seconds,
             pool_acquire_timeout_seconds: raw.pool_acquire_timeout_seconds,
@@ -214,6 +221,10 @@ impl RemotePostgresProfile {
     }
     pub fn credential(&self) -> &CredentialSource {
         &self.credential
+    }
+    /// The schema-owner credential, when the host configured one for initialize and upgrade.
+    pub fn migrator_credential(&self) -> Option<&CredentialSource> {
+        self.migrator_credential.as_ref()
     }
     pub fn ca_certificate(&self) -> Option<&std::path::Path> {
         self.tls.ca_certificate.as_deref()

@@ -13,6 +13,8 @@ pub enum RemoteStorageError {
     CaCertificateRequired,
     /// The credential could not be resolved.
     Credential(CredentialResolutionError),
+    /// The profile has no schema-owner credential, so it cannot initialize or upgrade a dataset.
+    MigratorCredentialMissing,
     /// The connection could not be established.
     Connection(PoolError),
     /// The store's schema does not match this build.
@@ -38,6 +40,7 @@ impl RemoteStorageError {
             Self::Credential(CredentialResolutionError::StoreUnavailable) => true,
             Self::UnsupportedNamespace
             | Self::CaCertificateRequired
+            | Self::MigratorCredentialMissing
             | Self::Credential(_)
             | Self::Connection(_)
             | Self::Schema(_)

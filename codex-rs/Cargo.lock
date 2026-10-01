@@ -4976,6 +4976,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-storage-service"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-keyring-store",
+ "codex-postgres-runtime",
+ "codex-protocol",
+ "codex-remote-storage",
+ "codex-state",
+ "codex-storage-authority",
+ "codex-storage-migration",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "codex-tcp-tunnel"
 version = "0.0.0"
 dependencies = [

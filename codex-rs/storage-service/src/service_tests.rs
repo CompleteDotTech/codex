@@ -1,0 +1,314 @@
+use super::*;
+use codex_keyring_store::KeyringStore;
+use codex_keyring_store::tests::MockKeyringStore;
+use codex_postgres_runtime::ConnectionSettings;
+use codex_postgres_runtime::PoolLimits;
+use codex_postgres_runtime::PostgresPool;
+use codex_protocol::ThreadId;
+use codex_protocol::protocol::SessionSource;
+use codex_state::SqliteConfig;
+use codex_state::StateRuntime;
+use codex_state::ThreadMetadataBuilder;
+use codex_storage_authority::RemotePostgresProfile;
+use codex_utils_absolute_path::test_support::PathExt;
+use pretty_assertions::assert_eq;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+use uuid::Uuid;
+
+const KEYRING_SERVICE: &str = "codex-postgres-storage";
+
+fn receipt(state: &Path) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(state.join("receipt.json")).expect("receipt"))
+        .expect("receipt json")
+}
+
+fn password(state: &Path, role: &str) -> String {
+    std::fs::read_to_string(state.join(format!("secrets/{role}.password")))
+        .expect("password")
+        .trim()
+        .to_string()
+}
+
+fn profile(state: &Path, with_migrator: bool) -> RemotePostgresProfile {
+    let mut value = serde_json::json!({
+        "endpoint": "localhost",
+        "port": receipt(state)["port"],
+        "database": "codex",
+        "namespace": "codex_storage",
+        "credential": {"source": "keyring", "id": "service-runtime"},
+        "tls": {"verification": "verify_full", "ca_certificate": state.join("secrets/ca.crt")},
+        "connect_timeout_seconds": 5,
+        "pool_acquire_timeout_seconds": 20,
+        "max_connections": 4
+    });
+    if with_migrator {
+        value["migrator_credential"] =
+            serde_json::json!({"source": "keyring", "id": "service-migrator"});
+    }
+    serde_json::from_value(value).expect("profile")
+}
+
+fn keyring(state: &Path, runtime_password: Option<&str>) -> Arc<MockKeyringStore> {
+    let keyring = MockKeyringStore::default();
+    keyring
+        .save(
+            KEYRING_SERVICE,
+            "service-runtime",
+            runtime_password.unwrap_or(&password(state, "runtime")),
+        )
+        .expect("runtime credential");
+    keyring
+        .save(
+            KEYRING_SERVICE,
+            "service-migrator",
+            &password(state, "migrator"),
+        )
+        .expect("migrator credential");
+    Arc::new(keyring)
+}
+
+async fn reset_target(state: &Path) {
+    let pool = PostgresPool::connect_in_namespace(
+        ConnectionSettings {
+            host: "localhost".to_string(),
+            port: receipt(state)["port"].as_u64().expect("port") as u16,
+            database: "codex".to_string(),
+            username: "codex_runtime".to_string(),
+            password: password(state, "runtime").into(),
+            ca_certificate: state.join("secrets/ca.crt"),
+            limits: PoolLimits {
+                connect_timeout: Duration::from_secs(5),
+                acquire_timeout: Duration::from_secs(20),
+                max_connections: 2,
+            },
+        },
+        /*namespace*/ None,
+    )
+    .await
+    .expect("reset pool");
+    let mut connection = pool.acquire().await.expect("connection");
+    for statement in [
+        "UPDATE storage_activation SET state = 'open', run_id = NULL, generation = 0, dataset_id = NULL",
+        "DELETE FROM storage_migration_runs",
+        "DELETE FROM threads",
+        "DELETE FROM projects",
+        "DELETE FROM logs",
+        "DELETE FROM agent_board_posts",
+        "DELETE FROM memory_stage1_outputs",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&mut *connection)
+            .await
+            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+    }
+}
+
+async fn populated_home() -> tempfile::TempDir {
+    let home = tempfile::tempdir().expect("home");
+    let sqlite = SqliteConfig::new_for_testing(home.path().abs());
+    let runtime = StateRuntime::init(sqlite, "service-provider".to_string())
+        .await
+        .expect("runtime");
+    let mut builder = ThreadMetadataBuilder::new(
+        ThreadId::new(),
+        home.path().join("rollout.jsonl"),
+        chrono::Utc::now(),
+        SessionSource::Cli,
+    );
+    builder.model_provider = Some("service-provider".to_string());
+    runtime
+        .upsert_thread(&builder.build("service-provider"))
+        .await
+        .expect("thread");
+    runtime.close().await;
+    home
+}
+
+fn service(
+    home: &Path,
+    state: &Path,
+    candidate: Option<RemotePostgresProfile>,
+    keyring: Arc<MockKeyringStore>,
+) -> StorageService {
+    let _ = state;
+    StorageService::new(StorageServiceInputs {
+        codex_home: home.to_path_buf(),
+        sqlite: SqliteConfig::new_for_testing(home.abs()),
+        candidate,
+        default_model_provider_id: "service-provider".to_string(),
+        host_label: "test-host".to_string(),
+        keyring,
+    })
+}
+
+#[tokio::test]
+async fn real_postgres_storage_service() {
+    let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_STORAGE_SERVICE_STATE") else {
+        return;
+    };
+    let state = Path::new(&state);
+    reset_target(state).await;
+    let home = populated_home().await;
+
+    // Without a saved profile nothing can be tested or planned, and the home is plainly local.
+    let bare = service(home.path(), state, None, keyring(state, None));
+    let status = bare.status(true).await;
+    assert_eq!(status.active_backend, BackendName::LocalSqlite);
+    assert_eq!(status.authority, AuthorityLabel::Unmanaged);
+    assert!(!status.candidate_configured);
+    assert_eq!(
+        bare.check_connection().await.blocker,
+        Some(BlockerCode::NoCandidateProfile)
+    );
+    let plan = bare.plan(PlanAction::Migrate).await.expect("plan");
+    assert!(plan.blockers.contains(&BlockerCode::NoCandidateProfile));
+    assert!(!plan.is_startable());
+
+    // The profile is tested with the runtime login; a wrong password stops at the connection.
+    let service = service(
+        home.path(),
+        state,
+        Some(profile(state, true)),
+        keyring(state, None),
+    );
+    service
+        .initialize_schema()
+        .await
+        .expect("initialize schema");
+    let report = service.check_connection().await;
+    assert_eq!(report.stage, CheckStage::Ready);
+    assert_eq!(report.blocker, None);
+    assert_eq!(report.empty, Some(true));
+    assert_eq!(report.dataset_state.as_deref(), Some("open"));
+    let wrong = self::service(
+        home.path(),
+        state,
+        Some(profile(state, true)),
+        keyring(state, Some("not-the-password")),
+    );
+    let rejected = wrong.check_connection().await;
+    assert_eq!(rejected.stage, CheckStage::Connect);
+    assert_eq!(rejected.blocker, Some(BlockerCode::ConnectionFailed));
+    let without_owner = self::service(
+        home.path(),
+        state,
+        Some(profile(state, false)),
+        keyring(state, None),
+    );
+    assert_eq!(
+        without_owner.initialize_schema().await,
+        Err(StorageError(BlockerCode::MigratorCredentialMissing))
+    );
+
+    // A plan lists what moves and is startable; a return makes no sense yet.
+    let plan = service.plan(PlanAction::Migrate).await.expect("plan");
+    assert!(plan.is_startable(), "{:?}", plan.blockers);
+    assert_eq!(
+        plan.estimate.as_ref().map(|estimate| estimate.threads),
+        Some(1)
+    );
+    assert_eq!(plan.host, "test-host");
+    assert_eq!(plan.destination.matches('/').count(), 2);
+    assert!(
+        service
+            .plan(PlanAction::Return)
+            .await
+            .expect("return plan")
+            .blockers
+            .contains(&BlockerCode::NotRemote)
+    );
+
+    // Nothing starts without the operator's promise, or against a plan that is not the current one.
+    let operation = Uuid::new_v4();
+    assert_eq!(
+        service
+            .start_migration(
+                operation,
+                plan.plan_id,
+                Confirmation {
+                    writers_stopped: false
+                }
+            )
+            .await,
+        Err(StorageError(BlockerCode::NotConfirmed))
+    );
+    assert_eq!(
+        service
+            .start_migration(
+                operation,
+                Uuid::new_v4(),
+                Confirmation {
+                    writers_stopped: true
+                }
+            )
+            .await,
+        Err(StorageError(BlockerCode::StalePlan))
+    );
+    assert_eq!(service.operations(), Vec::new());
+
+    // The copy is verified and waits; a repeated request returns the same record.
+    let confirmed = Confirmation {
+        writers_stopped: true,
+    };
+    let ready = service
+        .start_migration(operation, plan.plan_id, confirmed)
+        .await
+        .expect("start");
+    assert_eq!(ready.state, OperationState::Ready);
+    assert!(ready.run_id.is_some());
+    assert!(
+        ready
+            .copied
+            .iter()
+            .any(|(domain, rows)| domain == "threads" && *rows == 1)
+    );
+    assert_eq!(
+        service
+            .start_migration(operation, plan.plan_id, confirmed)
+            .await
+            .expect("repeat"),
+        ready
+    );
+    assert_eq!(service.operations(), vec![ready.clone()]);
+    assert_eq!(
+        service.status(false).await.active_backend,
+        BackendName::LocalSqlite
+    );
+
+    // Activation makes it authoritative, once, and the dataset is no longer a target.
+    let active = service.activate(operation).await.expect("activate");
+    assert_eq!(active.state, OperationState::Active);
+    assert_eq!(service.activate(operation).await.expect("again"), active);
+    let status = service.status(true).await;
+    assert_eq!(status.active_backend, BackendName::RemotePostgres);
+    assert_eq!(status.authority, AuthorityLabel::Remote);
+    assert_eq!(status.local_generation, Some(2));
+    assert!(status.remote_ever_activated);
+    assert_eq!(status.blockers, Vec::new());
+    let remote = status.remote.expect("remote summary");
+    assert_eq!(remote.dataset_matches, Some(true));
+    assert_eq!(remote.generation, Some(2));
+    assert!(
+        service
+            .plan(PlanAction::Migrate)
+            .await
+            .expect("plan after")
+            .blockers
+            .contains(&BlockerCode::AlreadyRemote)
+    );
+    assert_eq!(
+        service.cancel(operation).await,
+        Err(StorageError(BlockerCode::AlreadyRemote))
+    );
+    assert_eq!(
+        service.recover().await.expect("recover").outcome,
+        RecoveryKind::Idle
+    );
+    assert_eq!(
+        service.operation(Uuid::new_v4()),
+        Err(StorageError(BlockerCode::OperationNotFound))
+    );
+    reset_target(state).await;
+}

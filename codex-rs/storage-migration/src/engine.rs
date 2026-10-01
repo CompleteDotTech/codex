@@ -41,6 +41,28 @@ use uuid::Uuid;
 
 const DEFAULT_BATCH: usize = 500;
 
+/// True when the destination holds history a migration would have to merge with.
+const EMPTY_TARGET_SQL: &str = "SELECT EXISTS (SELECT 1 FROM threads) \
+     OR EXISTS (SELECT 1 FROM projects) \
+     OR EXISTS (SELECT 1 FROM queued_items) \
+     OR EXISTS (SELECT 1 FROM logs) \
+     OR EXISTS (SELECT 1 FROM agent_board_posts) \
+     OR EXISTS (SELECT 1 FROM memory_stage1_outputs) \
+     OR EXISTS (SELECT 1 FROM thread_goals)";
+
+/// Whether the destination is free of history, so a migration could write into it.
+pub async fn target_is_empty(pool: &PostgresPool) -> Result<bool, MigrationError> {
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|error| MigrationError::Target(format!("{error:?}")))?;
+    let occupied: bool = sqlx::query_scalar(EMPTY_TARGET_SQL)
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(target)?;
+    Ok(!occupied)
+}
+
 /// Run one expression for the domain's operations without repeating the list of domains.
 macro_rules! with_domain {
     ($domain:expr, $ops:ident => $body:expr) => {
@@ -571,18 +593,10 @@ impl Migrator {
                 }
             }
             let occupied: bool = direction == "import"
-                && sqlx::query_scalar(
-                    "SELECT EXISTS (SELECT 1 FROM threads) \
-                 OR EXISTS (SELECT 1 FROM projects) \
-                 OR EXISTS (SELECT 1 FROM queued_items) \
-                 OR EXISTS (SELECT 1 FROM logs) \
-                 OR EXISTS (SELECT 1 FROM agent_board_posts) \
-                 OR EXISTS (SELECT 1 FROM memory_stage1_outputs) \
-                 OR EXISTS (SELECT 1 FROM thread_goals)",
-                )
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(target)?;
+                && sqlx::query_scalar(EMPTY_TARGET_SQL)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(target)?;
             if occupied {
                 return Err(MigrationError::TargetNotEmpty);
             }
