@@ -59,7 +59,8 @@ pub(super) async fn export_phase(
 
     // An interrupted export keeps its checkpoints and the store stays closed to writers.
     let (staged, _directory) = staged_target("exported").await;
-    let staged_source = SqliteSource::new(staged.staging().clone());
+    let staged_source = SqliteSource::new(staged.staging().clone())
+        .relocated_from(staged.final_home().to_path_buf());
     let interrupted = Migrator::new(staged_source.clone(), pool.clone())
         .with_batch_size(2)
         .with_batch_limit(3)

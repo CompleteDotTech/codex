@@ -19,7 +19,6 @@ use sha2::Digest;
 use sha2::Sha256;
 use sqlx::PgConnection;
 use sqlx::Row;
-use std::path::Path;
 use std::path::PathBuf;
 
 const MAX_FORK_DEPTH: usize = 64;
@@ -84,7 +83,7 @@ async fn locate(source: &SqliteSource, rollout_id: &str) -> Result<Option<PathBu
                 .fetch_optional(&pool)
                 .await?
     {
-        let path = resolve(source.home(), &path);
+        let path = source.resolve(&path);
         if tokio::fs::try_exists(&path).await? {
             return Ok(Some(path));
         }
@@ -116,15 +115,6 @@ async fn locate(source: &SqliteSource, rollout_id: &str) -> Result<Option<PathBu
     })
     .await
     .context("search session directories")
-}
-
-fn resolve(home: &Path, recorded: &str) -> PathBuf {
-    let path = PathBuf::from(recorded);
-    if path.is_absolute() {
-        path
-    } else {
-        home.join(path)
-    }
 }
 
 /// The logical history of one rollout file, including inherited fork prefixes.
@@ -198,7 +188,7 @@ impl DomainOps for Rollouts {
         for row in rows {
             let id: String = row.try_get("id")?;
             let recorded: String = row.try_get("rollout_path")?;
-            let lines = materialize(source, resolve(source.home(), &recorded), 0)
+            let lines = materialize(source, source.resolve(&recorded), 0)
                 .await
                 .with_context(|| format!("thread {id}"))?;
             records.push(summarize(

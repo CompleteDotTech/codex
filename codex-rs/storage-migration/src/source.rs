@@ -4,12 +4,16 @@ use anyhow::Result;
 use codex_state::SqliteConfig;
 use sqlx::SqlitePool;
 use std::path::Path;
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// The SQLite databases of one Codex home, opened only to read.
 #[derive(Clone)]
 pub struct SqliteSource {
     config: SqliteConfig,
+    /// The home these files will be installed into, when this source is a staged copy whose
+    /// recorded paths already name that final location.
+    relocated_from: Option<PathBuf>,
 }
 
 /// Which database file a read targets.
@@ -25,7 +29,32 @@ pub(crate) enum SourceDatabase {
 
 impl SqliteSource {
     pub fn new(config: SqliteConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            relocated_from: None,
+        }
+    }
+
+    /// Read a staged home whose recorded paths point into `final_home`, which does not exist
+    /// yet: those paths are looked up in the staged directory instead.
+    pub fn relocated_from(mut self, final_home: PathBuf) -> Self {
+        self.relocated_from = Some(final_home);
+        self
+    }
+
+    /// The file a recorded path refers to on this source.
+    pub(crate) fn resolve(&self, recorded: &str) -> PathBuf {
+        let path = PathBuf::from(recorded);
+        if let Some(final_home) = &self.relocated_from
+            && let Ok(relative) = path.strip_prefix(final_home)
+        {
+            return self.home().join(relative);
+        }
+        if path.is_absolute() {
+            path
+        } else {
+            self.home().join(path)
+        }
     }
 
     pub fn home(&self) -> &Path {
