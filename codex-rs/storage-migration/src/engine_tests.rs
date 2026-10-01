@@ -195,7 +195,7 @@ async fn real_postgres_catalog_migration() {
     bootstrap_codex_storage(&*connect(state, "migrator").await)
         .await
         .expect("bootstrap migration schema");
-    let owner = connect(state, "migrator").await;
+    let owner = connect(state, "admin").await;
     let pool = connect(state, "runtime").await;
     let home = tempfile::tempdir().expect("source home");
     let threads = populate(home.path()).await;
