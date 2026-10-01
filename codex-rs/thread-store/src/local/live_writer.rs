@@ -86,6 +86,7 @@ pub(super) async fn resume_thread(
                 })?
         }
     };
+    super::helpers::ensure_unambiguous_rollout(&rollout_path)?;
     let cwd = params
         .metadata
         .cwd

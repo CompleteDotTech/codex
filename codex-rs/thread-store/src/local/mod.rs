@@ -16,6 +16,7 @@ mod rollout_migration;
 mod rollout_move_file;
 #[allow(dead_code)]
 mod rollout_move_identity;
+mod rollout_move_noclobber_rename;
 #[allow(dead_code)]
 mod rollout_move_transaction;
 // This lands before the reader PRs that consume the shared lineage resolver.
@@ -44,6 +45,9 @@ mod pending_thread_metadata_tests;
 mod read_thread_tests;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+#[path = "timestamp_metadata_tests.rs"]
+mod timestamp_metadata_tests;
 
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::ThreadHistoryMode;

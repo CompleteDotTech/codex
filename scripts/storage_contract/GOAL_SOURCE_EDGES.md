@@ -4,6 +4,12 @@ The checked coverage matrix now records selected direct edges for both tables
 in `goals_1.sqlite`. The test authenticates the pinned SQL fixture and checks
 each named SQL or call-site clause in its specific production module. These
 anchors are source evidence, not a complete call graph or a runtime test.
+The test independently pins every nested module and operation key and checks
+Rust anchors within the named method's lexical declaration range. Snapshot,
+insert, replace, general update, active-status update and usage-accounting SQL
+are separate entries; an `UPDATE` or `INSERT` in another method cannot satisfy
+them. Active and idle usage callers are checked separately. The shared queue
+and goal selector is a source-boundary check, not Rust parsing or execution.
 
 | Record | Observed writer | Observed reader or consumer |
 | --- | --- | --- |
