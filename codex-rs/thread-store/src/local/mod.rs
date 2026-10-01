@@ -17,6 +17,8 @@ mod rollout_move_file;
 #[allow(dead_code)]
 mod rollout_move_identity;
 mod rollout_move_noclobber_rename;
+#[allow(dead_code)]
+mod rollout_move_transaction;
 // This lands before the reader PRs that consume the shared lineage resolver.
 #[allow(dead_code)]
 mod rollout_lineage;
