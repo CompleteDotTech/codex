@@ -4230,6 +4230,7 @@ dependencies = [
 name = "codex-postgres-runtime"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "pretty_assertions",
  "rustls",
  "serde_json",
