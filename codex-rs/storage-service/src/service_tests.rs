@@ -482,7 +482,7 @@ async fn real_postgres_storage_service() {
         ready
             .copied
             .iter()
-            .any(|(domain, rows)| domain == "threads" && *rows == 2)
+            .any(|(domain, rows)| domain == "threads" && *rows == 4)
     );
     // While the export waits, the dataset is closed to writers but the home is still remote.
     let waiting = service.status(true).await;
