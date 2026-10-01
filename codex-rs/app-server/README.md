@@ -111,6 +111,15 @@ after a client tries to archive or delete it.
 After the owner releases the worker, its saved conversation can be archived or
 deleted normally. Ordinary client-controlled threads keep their existing behavior.
 
+## Environment information (experimental)
+
+`environment/info` connects to a configured environment by `environmentId` and
+returns its detected `shell` plus its default `cwd` as a canonical
+environment-native `file:` URI. Connection failures are returned as request
+errors. After connecting, the live metadata request has a 30-second timeout. A
+timeout closes the probed connection and starts normal session recovery without
+retrying the failed request.
+
 ## User verification (experimental)
 
 Codex app-server advertises `openai/elicitation.userVerification` to the
@@ -221,6 +230,18 @@ the Bedrock destination. Static access keys with an explicit region need no cred
 AWS profile `credential_process` commands are run by the AWS SDK; their network traffic is outside
 the application's HTTP policy. Configured credential exporters and AWS reauthentication commands
 require unrestricted application policy; policy revocation cancels their active work.
+
+After Bedrock login or setup, clients can call the experimental
+`account/bedrock/checkGovCloudRequirements` with `{}`. The server reloads configuration and
+requirements and returns `{ isGovCloud, shouldWarn }`. An explicitly configured official
+Bedrock endpoint hostname determines the region; with no URL or a custom proxy URL, the check
+resolves the AWS region using the current authentication state. It does not reload saved
+credentials or change login policy.
+For GovCloud, the advisory check requires API-only login and enabled managed application
+network restrictions with an explicit allow entry for the active Bedrock endpoint's domain.
+Non-Bedrock providers and commercial regions return both fields as `false`. Configuration or
+region resolution failures return an RPC error. This check does not block login or certify
+the entire network configuration.
 
 ## Stored thread attachments
 

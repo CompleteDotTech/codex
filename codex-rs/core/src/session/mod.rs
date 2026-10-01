@@ -512,6 +512,7 @@ impl Session {
     pub(crate) fn spawn(
         args: SessionSpawnArgs,
     ) -> BoxFuture<'static, CodexResult<(Arc<Self>, SessionIo)>> {
+        let tree_shutdown = args.agent_control.runtime().shutdown.clone();
         Box::pin(async move {
             let parent_trace = match args.parent_trace {
                 Some(trace) => {
@@ -528,12 +529,16 @@ impl Session {
             if let Some(trace) = parent_trace.as_ref() {
                 let _ = set_parent_from_w3c_trace_context(&thread_spawn_span, trace);
             }
-            Self::spawn_internal(SessionSpawnArgs {
+            let spawn = Self::spawn_internal(SessionSpawnArgs {
                 parent_trace,
                 ..args
             })
-            .instrument(thread_spawn_span)
-            .await
+            .instrument(thread_spawn_span);
+            tokio::select! {
+                biased;
+                _ = tree_shutdown.cancelled() => Err(CodexErr::TurnAborted),
+                result = spawn => result,
+            }
         })
     }
 
@@ -931,11 +936,17 @@ impl Session {
         let thread_id = session.thread_id;
 
         // This task will run until Op::Shutdown is received.
+        let tree_teardown = startup
+            .as_ref()
+            .and_then(|startup| startup.session_teardown());
         let session_for_loop = Arc::clone(&session);
         let session_loop_handle = tokio::spawn(storage_originator.scope(async move {
             submission_loop(session_for_loop, configured_config, rx_sub)
                 .instrument(info_span!("session_loop", thread_id = %thread_id))
                 .await;
+            if let Some(tree_teardown) = tree_teardown {
+                tree_teardown.complete();
+            }
         }));
         let io = SessionIo {
             tx_sub,
@@ -946,6 +957,7 @@ impl Session {
 
         if let Some(startup) = startup {
             let _ = startup.io.set(io.clone());
+            startup.persistence.lock().await.commit();
         }
         Ok((session, io))
     }
@@ -3393,7 +3405,7 @@ impl Session {
         items
     }
 
-    fn assign_missing_response_item_id(item: &mut ResponseItem) {
+    pub(crate) fn assign_missing_response_item_id(item: &mut ResponseItem) {
         if item.id().is_some_and(|id| !id.is_empty()) {
             return;
         }
@@ -4055,7 +4067,6 @@ impl Session {
                 .get_or_insert_default()
                 .compaction_model_hash = metadata.compaction_model_hash;
         }
-        let replacement_history = items.clone();
         // Wait for accepted updates to finish persisting, then keep later updates from
         // overtaking the current settings snapshot while its checkpoint is written.
         let _settings_guard = thread_settings::acquire_persistence_lock(self).await;
@@ -4076,6 +4087,26 @@ impl Session {
                     }
                     (!retained.is_empty()).then(|| WorldStateSnapshot::from(&retained))
                 });
+            // Goal edits are published outside the running task. Keep edits accepted after
+            // the compaction input snapshot, in their original order, after its replacement.
+            let replacement_goal_ids = crate::context::UserGoalUpdate::message_ids(
+                items.iter().map(|envelope| &envelope.item),
+            );
+            items.extend(
+                state
+                    .history
+                    .annotated_items()
+                    .iter()
+                    .filter(|envelope| {
+                        crate::context::UserGoalUpdate::message_text(&envelope.item).is_some()
+                            && envelope.item.id().is_some_and(|id| {
+                                !metadata.input_goal_ids.contains(id)
+                                    && !replacement_goal_ids.contains(id)
+                            })
+                    })
+                    .cloned(),
+            );
+            let replacement_history = items.clone();
             state.replace_annotated_history(
                 items,
                 reference_context_item.clone(),
@@ -4530,9 +4561,10 @@ impl Session {
         world_state: Arc<WorldState>,
     ) -> u64 {
         let turn_context = step_context.turn.as_ref();
+        let history = self.clone_history().await;
+        let input_goal_ids = crate::context::UserGoalUpdate::message_ids(history.raw_items());
         let retained_client_developer_messages =
             if self.enabled(Feature::RetainClientDeveloperMessages) {
-                let history = self.clone_history().await;
                 crate::compact_remote_v2::truncate_retained_messages_for_remote_compaction(
                     history
                         .annotated_items()
@@ -4565,6 +4597,7 @@ impl Session {
             Some(turn_context_item),
             Some(world_state),
             CompactedHistoryMetadata {
+                input_goal_ids,
                 message: String::new(),
                 window_number,
                 window_ids,
