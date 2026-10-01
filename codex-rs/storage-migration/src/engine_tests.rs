@@ -428,6 +428,19 @@ async fn real_postgres_catalog_migration() {
     bootstrap_named_namespace(&migrator, &namespace)
         .await
         .expect("bootstrap named namespace");
+    // Earlier failed runs leave rows the runtime role cannot delete, so the owner clears them.
+    let mut owner = migrator.acquire().await.expect("named migrator connection");
+    for statement in [
+        "SET ROLE codex_isolation_owner",
+        "TRUNCATE codex_storage_isolation.project_idempotency_keys,          codex_storage_isolation.queued_thread_revisions,          codex_storage_isolation.agent_board_deleted,          codex_storage_isolation.external_agent_config_imports,          codex_storage_isolation.threads, codex_storage_isolation.projects CASCADE",
+        "RESET ROLE",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(statement))
+            .execute(&mut *owner)
+            .await
+            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+    }
+    drop(owner);
     let named_pool = Arc::new(
         PostgresPool::connect_in_namespace(
             settings_for(state, namespace.runtime_login(), "isolation_runtime"),
