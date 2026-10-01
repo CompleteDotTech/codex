@@ -12,6 +12,9 @@ mod errors;
 #[path = "agents_overview_loading.rs"]
 mod loading;
 
+#[path = "agents_overview_retention.rs"]
+mod retention;
+
 use super::agents_overview_view::AgentsOverviewGroup;
 use super::agents_overview_view::AgentsOverviewRow;
 use super::agents_overview_view::AgentsOverviewView;
@@ -27,6 +30,7 @@ use codex_app_server_protocol::SessionSource;
 use codex_app_server_protocol::Thread;
 use codex_app_server_protocol::ThreadHistoryMode;
 use codex_protocol::protocol::SubAgentSource;
+use std::collections::VecDeque;
 
 pub(crate) const AGENTS_OVERVIEW_VIEW_ID: &str = "agents-overview";
 
@@ -61,6 +65,7 @@ pub(super) struct AgentsOverviewState {
     pub(super) selected_permission_profiles: HashMap<ThreadId, String>,
     /// Keep new tasks subscribed and reusable until a first turn makes them resumable.
     pub(super) blank_sessions: HashMap<ThreadId, crate::app_server_session::AppServerStartedThread>,
+    pub(super) blank_session_order: VecDeque<ThreadId>,
     pub(super) input_states: HashMap<ThreadId, ThreadInputState>,
     pub(super) new_session_draft: Option<Box<StartupDraftPump>>,
     pub(super) dispatched_requests: HashMap<ThreadId, Vec<ServerRequest>>,
