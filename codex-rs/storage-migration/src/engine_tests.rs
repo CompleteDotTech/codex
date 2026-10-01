@@ -633,4 +633,5 @@ async fn scenario(pool: Arc<PostgresPool>) {
         "{changed:?}"
     );
     super::gate_tests::gate_phase(&pool, &source, threads[0].id).await;
+    super::cutover_tests::cutover_phase(&pool, &source, home.path()).await;
 }

@@ -16,9 +16,16 @@ use std::path::Path;
 use uuid::Uuid;
 
 mod credential_resolution;
+mod cutover;
 pub use credential_resolution::CredentialResolutionError;
 pub use credential_resolution::HostCredentialResolver;
 pub use credential_resolution::ResolvedCredential;
+pub use cutover::CutoverIntent;
+pub use cutover::abandon_cutover;
+pub use cutover::begin_cutover;
+pub use cutover::complete_cutover;
+pub use cutover::load_authority;
+pub use cutover::read_cutover;
 
 const IDENTITY_FILE: &str = "storage-identity.json";
 const ACTIVATION_FILE: &str = "storage-activation.json";
@@ -34,6 +41,15 @@ pub struct LocalIdentity {
     pub home_id: Uuid,
 }
 
+/// Which store currently holds the authoritative history.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActiveBackend {
+    #[default]
+    Local,
+    Remote,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ActivationMarker {
@@ -43,6 +59,9 @@ pub struct ActivationMarker {
     pub home_id: Uuid,
     pub generation: u64,
     pub remote_ever_activated: bool,
+    /// Records written before cutovers existed have no backend and are local.
+    #[serde(default)]
+    pub active_backend: ActiveBackend,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -178,6 +197,35 @@ pub fn initialize_empty_home(home: &Path) -> Result<LocalAuthority, AuthorityErr
         ));
     }
 
+    create_records(home)
+}
+
+/// Give an existing, populated home its authority records.
+///
+/// The caller must have stopped every writer of the home before calling this; nothing here can
+/// fence a running process. A home that already has complete records returns them unchanged, and
+/// one with partial or interrupted records is refused.
+pub fn adopt_quiesced_home(home: &Path) -> Result<LocalAuthority, AuthorityError> {
+    if std::fs::symlink_metadata(home)?.file_type().is_symlink() {
+        return Err(AuthorityError::Blocked("home is a symlink"));
+    }
+    let identity = home.join(IDENTITY_FILE).exists();
+    let marker = home.join(ACTIVATION_FILE).exists();
+    match (identity, marker) {
+        (true, true) => load_authority(home),
+        (false, false) => {
+            if cutover::read_cutover(home)?.is_some() {
+                return Err(AuthorityError::Blocked("cutover in progress"));
+            }
+            create_records(home)
+        }
+        _ => Err(AuthorityError::Blocked(
+            "home requires fenced reconciliation",
+        )),
+    }
+}
+
+fn create_records(home: &Path) -> Result<LocalAuthority, AuthorityError> {
     let identity = LocalIdentity {
         format_version: FORMAT_VERSION,
         dataset_id: Uuid::new_v4(),
@@ -200,6 +248,7 @@ fn initial_marker(identity: &LocalIdentity) -> ActivationMarker {
         home_id: identity.home_id,
         generation: identity.generation,
         remote_ever_activated: false,
+        active_backend: ActiveBackend::Local,
     }
 }
 
@@ -208,6 +257,9 @@ fn initial_marker(identity: &LocalIdentity) -> ActivationMarker {
 pub fn load_local_authority(home: &Path) -> Result<LocalAuthority, AuthorityError> {
     if std::fs::symlink_metadata(home)?.file_type().is_symlink() {
         return Err(AuthorityError::Blocked("home is a symlink"));
+    }
+    if cutover::read_cutover(home)?.is_some() {
+        return Err(AuthorityError::Blocked("cutover in progress"));
     }
     let identity: LocalIdentity = read_record(&home.join(IDENTITY_FILE))?;
     let marker: ActivationMarker = read_record(&home.join(ACTIVATION_FILE))?;

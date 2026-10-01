@@ -16,6 +16,7 @@ chrono = { workspace = true }
 codex-postgres-runtime = { workspace = true }
 codex-protocol = { workspace = true }
 codex-state = { workspace = true }
+codex-storage-authority = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

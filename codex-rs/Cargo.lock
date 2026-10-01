@@ -4933,6 +4933,7 @@ dependencies = [
  "codex-postgres-thread-catalog",
  "codex-protocol",
  "codex-state",
+ "codex-storage-authority",
  "codex-thread-store",
  "codex-utils-absolute-path",
  "pretty_assertions",

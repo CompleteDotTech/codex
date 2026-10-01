@@ -528,6 +528,17 @@ INSERT INTO codex_storage.storage_activation (singleton, state, generation, upda
         ],
         qualified_identifiers: 6,
     },
+    MigrationShape {
+        version: 18,
+        starts_with: Some("-- The activation row names the dataset"),
+        contains: &[
+            "
+ALTER TABLE codex_storage.storage_activation
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 2,
+    },
 ];
 
 /// Relations always present once the metadata migration has run.

@@ -145,6 +145,27 @@ pub enum MigrationError {
     TargetNotEmpty,
     #[error("the run has not been verified, so it cannot be activated")]
     NotVerified,
+    #[error("the new generation must be higher than the store's current generation")]
+    GenerationNotAdvancing,
+}
+
+/// The dataset identity and generation a verified import is published as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ActivationTarget {
+    pub dataset_id: Uuid,
+    pub generation: i64,
+}
+
+/// What the store's activation row currently says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActivationState {
+    /// True while a run holds the store and ordinary writers are refused.
+    pub migrating: bool,
+    /// The run that holds the store, while one does.
+    pub run_id: Option<Uuid>,
+    pub generation: i64,
+    /// The dataset the last activation published; `None` before the first one.
+    pub dataset_id: Option<Uuid>,
 }
 
 fn target(error: impl std::fmt::Display) -> MigrationError {
@@ -239,15 +260,66 @@ impl Migrator {
         Ok(VerificationReport { run_id, domains })
     }
 
-    /// Make a verified import the store's content and reopen the store for writers.
+    /// The activation row as the store reports it right now.
+    pub async fn activation_state(&self) -> Result<ActivationState, MigrationError> {
+        let mut connection = self.connection().await?;
+        let row = sqlx::query(
+            "SELECT state, run_id, generation, dataset_id FROM storage_activation WHERE singleton",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(target)?;
+        let state: String = row.try_get("state").map_err(target)?;
+        let dataset: Option<String> = row.try_get("dataset_id").map_err(target)?;
+        Ok(ActivationState {
+            migrating: state == "migrating",
+            run_id: row.try_get("run_id").map_err(target)?,
+            generation: row.try_get("generation").map_err(target)?,
+            dataset_id: dataset.and_then(|value| Uuid::parse_str(&value).ok()),
+        })
+    }
+
+    /// Give up on a run before it is activated. The store stays closed to writers, because the
+    /// partial copy must never look like a finished one, and the same source can resume later.
+    pub async fn abandon(&self, run_id: Uuid) -> Result<(), MigrationError> {
+        let mut connection = self.connection().await?;
+        let mut tx = connection.begin().await.map_err(target)?;
+        let held: Option<Uuid> =
+            sqlx::query_scalar("SELECT run_id FROM storage_activation WHERE singleton FOR UPDATE")
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(target)?;
+        if held != Some(run_id) {
+            return Err(MigrationError::TargetBusy);
+        }
+        sqlx::query(
+            "UPDATE storage_migration_runs SET state = 'abandoned', updated_at_ms = $2 \
+             WHERE run_id = $1 AND state IN ('running', 'verified')",
+        )
+        .bind(run_id)
+        .bind(chrono::Utc::now().timestamp_millis())
+        .execute(&mut *tx)
+        .await
+        .map_err(target)?;
+        tx.commit().await.map_err(target)?;
+        Ok(())
+    }
+
+    /// Publish a verified import as the store's content and reopen the store for writers.
     ///
     /// Returns the new generation. Only the run that holds the store and passed verification
-    /// can activate it, so a partial or unverified copy never becomes writable.
-    pub async fn activate(&self, run_id: Uuid) -> Result<i64, MigrationError> {
+    /// can activate it, so a partial or unverified copy never becomes writable. Repeating a
+    /// call that already succeeded returns the same generation, which makes a lost
+    /// acknowledgement harmless.
+    pub async fn activate(
+        &self,
+        run_id: Uuid,
+        publish: ActivationTarget,
+    ) -> Result<i64, MigrationError> {
         let mut connection = self.connection().await?;
         let mut tx = connection.begin().await.map_err(target)?;
         let row = sqlx::query(
-            "SELECT state, run_id, generation FROM storage_activation \
+            "SELECT state, run_id, generation, dataset_id FROM storage_activation \
              WHERE singleton FOR UPDATE",
         )
         .fetch_one(&mut *tx)
@@ -256,6 +328,25 @@ impl Migrator {
         let state: String = row.try_get("state").map_err(target)?;
         let held: Option<Uuid> = row.try_get("run_id").map_err(target)?;
         let generation: i64 = row.try_get("generation").map_err(target)?;
+        let dataset: Option<String> = row.try_get("dataset_id").map_err(target)?;
+        if state == "open"
+            && generation == publish.generation
+            && dataset.as_deref() == Some(publish.dataset_id.to_string().as_str())
+        {
+            let activated: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM storage_migration_runs \
+                 WHERE run_id = $1 AND state = 'activated')",
+            )
+            .bind(run_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(target)?;
+            return if activated {
+                Ok(generation)
+            } else {
+                Err(MigrationError::TargetBusy)
+            };
+        }
         if state != "migrating" || held != Some(run_id) {
             return Err(MigrationError::TargetBusy);
         }
@@ -268,10 +359,13 @@ impl Migrator {
         if run_state.as_deref() != Some("verified") {
             return Err(MigrationError::NotVerified);
         }
+        if publish.generation <= generation {
+            return Err(MigrationError::GenerationNotAdvancing);
+        }
         let now = chrono::Utc::now().timestamp_millis();
         sqlx::query(
-            "UPDATE storage_migration_runs SET state = 'activated', \
-             updated_at_ms = $2 WHERE run_id = $1",
+            "UPDATE storage_migration_runs SET state = 'activated', updated_at_ms = $2 \
+             WHERE run_id = $1",
         )
         .bind(run_id)
         .bind(now)
@@ -279,16 +373,17 @@ impl Migrator {
         .await
         .map_err(target)?;
         sqlx::query(
-            "UPDATE storage_activation SET state = 'open', generation = $1, \
-             updated_at_ms = $2 WHERE singleton",
+            "UPDATE storage_activation SET state = 'open', generation = $1, dataset_id = $2, \
+             activated_at_ms = $3, updated_at_ms = $3 WHERE singleton",
         )
-        .bind(generation + 1)
+        .bind(publish.generation)
+        .bind(publish.dataset_id.to_string())
         .bind(now)
         .execute(&mut *tx)
         .await
         .map_err(target)?;
         tx.commit().await.map_err(target)?;
-        Ok(generation + 1)
+        Ok(publish.generation)
     }
 
     async fn connection(
@@ -328,11 +423,22 @@ impl Migrator {
                     .ok()
                     .as_deref()
                     == Some(fingerprint)
-                    && run.try_get::<String, _>("state").ok().as_deref() == Some("running")
+                    && matches!(
+                        run.try_get::<String, _>("state").ok().as_deref(),
+                        Some("running" | "abandoned")
+                    )
             });
             if !resumable {
                 return Err(MigrationError::TargetBusy);
             }
+            sqlx::query(
+                "UPDATE storage_migration_runs SET state = 'running', updated_at_ms = $2                  WHERE run_id = $1 AND state = 'abandoned'",
+            )
+            .bind(run_id)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(target)?;
             (run_id, true)
         } else {
             let occupied: bool = sqlx::query_scalar(
@@ -544,3 +650,7 @@ mod tests;
 #[cfg(test)]
 #[path = "gate_tests.rs"]
 mod gate_tests;
+
+#[cfg(test)]
+#[path = "cutover_tests.rs"]
+mod cutover_tests;

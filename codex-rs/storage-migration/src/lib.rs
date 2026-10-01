@@ -6,6 +6,7 @@
 
 mod attachments;
 mod board;
+mod cutover;
 mod digest;
 mod domain;
 mod engine;
@@ -20,8 +21,14 @@ mod sections;
 mod source;
 mod threads;
 
+pub use cutover::Cutover;
+pub use cutover::CutoverError;
+pub use cutover::CutoverStatus;
+pub use cutover::RecoveryOutcome;
 pub use digest::DomainDigest;
 pub use domain::Domain;
+pub use engine::ActivationState;
+pub use engine::ActivationTarget;
 pub use engine::MigrationError;
 pub use engine::Migrator;
 pub use engine::RunSummary;

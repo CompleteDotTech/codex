@@ -80,12 +80,16 @@ pub(super) async fn gate_phase(
 
     // An unverified run cannot be activated, and neither can a run that does not hold the store.
     let migrator = Migrator::new(source.clone(), pool.clone());
-    let unverified = migrator.activate(summary.run_id).await;
+    let publish = ActivationTarget {
+        dataset_id: uuid::Uuid::new_v4(),
+        generation: migrator.activation_state().await.expect("state").generation + 1,
+    };
+    let unverified = migrator.activate(summary.run_id, publish).await;
     assert!(
         matches!(unverified, Err(MigrationError::NotVerified)),
         "{unverified:?}"
     );
-    let stranger = migrator.activate(uuid::Uuid::now_v7()).await;
+    let stranger = migrator.activate(uuid::Uuid::now_v7(), publish).await;
     assert!(
         matches!(stranger, Err(MigrationError::TargetBusy)),
         "{stranger:?}"
@@ -94,8 +98,33 @@ pub(super) async fn gate_phase(
 
     migrator.verify(summary.run_id).await.expect("verification");
     assert_writes_refused(pool, existing).await;
-    let generation = migrator.activate(summary.run_id).await.expect("activation");
-    assert!(generation >= 1);
+    let stale = migrator
+        .activate(
+            summary.run_id,
+            ActivationTarget {
+                generation: 0,
+                ..publish
+            },
+        )
+        .await;
+    assert!(
+        matches!(stale, Err(MigrationError::GenerationNotAdvancing)),
+        "{stale:?}"
+    );
+    let generation = migrator
+        .activate(summary.run_id, publish)
+        .await
+        .expect("activation");
+    assert_eq!(generation, publish.generation);
+    assert_eq!(
+        migrator.activation_state().await.expect("state"),
+        ActivationState {
+            migrating: false,
+            run_id: Some(summary.run_id),
+            generation,
+            dataset_id: Some(publish.dataset_id),
+        }
+    );
 
     // The store is writable again, its data is the verified import, and a replay changes nothing.
     PostgresQueueStore::new(pool.clone())
@@ -106,10 +135,16 @@ pub(super) async fn gate_phase(
         .insert_logs(&[log_entry()])
         .await
         .expect("log write after activation");
-    let replay = migrator.activate(summary.run_id).await;
+    // A lost acknowledgement is repaired by asking again; anyone else is turned away.
+    let replay = migrator.activate(summary.run_id, publish).await;
     assert!(
-        matches!(replay, Err(MigrationError::TargetBusy)),
+        matches!(replay, Ok(value) if value == generation),
         "{replay:?}"
+    );
+    let other = migrator.activate(uuid::Uuid::now_v7(), publish).await;
+    assert!(
+        matches!(other, Err(MigrationError::TargetBusy)),
+        "{other:?}"
     );
 
     // Activated data is never merged into by a later run.

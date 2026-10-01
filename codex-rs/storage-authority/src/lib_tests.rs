@@ -15,6 +15,7 @@ fn fresh_home_identity_survives_reopen_and_reuses_the_same_claim() {
             home_id: first.identity.home_id,
             generation: 1,
             remote_ever_activated: false,
+            active_backend: ActiveBackend::Local,
         }
     );
     assert_eq!(load_local_authority(directory.path()).unwrap(), first);
