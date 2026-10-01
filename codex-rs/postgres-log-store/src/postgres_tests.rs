@@ -96,7 +96,7 @@ fn token() -> String {
 /// Runs the log operations a caller can observe and records their results. Row ids are
 /// reported relative to the highest id present before the scenario starts, and every query
 /// is scoped to this run's module path so rows from other runs cannot leak in.
-async fn scenario(store: &dyn RuntimeLogStore, token: &str) -> Vec<String> {
+async fn scenario(store: &dyn RuntimeLogStore, token: &str, now: i64) -> Vec<String> {
     let mut log = Vec::new();
     let thread = |n: u8| format!("{token}-thread-{n}");
     let process = |n: u8| format!("{token}-process-{n}");
@@ -108,8 +108,6 @@ async fn scenario(store: &dyn RuntimeLogStore, token: &str) -> Vec<String> {
         module_like: [vec![token.to_string()], query.module_like.clone()].concat(),
         ..query
     };
-    let now = Utc::now().timestamp() * 1_000;
-
     let mut message_only = entry(
         now + 4,
         "INFO",
@@ -433,8 +431,9 @@ async fn real_postgres_logs_match_sqlite() {
     .expect("sqlite state runtime");
 
     let token = token();
-    let expected = scenario(&*sqlite, &token).await;
-    let actual = scenario(&postgres, &token).await;
+    let now = Utc::now().timestamp() * 1_000;
+    let expected = scenario(&*sqlite, &token, now).await;
+    let actual = scenario(&postgres, &token, now).await;
     assert_eq!(actual.len(), expected.len());
     for (actual, expected) in actual.iter().zip(&expected) {
         // Entries can hold multi-megabyte bodies, so only a bounded prefix is shown on failure.
