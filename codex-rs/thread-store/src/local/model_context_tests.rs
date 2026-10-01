@@ -153,7 +153,7 @@ async fn fork_context_excludes_items_after_frozen_cutoff() {
     append_items(path.as_path(), [user_message("later message")]);
     let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
     let lineage = store
-        .resolve_rollout_lineage(thread_id)
+        .resolve_rollout_lineage(thread_id, /*initial_path*/ None)
         .await
         .expect("resolve source lineage");
     let session_meta = codex_rollout::read_session_meta_line(path.as_path())
@@ -230,7 +230,7 @@ async fn fork_version_stops_before_older_segments_once_resolved() {
         );
         let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
         let lineage = store
-            .resolve_rollout_lineage(child_id)
+            .resolve_rollout_lineage(child_id, /*initial_path*/ None)
             .await
             .expect("resolve source lineage");
         // The usable compaction should stop the scan before it reaches this missing segment.
@@ -282,7 +282,7 @@ async fn fork_version_respects_inherited_segment_cutoffs() {
     );
     let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
     let lineage = store
-        .resolve_rollout_lineage(child_id)
+        .resolve_rollout_lineage(child_id, /*initial_path*/ None)
         .await
         .expect("resolve source lineage");
     let mut source_meta = codex_rollout::read_session_meta_line(&child_path)
@@ -357,7 +357,7 @@ async fn returns_scanned_full_history_at_bof_without_checkpoint() {
 }
 
 #[tokio::test]
-async fn replays_nested_archived_lineage_from_frozen_prefix() {
+async fn replays_nested_archived_lineage_from_detached_home() {
     let home = TempDir::new().expect("temp dir");
     let root_uuid = Uuid::from_u128(/*v*/ 2001);
     let root_id = ThreadId::from_string(&root_uuid.to_string()).expect("root id");
@@ -425,6 +425,12 @@ async fn replays_nested_archived_lineage_from_frozen_prefix() {
             /*end_ordinal_exclusive*/ 6,
         ),
     );
+    let archived_middle = home
+        .path()
+        .join("archived_sessions")
+        .join(middle_path.file_name().expect("middle filename"));
+    std::fs::rename(middle_path, &archived_middle).expect("archive middle rollout");
+    let middle_path = archived_middle;
     let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
 
     let context = store
@@ -478,13 +484,57 @@ async fn replays_nested_archived_lineage_from_frozen_prefix() {
         .expect("load compressed lineage model context");
     assert_eq!(
         serde_json::to_value(compressed_context.items).expect("serialize compressed context"),
-        serde_json::to_value(expected).expect("serialize expected context")
+        serde_json::to_value(&expected).expect("serialize expected context")
     );
     assert!(
-        [archived_root, middle_path, child_path]
+        [&archived_root, &middle_path, &child_path]
             .iter()
             .all(|path| !path.exists())
     );
+
+    // Copy only the canonical files to a new home, preserving archive placement.
+    // No source-home index or SQLite projection is available to the new store.
+    let detached = TempDir::new().expect("detached home");
+    for source in [&archived_root, &middle_path, &child_path] {
+        let source = source.with_extension("jsonl.zst");
+        let relative = source
+            .strip_prefix(home.path())
+            .expect("source within home");
+        let destination = detached.path().join(relative);
+        std::fs::create_dir_all(destination.parent().expect("destination parent"))
+            .expect("create destination directory");
+        std::fs::copy(source, destination).expect("copy canonical rollout");
+    }
+    let detached_root = detached
+        .path()
+        .join("archived_sessions")
+        .join(archived_root.file_name().expect("archived filename"))
+        .with_extension("jsonl.zst");
+    drop(store);
+    drop(home);
+
+    let detached_store =
+        LocalThreadStore::new(test_config(detached.path()), /*state_db*/ None);
+    let detached_context = detached_store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id: child_id,
+            include_archived: false,
+        })
+        .await
+        .expect("replay detached lineage");
+    assert_eq!(
+        serde_json::to_value(detached_context.items).expect("serialize detached context"),
+        serde_json::to_value(expected).expect("serialize expected context")
+    );
+
+    std::fs::remove_file(detached_root).expect("remove referenced ancestor");
+    detached_store
+        .load_latest_model_context(LoadThreadHistoryParams {
+            thread_id: child_id,
+            include_archived: false,
+        })
+        .await
+        .expect_err("missing referenced ancestor must fail");
 }
 
 fn write_paginated_rollout<const N: usize>(

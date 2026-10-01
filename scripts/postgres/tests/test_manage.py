@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -39,6 +40,59 @@ class ManageTests(unittest.TestCase):
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
             self.assertEqual(manage.main(["--state", str(self.home), "status"]), 2)
         self.assertNotIn("PRIVATE_RECEIPT_CONTENT", error.getvalue())
+
+    def test_up_requires_verified_published_endpoint_before_success(self):
+        for failure in (
+            None,
+            manage.ServiceError("unexpected_postgres_published_endpoint"),
+        ):
+            events = []
+            output, error = io.StringIO(), io.StringIO()
+
+            def verify(home):
+                self.assertEqual(home, self.home)
+                events.append("endpoint")
+                if failure is not None:
+                    raise failure
+
+            with (
+                self.subTest(failure=failure),
+                patch.object(manage, "engine"),
+                patch.object(manage, "inspect_owned"),
+                patch.object(manage, "check_expiry"),
+                patch.object(manage, "ensure_volume"),
+                patch.object(
+                    manage,
+                    "compose",
+                    side_effect=lambda *args: events.append("compose"),
+                ),
+                patch.object(manage, "verify_endpoint", side_effect=verify),
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(error),
+            ):
+                result = manage.main(["--state", str(self.home), "up"])
+            self.assertEqual(events, ["compose", "endpoint"])
+            if failure is None:
+                self.assertEqual(result, 0)
+                self.assertEqual(
+                    json.loads(output.getvalue()),
+                    {
+                        "action": "up",
+                        "command_succeeded": True,
+                        "codex_backend_enabled": False,
+                    },
+                )
+                self.assertEqual(error.getvalue(), "")
+            else:
+                self.assertEqual(result, 2)
+                self.assertEqual(output.getvalue(), "")
+                self.assertEqual(
+                    json.loads(error.getvalue()),
+                    {
+                        "error": str(failure),
+                        "codex_backend_enabled": False,
+                    },
+                )
 
     def test_restore_preflights_and_starts_service(self):
         events = []

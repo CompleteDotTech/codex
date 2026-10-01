@@ -10,6 +10,7 @@ use codex_utils_stream_parser::strip_citations;
 use tokio_util::sync::CancellationToken;
 
 use crate::function_tool::FunctionCallError;
+use crate::memory_mode_pollution;
 use crate::parse_turn_item;
 use crate::session::session::Session;
 use crate::session::step_context::StepContext;
@@ -27,7 +28,6 @@ use codex_protocol::models::FunctionCallOutputPayload;
 use codex_protocol::models::MessagePhase;
 use codex_protocol::models::ResponseInputItem;
 use codex_protocol::models::ResponseItem;
-use codex_rollout::state_db;
 use codex_utils_stream_parser::strip_proposed_plan_blocks;
 use futures::Future;
 use tracing::debug;
@@ -136,7 +136,7 @@ pub(crate) async fn record_completed_response_item_with_finalized_facts(
     mark_thread_memory_mode_polluted_if_external_context(sess, turn_context, item).await;
     let memory_usage_db = match sess.services.state_db.as_ref() {
         Some(db) => db
-            .memories_for_version(turn_context.config.memories.version)
+            .memory_store_for_version(turn_context.config.memories.version)
             .await
             .ok(),
         None => None,
@@ -144,10 +144,11 @@ pub(crate) async fn record_completed_response_item_with_finalized_facts(
     let has_memory_citation = if let Some(memory_citation) =
         finalized_facts.and_then(|facts| facts.memory_citation.as_ref())
     {
-        record_stage1_output_usage_for_memory_citation(memory_usage_db.as_ref(), memory_citation)
+        record_stage1_output_usage_for_memory_citation(memory_usage_db.as_deref(), memory_citation)
             .await
     } else {
-        record_stage1_output_usage_and_detect_memory_citation(memory_usage_db.as_ref(), item).await
+        record_stage1_output_usage_and_detect_memory_citation(memory_usage_db.as_deref(), item)
+            .await
     };
     if has_memory_citation {
         sess.record_memory_citation_for_turn(&turn_context.sub_id)
@@ -175,8 +176,9 @@ pub(crate) async fn mark_thread_memory_mode_polluted_if_external_context(
     {
         return;
     }
-    state_db::mark_thread_memory_mode_polluted(
+    memory_mode_pollution::mark_thread_memory_mode_polluted(
         sess.services.state_db.as_deref(),
+        turn_context.config.memories.version,
         sess.thread_id,
         "record_completed_response_item",
     )
@@ -184,7 +186,7 @@ pub(crate) async fn mark_thread_memory_mode_polluted_if_external_context(
 }
 
 async fn record_stage1_output_usage_and_detect_memory_citation(
-    state_db_ctx: Option<&codex_state::MemoryStore>,
+    state_db_ctx: Option<&dyn codex_state::RuntimeMemoryStore>,
     item: &ResponseItem,
 ) -> bool {
     let Some(raw_text) = raw_assistant_output_text_from_item(item) else {
@@ -199,7 +201,7 @@ async fn record_stage1_output_usage_and_detect_memory_citation(
 }
 
 async fn record_stage1_output_usage_for_memory_citation(
-    state_db_ctx: Option<&codex_state::MemoryStore>,
+    state_db_ctx: Option<&dyn codex_state::RuntimeMemoryStore>,
     memory_citation: &MemoryCitation,
 ) -> bool {
     let thread_ids = thread_ids_from_memory_citation(memory_citation);

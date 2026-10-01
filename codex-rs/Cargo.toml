@@ -92,6 +92,8 @@ members = [
     "network-proxy",
     "ollama",
     "process-hardening",
+    "postgres-import-store",
+    "postgres-runtime",
     "realtime-webrtc",
     "voice-host",
     "protocol",
@@ -112,6 +114,7 @@ members = [
     "v8-poc",
     "websocket-auth",
     "websocket-client",
+    "windows-sandbox-rs/tests/support",
     "windows-sandbox-service",
     "worktree",
     "workload-identity",
@@ -125,6 +128,7 @@ members = [
     "utils/image",
     "utils/json-to-toml",
     "utils/home-dir",
+    "utils/process",
     "utils/pty",
     "utils/readiness",
     "utils/redacted-string",
@@ -145,6 +149,7 @@ members = [
     "codex-client",
     "codex-api",
     "state",
+    "storage-authority",
     "terminal-detection",
     "test-binary-support",
     "thread-manager-sample",
@@ -171,6 +176,8 @@ codex-realtime-webrtc = { path = "realtime-webrtc" }
 app_test_support = { path = "app-server/tests/common" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
+codex-postgres-import-store = { path = "postgres-import-store" }
+codex-postgres-runtime = { path = "postgres-runtime" }
 codex-agent-identity = { path = "agent-identity" }
 codex-agent-roles = { path = "agent-roles" }
 codex-ansi-escape = { path = "ansi-escape" }
@@ -205,6 +212,7 @@ codex-websocket-client = { path = "websocket-client" }
 codex-config = { path = "config" }
 codex-connectors = { path = "connectors" }
 codex-agent-extension = { path = "ext/agent" }
+codex-agent-message-board-client = { path = "agent-message-board-client" }
 codex-agent-message-board-extension = { path = "ext/agent-message-board" }
 codex-connectors-extension = { path = "ext/connectors" }
 codex-context-fragments = { path = "context-fragments" }
@@ -275,6 +283,7 @@ codex-shell-escalation = { path = "shell-escalation" }
 codex-skills-extension = { path = "ext/skills" }
 codex-skills = { path = "skills" }
 codex-state = { path = "state" }
+codex-storage-authority = { path = "storage-authority" }
 codex-stdio-to-uds = { path = "stdio-to-uds" }
 codex-terminal-detection = { path = "terminal-detection" }
 codex-test-binary-support = { path = "test-binary-support" }
@@ -300,6 +309,7 @@ codex-utils-output-truncation = { path = "utils/output-truncation" }
 codex-utils-path = { path = "utils/path-utils" }
 codex-utils-path-uri = { path = "utils/path-uri" }
 codex-utils-plugins = { path = "utils/plugins" }
+codex-utils-process = { path = "utils/process" }
 codex-utils-pty = { path = "utils/pty" }
 codex-utils-redacted-string = { path = "utils/redacted-string" }
 codex-utils-rustls-provider = { path = "utils/rustls-provider" }
@@ -313,6 +323,7 @@ codex-user-verification = { path = "user-verification" }
 codex-v8-poc = { path = "v8-poc" }
 codex-workload-identity = { path = "workload-identity" }
 codex-windows-sandbox = { path = "windows-sandbox-rs" }
+codex-windows-sandbox-test-support = { path = "windows-sandbox-rs/tests/support" }
 core_test_support = { path = "core/tests/common" }
 
 # External
@@ -371,6 +382,7 @@ dunce = "1.0.4"
 ed25519-dalek = { version = "2.2.0", features = ["pkcs8"] }
 encoding_rs = "0.8.35"
 eventsource-stream = "0.2.3"
+file-id = "0.2.3"
 flate2 = "1.1.8"
 futures = { version = "0.3", default-features = false }
 gethostname = "1.1.0"
@@ -441,7 +453,8 @@ regex-automata = { version = "0.4.13", default-features = false, features = ["st
 regex-lite = "0.1.8"
 regex-syntax = "0.8.8"
 reqwest = { version = "0.12", features = ["cookies"] }
-rmcp = { version = "=3.2.0", default-features = false }
+# rmcp-v3.3.0 includes enterprise authorization helpers (rust-sdk#1234).
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", rev = "3e636cab26c013eca5131103c03d20237f12c4df", version = "=3.3.0", default-features = false }
 runfiles = { git = "https://github.com/dzbarsky/rules_rust", rev = "b56cbaa8465e74127f1ea216f813cd377295ad81" }
 rustix = { version = "1.1.4", features = ["net"] }
 rustls = { version = "0.23.45", default-features = false, features = [
@@ -488,6 +501,8 @@ sqlx = { version = "=0.9.0", default-features = false, features = [
 ] }
 # Derives and migration embedding do not need query macros or a host SQLite driver.
 sqlx-macros = { version = "=0.9.0", default-features = false, features = ["derive", "migrate"] }
+# Keep every target driver aligned when SQLite enables sqlx-core's offline API.
+sqlx-postgres = { version = "=0.9.0", default-features = false, features = ["offline"] }
 # Preserve the target driver's query-description support without building it on the host.
 sqlx-sqlite = { version = "=0.9.0", default-features = false, features = ["offline"] }
 starlark = { version = "0.14.2", default-features = false }
