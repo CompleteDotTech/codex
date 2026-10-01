@@ -485,6 +485,21 @@ async fn scenario(
         .expect("post after opt-out");
     labels.0.push(after_opt_out.message_id);
     log.push(labels.render(&host.take_notifications()));
+    // The opt-out survived the worker's participation, so another author's reply skips it.
+    let heard = board
+        .post(
+            root,
+            post(
+                "heard-by-others",
+                PostDestination::Thread(announcement.message_id),
+                "Only the remaining subscribers hear this",
+                Vec::new(),
+            ),
+        )
+        .await
+        .expect("post after the opt-out");
+    labels.0.push(heard.message_id);
+    log.push(labels.render(&host.take_notifications()));
     let to_channel = board
         .post(
             root,
