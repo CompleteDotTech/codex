@@ -41,9 +41,12 @@ use tracing::warn;
 
 mod backfill;
 mod external_agent_config_imports;
+mod goal_store;
 mod goals;
+mod log_store;
 mod logs;
 mod memories;
+mod memory_store;
 mod memory_versions;
 mod projects;
 mod queued_items;
@@ -54,6 +57,7 @@ mod rollout_migration;
 #[cfg(test)]
 pub(crate) mod test_support;
 mod thread_attachments;
+mod thread_metadata;
 mod thread_section_order;
 mod thread_sections;
 mod threads;
@@ -62,11 +66,17 @@ pub use external_agent_config_imports::ExternalAgentConfigImportDetailsRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportFailureRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportHistoryRecord;
 pub use external_agent_config_imports::ExternalAgentConfigImportSuccessRecord;
+pub use goal_store::GoalStoreFuture;
+pub use goal_store::ThreadGoalStore;
 pub use goals::GoalAccountingMode;
 pub use goals::GoalAccountingOutcome;
 pub use goals::GoalStore;
 pub use goals::GoalUpdate;
+pub use log_store::LogStoreFuture;
+pub use log_store::RuntimeLogStore;
 pub use memories::MemoryStore;
+pub use memory_store::MemoryStoreFuture;
+pub use memory_store::RuntimeMemoryStore;
 pub use queued_items::SqliteQueueStore;
 pub use recovery::backup_runtime_db_for_fresh_start;
 pub use recovery::is_sqlite_corruption_error;
@@ -85,15 +95,35 @@ pub use threads::ThreadFilterOptions;
 const LOG_PARTITION_SIZE_LIMIT_BYTES: i64 = 10 * 1024 * 1024;
 const LOG_PARTITION_ROW_LIMIT: i64 = 1_000;
 
+enum GoalStoreSelection {
+    Local,
+    Injected(Arc<dyn ThreadGoalStore>),
+}
+
+/// Stores for both versions of generated memory, supplied by the owning host.
+#[derive(Clone)]
+pub struct VersionedMemoryStores {
+    pub v1: Arc<dyn RuntimeMemoryStore>,
+    pub v2: Arc<dyn RuntimeMemoryStore>,
+}
+
+#[derive(Clone)]
+enum MemoryStoreSelection {
+    Local,
+    Injected(VersionedMemoryStores),
+}
+
 #[derive(Clone)]
 pub struct StateRuntime {
     sqlite: SqliteConfig,
     default_provider: String,
     pool: Arc<sqlx::SqlitePool>,
     logs_pool: Arc<sqlx::SqlitePool>,
-    thread_goals: GoalStore,
+    local_thread_goals: GoalStore,
+    thread_goals: Arc<dyn ThreadGoalStore>,
     memories: MemoryStore,
     memories_v2: Arc<tokio::sync::OnceCell<MemoryStore>>,
+    memory_store_selection: MemoryStoreSelection,
     thread_queue: SqliteQueueStore,
     thread_updated_at_millis: Arc<AtomicI64>,
     thread_recency_at_millis: Arc<AtomicI64>,
@@ -108,7 +138,56 @@ impl StateRuntime {
     /// Logs and paginated thread history live in dedicated files to reduce
     /// lock contention with the rest of the state store.
     pub async fn init(sqlite: SqliteConfig, default_provider: String) -> anyhow::Result<Arc<Self>> {
-        Self::init_inner(sqlite, default_provider, /*telemetry_override*/ None).await
+        Self::init_inner(
+            sqlite,
+            default_provider,
+            GoalStoreSelection::Local,
+            MemoryStoreSelection::Local,
+            /*telemetry_override*/ None,
+        )
+        .await
+    }
+
+    /// Initialize an inactive runtime with a host-supplied goal store.
+    ///
+    /// This still opens and migrates local SQLite databases. The caller must
+    /// establish storage authority before using this for any live home. The
+    /// injected store remains caller-owned and is not closed by [`Self::close`].
+    pub async fn init_with_goal_store(
+        sqlite: SqliteConfig,
+        default_provider: String,
+        goal_store: Arc<dyn ThreadGoalStore>,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::init_inner(
+            sqlite,
+            default_provider,
+            GoalStoreSelection::Injected(goal_store),
+            MemoryStoreSelection::Local,
+            /*telemetry_override*/ None,
+        )
+        .await
+    }
+
+    /// Initialize an inactive runtime with host-supplied stores for both memory versions.
+    ///
+    /// Local SQLite databases still open and migrate. Other memory consumers
+    /// still read local SQLite, so this seam is not safe for live activation.
+    /// Future activation also requires storage authority and explicit handling
+    /// of existing local memory rows.
+    /// The injected stores remain caller-owned and are not closed by [`Self::close`].
+    pub async fn init_with_memory_stores(
+        sqlite: SqliteConfig,
+        default_provider: String,
+        stores: VersionedMemoryStores,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::init_inner(
+            sqlite,
+            default_provider,
+            GoalStoreSelection::Local,
+            MemoryStoreSelection::Injected(stores),
+            /*telemetry_override*/ None,
+        )
+        .await
     }
 
     #[cfg(test)]
@@ -117,12 +196,21 @@ impl StateRuntime {
         default_provider: String,
         telemetry_override: &dyn DbTelemetry,
     ) -> anyhow::Result<Arc<Self>> {
-        Self::init_inner(sqlite, default_provider, Some(telemetry_override)).await
+        Self::init_inner(
+            sqlite,
+            default_provider,
+            GoalStoreSelection::Local,
+            MemoryStoreSelection::Local,
+            Some(telemetry_override),
+        )
+        .await
     }
 
     async fn init_inner(
         sqlite: SqliteConfig,
         default_provider: String,
+        goal_store: GoalStoreSelection,
+        memory_store_selection: MemoryStoreSelection,
         telemetry_override: Option<&dyn DbTelemetry>,
     ) -> anyhow::Result<Arc<Self>> {
         tokio::fs::create_dir_all(sqlite.home()).await?;
@@ -252,11 +340,17 @@ impl StateRuntime {
             };
         let thread_updated_at_millis = thread_updated_at_millis.unwrap_or(0);
         let thread_recency_at_millis = thread_recency_at_millis.unwrap_or(0);
+        let local_thread_goals = GoalStore::new(goals_pool);
         let runtime = Arc::new(Self {
             reclamation: reclamation::SqliteReclamationWorker::spawn(sqlite.clone()),
-            thread_goals: GoalStore::new(Arc::clone(&goals_pool)),
+            thread_goals: match goal_store {
+                GoalStoreSelection::Local => Arc::new(local_thread_goals.clone()),
+                GoalStoreSelection::Injected(store) => store,
+            },
+            local_thread_goals,
             memories: MemoryStore::new(Arc::clone(&memories_pool), Arc::clone(&pool)),
             memories_v2: Arc::new(tokio::sync::OnceCell::new()),
+            memory_store_selection,
             thread_queue: SqliteQueueStore::new(queue_pool),
             pool,
             logs_pool,
@@ -289,8 +383,8 @@ impl StateRuntime {
         &self.sqlite
     }
 
-    pub fn thread_goals(&self) -> &GoalStore {
-        &self.thread_goals
+    pub fn thread_goals(&self) -> &dyn ThreadGoalStore {
+        self.thread_goals.as_ref()
     }
 
     pub fn memories(&self) -> &MemoryStore {
@@ -310,7 +404,7 @@ impl StateRuntime {
         if let Some(memories) = self.memories_v2.get() {
             memories.close().await;
         }
-        self.thread_goals.close().await;
+        self.local_thread_goals.close().await;
         self.logs_pool.close().await;
         self.pool.close().await;
     }
@@ -454,6 +548,10 @@ pub async fn sqlite_integrity_check(
         Err(error) => Err(error.into()),
     }
 }
+
+#[cfg(test)]
+#[path = "runtime/goal_injection_tests.rs"]
+mod goal_injection_tests;
 
 #[cfg(test)]
 mod tests {

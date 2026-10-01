@@ -91,7 +91,8 @@ fn cloud_config_layers_from_fragments_impl(
         let value: TomlValue =
             toml::from_str(&raw_toml).map_err(|err| CloudConfigLayerError::Parse {
                 fragment: source_ref.clone(),
-                message: err.to_string(),
+                message: crate::storage_candidate::redacted_parse_error(&raw_toml)
+                    .map_or_else(|| err.to_string(), |redacted| redacted.to_string()),
             })?;
         if strict_config {
             validate_fragment_strictly(&source_ref, &raw_toml, &value, base_dir)?;
@@ -126,6 +127,12 @@ fn validate_fragment_strictly(
     value: &TomlValue,
     base_dir: &AbsolutePathBuf,
 ) -> Result<(), CloudConfigLayerError> {
+    crate::storage_candidate::validate_storage_candidate_value(value).map_err(|_| {
+        CloudConfigLayerError::Invalid {
+            fragment: source_ref.clone(),
+            message: "invalid storage candidate".to_string(),
+        }
+    })?;
     let _guard = AbsolutePathBufGuard::new(base_dir.as_path());
     if let Some(config_error) = config_error_from_ignored_toml_value_fields_for_source_name::<
         ConfigToml,
