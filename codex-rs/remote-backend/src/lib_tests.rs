@@ -1,5 +1,6 @@
 use super::*;
 use codex_core::config::Config;
+use codex_core::config::ConfigBuilder;
 use codex_keyring_store::tests::MockKeyringStore;
 use codex_postgres_runtime::ConnectionSettings;
 use codex_postgres_runtime::PoolLimits;
@@ -63,7 +64,9 @@ fn write_profile(home: &Path, state: &Path) {
 }
 
 async fn config_for(home: &Path) -> Config {
-    Config::load_default_with_cli_overrides_for_codex_home(home.to_path_buf(), Vec::new())
+    ConfigBuilder::default()
+        .codex_home(home.to_path_buf())
+        .build()
         .await
         .expect("config")
 }
