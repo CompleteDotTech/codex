@@ -72,6 +72,105 @@ async fn panic_is_joined_before_supervisor_returns_and_quarantine_remains() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[ignore = "requires separate receipt-owned quiet disposable PostgreSQL fixture"]
+async fn query_timeout_disposes_retained_pool_and_exact_owned_backend() {
+    use crate::exclusive_fixture_settings::settings;
+    let state = std::path::PathBuf::from(
+        std::env::var("CODEX_TEST_POSTGRES_DISPOSAL_STATE")
+            .expect("required distinct disposable fixture"),
+    );
+    let state_for_identity = state.clone();
+    // Join identity verification; each command owns its deadline and disposal.
+    let verified = tokio::spawn(async move { settings(&state_for_identity, "runtime").await })
+        .await
+        .expect("captured identity")
+        .expect("fixture identity must match");
+    let observer_settings = settings(&state, "runtime")
+        .await
+        .expect("observer fixture identity must match");
+    let guard = ExclusiveFixture::arm(&state, FixtureScope::DisposalProbe).expect("arm");
+    let retained = guard.clone();
+    let identity = Arc::new(Mutex::new(None));
+    let actor_identity = identity.clone();
+    let setup=tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 8),async move {
+            let pool=retained.retain(PostgresPool::connect(verified).await
+                .map_err(|_| "disposal_pool_connect")?)?;
+            let mut connection=pool.acquire().await.map_err(|_| "disposal_acquire")?;
+            connection.close_on_drop();
+            let actual:(i32,String)=sqlx::query_as("SELECT pid,backend_start::text FROM pg_catalog.pg_stat_activity WHERE pid=pg_backend_pid()")
+                .fetch_one(&mut *connection).await.map_err(|_| "disposal_identity")?;
+            *actor_identity.lock().map_err(|_| "disposal_identity_registry")?=Some(actual);
+            Ok::<_,&'static str>(connection)
+        }).await
+    }).await;
+    let observed_identity = identity.lock().map(|slot| slot.clone()).ok().flatten();
+    let readiness_identity = observed_identity.clone();
+    let observers = Arc::new(Mutex::new(None));
+    let observer_registry = observers.clone();
+    let (ready, readiness) = tokio::sync::oneshot::channel();
+    let active_query = tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 8),async move {
+            let observer=Arc::new(PostgresPool::connect(observer_settings).await.map_err(|_| "observer_connect")?);
+            *observer_registry.lock().map_err(|_| "observer_registry")?=Some(observer.clone());
+            let (pid,start)=readiness_identity.ok_or("query_not_reached")?;
+            let mut connection=observer.acquire().await.map_err(|_| "observer_acquire")?;
+            connection.close_on_drop();
+            loop {
+                let active:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_stat_activity WHERE pid=$1 AND backend_start::text=$2 AND state='active' AND query='SELECT pg_catalog.pg_sleep(60)')")
+                    .bind(pid).bind(&start).fetch_one(&mut *connection).await.map_err(|_| "observer_readiness")?;
+                if active { ready.send(()).map_err(|_| "readiness_receiver_lost")?;return Ok::<_,&'static str>(true); }
+                tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+            }
+        }).await
+    });
+    let result: Result<(), _> = guard
+        .supervise(FixtureDeadline::ObservedQuery(readiness), async move {
+            let mut connection = match setup {
+                Ok(Ok(Ok(connection))) => connection,
+                _ => return Err("disposal_setup_not_completed"),
+            };
+            sqlx::query("SELECT pg_catalog.pg_sleep(60)")
+                .execute(&mut *connection)
+                .await
+                .map_err(|_| "disposal_query")?;
+            Ok(())
+        })
+        .await;
+    let readiness_outcome = active_query.await;
+    let disposed_pool = observers.lock().map(|slot| slot.clone()).ok().flatten();
+    let observed=tokio::spawn(async move {
+        tokio::time::timeout(Duration::from_secs(/*secs*/ 8),async move {
+            let observer=disposed_pool.ok_or("observer_missing")?;
+            let (pid,start)=observed_identity.ok_or("query_not_reached")?;
+            let mut connection=observer.acquire().await.map_err(|_| "observer_acquire")?;
+            connection.close_on_drop();
+            loop {
+                let present:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_stat_activity WHERE pid=$1 AND backend_start::text=$2)")
+                    .bind(pid).bind(&start).fetch_one(&mut *connection).await.map_err(|_| "observer_query")?;
+                if !present { return Ok::<_,&'static str>(false); }
+                tokio::time::sleep(Duration::from_millis(/*millis*/ 10)).await;
+            }
+        }).await
+    }).await;
+    let observer_pool = observers.lock().map(|slot| slot.clone());
+    let observer_closed = match observer_pool {
+        Ok(Some(pool)) => tokio::time::timeout(Duration::from_secs(/*secs*/ 5), pool.close())
+            .await
+            .is_ok_and(|result| result.is_ok()),
+        _ => false,
+    };
+    let failure = result.expect_err("causal long query must timeout");
+    assert_eq!(failure.primary, Some("fixture_exercise_timeout"));
+    assert_eq!(failure.pool_closures, vec![true]);
+    assert!(matches!(readiness_outcome, Ok(Ok(Ok(true)))));
+    assert!(matches!(observed, Ok(Ok(Ok(false)))));
+    assert!(observer_closed);
+    assert!(failure.quarantine.is_file());
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn successful_exercise_returns_result_and_retains_quarantine_for_external_verification() {
     let directory = tempfile::tempdir().expect("owned fixture directory");
     let guard = ExclusiveFixture::arm(directory.path(), FixtureScope::Default).expect("arm");
