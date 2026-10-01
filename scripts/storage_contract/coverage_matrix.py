@@ -217,6 +217,107 @@ GOAL_EDGES = {
     },
 }
 
+# Both versioned memory SQLite files use this schema. These are selected
+# source edges; file artifacts and lease ownership require separate closure.
+MEMORY_EDGES = {
+    "stage1_outputs": {
+        "state/memory_migrations/0001_memories.sql": {
+            "schema": "CREATE TABLE stage1_outputs (",
+        },
+        "state/src/runtime/memories.rs": {
+            "read": "FROM stage1_outputs",
+            "write": "INSERT INTO stage1_outputs (",
+            "usage": (
+                "UPDATE stage1_outputs\nSET\n"
+                "    usage_count = COALESCE(usage_count, 0) + 1,\n"
+                "    last_usage = ?\nWHERE thread_id = ?"
+            ),
+            "delete": "DELETE FROM stage1_outputs",
+        },
+        "memories/write/src/runtime.rs": {
+            "writer_selection": ".memory_store_for_version(self.version)",
+        },
+        "memories/write/src/phase2.rs": {
+            "file_materialization": "sync_rollout_summaries_from_memories(root, raw_memories, raw_memory_count)",
+        },
+    },
+    "jobs": {
+        "state/memory_migrations/0001_memories.sql": {
+            "schema": "CREATE TABLE jobs (",
+        },
+        "state/src/runtime/memories.rs": {
+            "claim": "INSERT INTO jobs (",
+            "lease_claim": (
+                "ownership_token = excluded.ownership_token,\n"
+                "    started_at = excluded.started_at,\n"
+                "    finished_at = NULL,\n"
+                "    lease_until = excluded.lease_until"
+            ),
+            "lease_claim_guard": (
+                "(jobs.status != 'running' OR jobs.lease_until IS NULL "
+                "OR jobs.lease_until <= excluded.started_at)"
+            ),
+            "lease_start": (
+                "UPDATE jobs\nSET\n    status = 'running',\n"
+                "    worker_id = ?,\n    ownership_token = ?,\n"
+                "    started_at = ?,\n    finished_at = NULL,\n"
+                "    lease_until = ?"
+            ),
+            "lease_heartbeat": (
+                "UPDATE jobs\nSET lease_until = ?\n"
+                "WHERE kind = ? AND job_key = ?\n"
+                "  AND status = 'running' AND ownership_token = ?"
+            ),
+            "lease_start_guard": (
+                "AND (status != 'running' OR lease_until IS NULL OR lease_until <= ?)"
+            ),
+            "read": "FROM jobs",
+            "delete": "DELETE FROM jobs",
+        },
+    },
+    "consolidation_progress": {
+        "state/memory_migrations/0002_consolidation_progress.sql": {
+            "schema": "CREATE TABLE consolidation_progress (",
+        },
+        "state/src/runtime/memories.rs": {
+            "write": "UPDATE consolidation_progress SET max_thread_count",
+        },
+        "state/src/runtime/memory_readiness.rs": {
+            "read": "SELECT max_thread_count FROM consolidation_progress WHERE singleton = 1",
+        },
+    },
+}
+
+MEMORY_VERSION_EDGES = {
+    "memories_1.sqlite": {
+        "version_selection": "MemoryVersion::V1 => Ok(self.memories.clone()),",
+    },
+    "memories_v2_1.sqlite": {
+        "version_selection": (
+            "MemoryVersion::V2 => self\n"
+            "                .memories_v2\n"
+            "                .get_or_try_init(|| async {\n"
+            "                    let pool = self.sqlite.open_memories_v2_db().await?;\n"
+            "                    Ok(MemoryStore::new(Arc::new(pool), Arc::clone(&self.pool)))"
+        ),
+    },
+}
+
+MEMORY_FILE_EDGES = {
+    "memories/write/src/storage.rs": {
+        "raw_summary_write": (
+            "body.push_str(memory.raw_memory.trim());\n"
+            '        body.push_str("\\n\\n");\n'
+            "    }\n\n    tokio::fs::write(raw_memories_file(root), body)"
+        ),
+        "rollout_summary_write": "tokio::fs::write(path, body)",
+    },
+    "memories/write/src/phase2.rs": {
+        "summary_sync": "sync_rollout_summaries_from_memories(root, raw_memories, raw_memory_count)",
+        "v1_raw_file": "rebuild_raw_memories_file_from_memories(root, raw_memories, raw_memory_count)",
+    },
+}
+
 # Direct queue data and notification edges. The revision table is written by
 # SQLite triggers, not by queued_items.rs. These source clauses cover the local
 # adapter and service entry points, but not every app-server RPC caller.
@@ -318,6 +419,12 @@ def audit_coverage() -> dict:
                 "observed_goal_edges": GOAL_EDGES.get(table, {})
                 if store == "goals_1.sqlite"
                 else {},
+                "observed_memory_edges": {
+                    **MEMORY_EDGES.get(table, {}),
+                    "state/src/runtime/memory_versions.rs": MEMORY_VERSION_EDGES[store],
+                }
+                if store in MEMORY_VERSION_EDGES
+                else {},
             }
             for table, (issue, source) in entries.items()
         }
@@ -331,6 +438,9 @@ def audit_coverage() -> dict:
                 "source": source,
                 "producer_consumer_audit": "partial",
                 "forward_reverse_decision": "unresolved",
+                "observed_memory_file_edges": MEMORY_FILE_EDGES
+                if name == "memory_artifact"
+                else {},
             }
             for name, (issue, source) in FILES.items()
         },
