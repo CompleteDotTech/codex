@@ -285,6 +285,51 @@ pub(crate) enum AppEvent {
         notice: crate::security_setup::Notice,
     },
     OpenDaemonMenu,
+
+    /// Open the storage menu, which asks the connected server where it keeps history.
+    OpenStorageMenu,
+
+    /// The server answered `storage/status`.
+    StorageStatusLoaded(Result<codex_app_server_protocol::StorageStatus, String>),
+
+    /// Test the saved remote profile on the server's host.
+    StorageCheckRequested,
+
+    /// The server answered `storage/check`.
+    StorageCheckLoaded(Result<codex_app_server_protocol::StorageConnectionReport, String>),
+
+    /// Preview a migration to PostgreSQL or a return to local files.
+    StoragePlanRequested(codex_app_server_protocol::StoragePlanAction),
+
+    /// The server answered `storage/plan`.
+    StoragePlanLoaded(Result<codex_app_server_protocol::StoragePlan, String>),
+
+    /// The operator confirmed a previewed plan and that other writers are stopped.
+    StorageStartRequested {
+        action: codex_app_server_protocol::StoragePlanAction,
+        plan_id: String,
+    },
+
+    /// The operator asked to make a verified copy authoritative.
+    StorageActivateRequested {
+        operation_id: String,
+    },
+
+    /// Cancel an operation that was not activated.
+    StorageCancelRequested {
+        operation_id: String,
+    },
+
+    /// Read an operation again, with its live progress.
+    StorageOperationRefreshRequested {
+        operation_id: String,
+    },
+
+    /// Settle an interrupted cutover.
+    StorageRecoverRequested,
+
+    /// The server answered a request that returns one operation.
+    StorageOperationLoaded(Result<codex_app_server_protocol::StorageOperation, String>),
     ConfirmDaemonUpdate(crate::update_action::DaemonUpdateSource),
     RunDaemonUpdate(crate::update_action::DaemonUpdateSource),
     ReviewMisalignment(Arc<crate::chatwidget::MisalignmentReview>),

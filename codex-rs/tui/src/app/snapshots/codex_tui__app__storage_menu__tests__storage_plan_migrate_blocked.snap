@@ -1,0 +1,22 @@
+---
+source: tui/src/app/storage_menu_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, width)"
+---
+  Migrate this host's history to PostgreSQL
+  Host: build-host
+  Destination: db.internal:5432/codex/codex_storage
+  This host holds:
+    threads: 412
+    projects: 5
+    queued messages: 2
+    goals: 7
+    log rows: 90321
+    rollout files: 410
+    ✗ The remote dataset already holds history
+    ✗ The SQLite home differs from the Codex home
+
+
+› 1. Back to storage
+  2. Close
+
+  enter select · esc back

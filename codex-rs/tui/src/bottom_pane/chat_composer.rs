@@ -511,6 +511,7 @@ fn parent_owned_command_is_allowed(command: SlashCommand, args: &str) -> bool {
                 | SlashCommand::Status
                 | SlashCommand::Warnings
                 | SlashCommand::Daemon
+                | SlashCommand::Storage
                 | SlashCommand::Usage
                 | SlashCommand::Ide
                 | SlashCommand::DebugConfig

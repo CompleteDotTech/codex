@@ -90,7 +90,7 @@ fn blocker(code: service::BlockerCode) -> StorageBlocker {
 fn storage_error(code: service::BlockerCode) -> JSONRPCErrorError {
     let mut error = invalid_request(format!("storage operation blocked: {}", code.as_str()));
     error.data = Some(serde_json::json!({
-        "blocker": code.as_str(),
+        "blocker": blocker(code),
         "retryable": code.is_retryable(),
     }));
     error
@@ -103,7 +103,7 @@ fn storage_error_from(error: service::StorageError) -> JSONRPCErrorError {
 fn admin_required() -> JSONRPCErrorError {
     let mut error = invalid_request("storage changes are only available to clients of this host");
     error.data = Some(serde_json::json!({
-        "blocker": "storage_admin_required",
+        "blocker": StorageBlocker::StorageAdminRequired,
         "retryable": false,
     }));
     error

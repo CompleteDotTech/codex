@@ -1,0 +1,16 @@
+---
+source: tui/src/app/storage_menu_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, width)"
+---
+  Return PostgreSQL history to this host's local files
+  Host: build-host
+  Destination: db.internal:5432/codex/codex_storage
+  Stop every other Codex process on this host before you start.
+
+
+› 1. Start now: other Codex processes are stopped  Copies and verifies; you
+                                                   decide when to switch
+  2. Back to storage
+  3. Close
+
+  enter select · esc back

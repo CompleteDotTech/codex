@@ -1,0 +1,22 @@
+---
+source: tui/src/app/storage_menu_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, 80)"
+---
+  Storage
+  Host: build-host
+  Active: Local SQLite files
+  History: local, not yet under storage management
+  No remote profile is saved on this host.
+
+
+     Test the remote connection (disabled)       Checks the saved profile;
+                                                 changes nothing (disabled: Save
+                                                 a remote profile on this host
+                                                 first)
+     Preview migrating to PostgreSQL (disabled)  Shows what would move and what
+                                                 blocks it (disabled: Save a
+                                                 remote profile on this host
+                                                 first)
+› 1. Close
+
+  enter select · esc back

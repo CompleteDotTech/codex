@@ -1,0 +1,17 @@
+---
+source: tui/src/app/storage_menu_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, 80)"
+---
+  Storage
+  Host: build-host
+  Active: Local SQLite files
+  History: interrupted mid-switch
+  A remote profile is saved. It is only a proposal until a migration finishes.
+    ✗ A cutover was interrupted and needs recovery
+
+
+› 1. Recover the interrupted cutover  Finish or undo it from what both sides
+                                      recorded
+  2. Close
+
+  enter select · esc back

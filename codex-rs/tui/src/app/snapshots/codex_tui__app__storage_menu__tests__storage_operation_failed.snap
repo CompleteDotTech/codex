@@ -1,0 +1,17 @@
+---
+source: tui/src/app/storage_menu_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, 80)"
+---
+  Migrate this host's history to PostgreSQL
+  Operation 0194e0a0-0000-7000-8000-0000000000bb
+  State: failed; nothing was switched
+    threads: 412 rows
+    logs: 40000 rows
+    ✗ The copy did not match, so nothing was changed
+
+
+› 1. Cancel this operation  Keeps the current storage; nothing is deleted
+  2. Back to storage
+  3. Close
+
+  enter select · esc back

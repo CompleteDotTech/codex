@@ -71,7 +71,10 @@ async fn storage_methods_describe_a_local_home_and_refuse_unconfirmed_changes() 
         })
         .await?;
     assert_eq!(check.report.stage, StorageCheckStage::Profile);
-    assert_eq!(check.report.blocker, Some(StorageBlocker::NoCandidateProfile));
+    assert_eq!(
+        check.report.blocker,
+        Some(StorageBlocker::NoCandidateProfile)
+    );
     let plan: StoragePlanResponse = app_server
         .request(|request_id| ClientRequest::StoragePlan {
             request_id,
@@ -80,7 +83,11 @@ async fn storage_methods_describe_a_local_home_and_refuse_unconfirmed_changes() 
             },
         })
         .await?;
-    assert!(plan.plan.blockers.contains(&StorageBlocker::NoCandidateProfile));
+    assert!(
+        plan.plan
+            .blockers
+            .contains(&StorageBlocker::NoCandidateProfile)
+    );
     assert!(plan.plan.requires_pause);
 
     // Starting needs the operator's promise, and the refusal is a stable code.
@@ -94,14 +101,14 @@ async fn storage_methods_describe_a_local_home_and_refuse_unconfirmed_changes() 
         }),
     )
     .await?;
-    assert_eq!((blocker.as_str(), retryable), ("not_confirmed", false));
+    assert_eq!((blocker.as_str(), retryable), ("notConfirmed", false));
     let (blocker, _) = blocker_of(
         &mut app_server,
         "storage/operation/read",
         json!({"operationId": "0194e0a0-0000-7000-8000-000000000001"}),
     )
     .await?;
-    assert_eq!(blocker, "operation_not_found");
+    assert_eq!(blocker, "operationNotFound");
 
     // Nothing was recorded, and there is nothing to recover.
     let operations: StorageOperationListResponse = app_server
@@ -112,6 +119,6 @@ async fn storage_methods_describe_a_local_home_and_refuse_unconfirmed_changes() 
         .await?;
     assert_eq!(operations.operations, Vec::new());
     let (blocker, _) = blocker_of(&mut app_server, "storage/recover", json!({})).await?;
-    assert_eq!(blocker, "no_candidate_profile");
+    assert_eq!(blocker, "noCandidateProfile");
     Ok(())
 }

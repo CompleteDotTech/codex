@@ -1,0 +1,16 @@
+---
+source: tui/src/app/storage_menu_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, 80)"
+---
+  Storage
+  Host: build-host
+  Active: Remote PostgreSQL
+  History: remote
+  Connected through the remote profile saved on this host.
+
+
+› 1. Test the remote connection        Checks the saved profile; changes nothing
+  2. Preview returning to local files  Shows what would move and what blocks it
+  3. Close
+
+  enter select · esc back

@@ -135,6 +135,26 @@ impl App {
         };
         match event {
             AppEvent::OpenDaemonMenu => self.open_daemon_menu(),
+            AppEvent::OpenStorageMenu => self.request_storage_status(app_server),
+            AppEvent::StorageStatusLoaded(result) => self.show_storage_status(result),
+            AppEvent::StorageCheckRequested => self.request_storage_check(app_server),
+            AppEvent::StorageCheckLoaded(result) => self.show_storage_check(result),
+            AppEvent::StoragePlanRequested(action) => self.request_storage_plan(app_server, action),
+            AppEvent::StoragePlanLoaded(result) => self.show_storage_plan(result),
+            AppEvent::StorageStartRequested { action, plan_id } => {
+                self.request_storage_start(app_server, action, plan_id);
+            }
+            AppEvent::StorageActivateRequested { operation_id } => {
+                self.request_storage_activate(app_server, operation_id);
+            }
+            AppEvent::StorageCancelRequested { operation_id } => {
+                self.request_storage_cancel(app_server, operation_id);
+            }
+            AppEvent::StorageOperationRefreshRequested { operation_id } => {
+                self.request_storage_operation(app_server, operation_id);
+            }
+            AppEvent::StorageRecoverRequested => self.request_storage_recover(app_server),
+            AppEvent::StorageOperationLoaded(result) => self.show_storage_operation(result),
             AppEvent::ConfirmDaemonUpdate(source) => self.confirm_daemon_update(source),
             AppEvent::RunDaemonUpdate(source) => {
                 self.pending_update_action = Some(UpdateAction::Daemon(source));

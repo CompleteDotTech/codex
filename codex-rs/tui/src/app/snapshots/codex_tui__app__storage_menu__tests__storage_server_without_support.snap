@@ -1,0 +1,13 @@
+---
+source: tui/src/app/storage_menu_tests.rs
+expression: "render_bottom_popup(&app.chat_widget, 80)"
+---
+  Storage
+  ✗ Storage is unavailable
+  This server does not offer storage management, or refused the request.
+
+
+› 1. Back to storage
+  2. Close
+
+  enter select · esc back
