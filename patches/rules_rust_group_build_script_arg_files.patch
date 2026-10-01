@@ -1,12 +1,77 @@
 diff --git a/rust/private/rustc.bzl b/rust/private/rustc.bzl
 --- a/rust/private/rustc.bzl
 +++ b/rust/private/rustc.bzl
-@@ -1125,5 +1125,7 @@
+@@ -1125,5 +1125,3 @@
      for build_env_file in build_env_files:
          process_wrapper_flags.add("--env-file", build_env_file)
  
 -    process_wrapper_flags.add_all(build_flags_files, before_each = "--arg-file")
-+    # The wrapper accepts multiple files per flag. Reduce native Windows
-+    # command-line length without changing the files or their order.
-+    process_wrapper_flags.add_all("--arg-file", build_flags_files)
+-
+@@ -1611,5 +1609,15 @@
+     all_args = [process_wrapper_flags, rustc_path, rustc_flags]
+     if rust_flags_args != None:
+         all_args.append(rust_flags_args)
  
++    if build_flags_files:
++        # Keep build-script flags last, as process_wrapper's --arg-file did.
++        # A response file also bounds the wrapper command line on Windows.
++        # The wrapper recursively expands these files and their substitutions.
++        build_script_args = ctx.actions.args()
++        build_script_args.set_param_file_format("multiline")
++        build_script_args.use_param_file("@%s", use_always = True)
++        build_script_args.add_all(build_flags_files, format_each = "@%s")
++        all_args.append(build_script_args)
++
+     # Path mapping must be disabled whenever any input string carries a
+diff --git a/util/process_wrapper/main.rs b/util/process_wrapper/main.rs
+--- a/util/process_wrapper/main.rs
++++ b/util/process_wrapper/main.rs
+@@ -37,2 +37,0 @@
+-#[cfg(windows)]
+-use crate::util::read_file_to_array;
+@@ -128,3 +126,5 @@
+-            let lines = read_file_to_array(argfile_path).map_err(|e| {
++            // options already decoded build-script escapes into rustc response lines.
++            // Read those lines literally so trailing backslashes survive filtering.
++            let contents = fs::read_to_string(argfile_path).map_err(|e| {
+                 ProcessWrapperError(format!("unable to read argfile {}: {}", argfile_path, e))
+             })?;
+@@ -132,3 +132,3 @@
+-            for line in lines {
+-                queue.push_back((line, Some(argfile_path.to_string())));
++            for line in contents.lines() {
++                queue.push_back((line.to_owned(), Some(argfile_path.to_string())));
+             }
+@@ -136,1 +136,5 @@
+             target.push(format!("@{}.filtered", argfile_path));
++            // Empty build-script output still needs a readable response file.
++            argfile_contents
++                .entry(format!("{argfile_path}.filtered"))
++                .or_default();
+@@ -423,1 +427,26 @@
+     use super::*;
++
++    #[cfg(windows)]
++    #[test]
++    fn test_response_files_preserve_decoded_arguments() -> Result<(), Box<dyn std::error::Error>> {
++        let directory = std::env::temp_dir().join(format!(
++            "rules-rust-response-files-{}-{}",
++            std::process::id(),
++            SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos(),
++        ));
++        fs::create_dir(&directory)?;
++        let _cleanup = TemporaryDirectoryGuard::new(Some(directory.clone()));
++        let arguments = [
++            "",
++            "-Lnative=C:\\sdk\\lib\\\n-Lnative=C:\\sdk\\lib\\\\\n--cfg=sentinel\n-Lnative=C:\\sdk\\final\\",
++        ];
++        for (index, contents) in arguments.iter().enumerate() {
++            let path = directory.join(format!("{index}.args.expanded"));
++            fs::write(&path, contents)?;
++            let filtered = format!("{}.filtered", path.display());
++            let actual = get_dependency_search_paths_from_args(&[format!("@{}", path.display())])?;
++            assert_eq!(actual, (Vec::<PathBuf>::new(), vec![format!("@{filtered}")]));
++            assert_eq!(fs::read_to_string(filtered)?, *contents);
++        }
++        Ok(())
++    }

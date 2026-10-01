@@ -1,0 +1,48 @@
+name: rust-zsh-build-check
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/rust-release-zsh.yml
+      - .github/workflows/rust-zsh-build-check.yml
+      - .github/scripts/build-zsh-release-artifact.sh
+      - codex-rs/shell-escalation/patches/zsh-exec-wrapper.patch
+
+permissions:
+  contents: read
+
+env:
+  ZSH_COMMIT: 77045ef899e53b9598bebc5a41db93a548a40ca6
+  ZSH_PATCH: codex-rs/shell-escalation/patches/zsh-exec-wrapper.patch
+
+jobs:
+  build-macos:
+    name: Build and smoke-test zsh on ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-15
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install build prerequisite
+        shell: bash
+        run: |
+          if ! command -v autoconf >/dev/null 2>&1; then
+            brew install autoconf
+          fi
+      - name: Build and inspect artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="dist/zsh/${{ matrix.target }}/codex-zsh-${{ matrix.target }}.tar.gz"
+          "${GITHUB_WORKSPACE}/.github/scripts/build-zsh-release-artifact.sh" "$archive"
+          tar -tzf "$archive" | grep -Fx codex-zsh/bin/zsh
+          shasum -a 256 "$archive"
