@@ -1398,6 +1398,49 @@
       },
       "type": "object"
     },
+    "CredentialSource": {
+      "description": "A host-owned reference to a protected credential, never its value.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "source": {
+              "enum": [
+                "environment"
+              ],
+              "type": "string"
+            },
+            "variable": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "source",
+            "variable"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "source": {
+              "enum": [
+                "keyring"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "source"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "CurrentTimeReminderConfigToml": {
       "additionalProperties": false,
       "properties": {
@@ -4163,6 +4206,96 @@
         }
       ]
     },
+    "StorageCandidateProfile": {
+      "description": "A saved proposal, separate from the host-owned active backend identity.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "backend": {
+              "enum": [
+                "local_sqlite"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "backend"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "PostgreSQL connection candidate. Deserialization validates structure only; it does not resolve credentials, open a socket, or claim authority.",
+          "properties": {
+            "backend": {
+              "enum": [
+                "remote_postgres"
+              ],
+              "type": "string"
+            },
+            "connect_timeout_seconds": {
+              "format": "uint16",
+              "maximum": 30.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "credential": {
+              "$ref": "#/definitions/CredentialSource"
+            },
+            "database": {
+              "type": "string"
+            },
+            "endpoint": {
+              "type": "string"
+            },
+            "max_connections": {
+              "format": "uint16",
+              "maximum": 32.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "namespace": {
+              "type": "string"
+            },
+            "pool_acquire_timeout_seconds": {
+              "format": "uint16",
+              "maximum": 30.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "port": {
+              "format": "uint16",
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "tls": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/TlsSettings"
+                }
+              ],
+              "default": {
+                "ca_certificate": null,
+                "verification": "verify_full"
+              }
+            }
+          },
+          "required": [
+            "backend",
+            "connect_timeout_seconds",
+            "credential",
+            "database",
+            "endpoint",
+            "max_connections",
+            "namespace",
+            "pool_acquire_timeout_seconds",
+            "port"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "ThreadStoreToml": {
       "oneOf": [
         {
@@ -4180,6 +4313,31 @@
           "type": "object"
         }
       ]
+    },
+    "TlsSettings": {
+      "additionalProperties": false,
+      "description": "Verify the certificate and server name, using system roots or a host path.",
+      "properties": {
+        "ca_certificate": {
+          "type": "string"
+        },
+        "verification": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/TlsVerification"
+            }
+          ],
+          "default": "verify_full"
+        }
+      },
+      "type": "object"
+    },
+    "TlsVerification": {
+      "description": "The only TLS policy admitted by this initial candidate format.",
+      "enum": [
+        "verify_full"
+      ],
+      "type": "string"
     },
     "TokenBudgetConfigToml": {
       "additionalProperties": false,
@@ -4656,6 +4814,11 @@
           ],
           "default": "composer",
           "description": "Where the terminal pet should anchor vertically.\n\nDefaults to `composer`, which follows the current TUI composer viewport."
+        },
+        "prompt_suggestions": {
+          "default": false,
+          "description": "Deprecated. Accepted for compatibility with older configs but ignored.",
+          "type": "boolean"
         },
         "question_esc_back": {
           "default": true,
@@ -7656,6 +7819,14 @@
         }
       ],
       "description": "Directory where Codex stores the SQLite state DB. Defaults to `$CODEX_SQLITE_HOME` when set. Otherwise uses `$CODEX_HOME`."
+    },
+    "storage_candidate": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/StorageCandidateProfile"
+        }
+      ],
+      "description": "Validated proposal only. Editing this never selects an active backend."
     },
     "suppress_unstable_features_warning": {
       "description": "Suppress warnings about unstable (under development) features.",

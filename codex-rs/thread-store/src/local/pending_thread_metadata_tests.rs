@@ -22,15 +22,17 @@ use crate::local::test_support::test_config;
 
 #[tokio::test]
 async fn pending_thread_metadata_is_consumed_by_first_metadata_update() {
-    let (_home, store, runtime) = store_with_runtime().await;
+    let (home, store, runtime) = store_with_runtime().await;
     let thread_id = ThreadId::new();
     let pending_patch = staged_model_patch();
+    let mut params = create_thread_params(thread_id);
+    params.metadata.cwd = Some(home.path().to_path_buf());
 
     store
         .stage_pending_thread_metadata(thread_id, pending_patch.clone())
         .await
         .expect("stage pending metadata");
-    let live_thread = LiveThread::create(store.clone(), create_thread_params(thread_id))
+    let live_thread = LiveThread::create(store.clone(), params)
         .await
         .expect("create live thread");
     live_thread
@@ -48,10 +50,7 @@ async fn pending_thread_metadata_is_consumed_by_first_metadata_update() {
     assert_eq!(metadata.source, "exec");
     assert_eq!(
         metadata.cwd.canonicalize().expect("canonical metadata cwd"),
-        std::env::current_dir()
-            .expect("current directory")
-            .canonicalize()
-            .expect("canonical current directory")
+        home.path().canonicalize().expect("canonical test home")
     );
     assert_pending_metadata_consumed(&store, thread_id).await;
 }
