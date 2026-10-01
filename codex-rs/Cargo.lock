@@ -2795,6 +2795,7 @@ dependencies = [
  "codex-model-provider-info",
  "codex-network-proxy",
  "codex-protocol",
+ "codex-storage-authority",
  "codex-utils-absolute-path",
  "codex-utils-path",
  "codex-utils-path-uri",
@@ -4652,6 +4653,22 @@ dependencies = [
  "pretty_assertions",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "codex-storage-authority"
+version = "0.0.0"
+dependencies = [
+ "codex-keyring-store",
+ "libc",
+ "pretty_assertions",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+ "windows-sys 0.52.0",
+ "zeroize",
 ]
 
 [[package]]
