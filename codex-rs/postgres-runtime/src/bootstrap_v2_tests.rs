@@ -9,9 +9,27 @@ use crate::RequiredAccess;
 use crate::bootstrap_named_namespace;
 use crate::check_codex_storage_compatibility;
 use crate::check_named_namespace_compatibility;
+use crate::check_verified_target_compatibility;
 use crate::named_bootstrap::namespaced_migrations;
+use crate::verified_target::tests::SignedFixture;
 use serde_json::Value;
 use std::path::Path;
+
+async fn owner_fixture_sql(pool: &PostgresPool, statements: &[&'static str]) {
+    let mut connection = pool.acquire().await.expect("acquire owner fixture");
+    let mut transaction = connection.begin().await.expect("begin owner fixture");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for fixture");
+    for &statement in statements {
+        sqlx::query(statement)
+            .execute(&mut *transaction)
+            .await
+            .expect("apply owner fixture SQL");
+    }
+    transaction.commit().await.expect("commit owner fixture");
+}
 
 /// Applies the metadata and history grants a real bootstrap leaves behind, so hand-built older
 /// formats pass the protected-privilege check the preflight now enforces.
@@ -594,6 +612,39 @@ async fn real_v4_upgrade_to_section_catalog_rejects_orphans_and_preserves_join()
             activation_permitted: false,
         })
     );
+    let old_fixture = SignedFixture::new(4);
+    let old_target = old_fixture.verify();
+    assert_eq!(
+        check_verified_target_compatibility(&first, &old_target, RequiredAccess::ReadWrite).await,
+        Ok(CompatibilityResult {
+            schema_format: 4,
+            activation_permitted: false,
+        })
+    );
+    owner_fixture_sql(
+        &first,
+        &["CREATE TABLE codex_storage.hostile_target_probe (id integer)"],
+    )
+    .await;
+    assert_eq!(
+        check_verified_target_compatibility(&first, &old_target, RequiredAccess::ReadWrite).await,
+        Err(CompatibilityError::IncompatibleNamespace)
+    );
+    owner_fixture_sql(&first, &["DROP TABLE codex_storage.hostile_target_probe"]).await;
+    owner_fixture_sql(
+        &first,
+        &["UPDATE codex_storage._codex_pg_migrations SET success = FALSE WHERE version = 4"],
+    )
+    .await;
+    assert_eq!(
+        check_verified_target_compatibility(&first, &old_target, RequiredAccess::ReadWrite).await,
+        Err(CompatibilityError::DirtyMigration)
+    );
+    owner_fixture_sql(
+        &first,
+        &["UPDATE codex_storage._codex_pg_migrations SET success = TRUE WHERE version = 4"],
+    )
+    .await;
 
     let orphan_id = "00000000-0000-0000-0000-000000000124";
     let mut runtime_connection = runtime.acquire().await.expect("runtime connection");
@@ -675,6 +726,20 @@ async fn real_v4_upgrade_to_section_catalog_rejects_orphans_and_preserves_join()
     assert_eq!(
         check_codex_storage_compatibility(&first, old, RequiredAccess::ReadWrite).await,
         Err(CompatibilityError::UnsupportedSchema)
+    );
+    assert_eq!(
+        check_verified_target_compatibility(&first, &old_target, RequiredAccess::ReadWrite).await,
+        Err(CompatibilityError::UnsupportedSchema)
+    );
+    let current_fixture = SignedFixture::new(5);
+    let current_target = current_fixture.verify();
+    assert_eq!(
+        check_verified_target_compatibility(&first, &current_target, RequiredAccess::ReadWrite)
+            .await,
+        Ok(CompatibilityResult {
+            schema_format: 5,
+            activation_permitted: false,
+        })
     );
     let mut connection = runtime.acquire().await.expect("runtime connection");
     let pinned: (String, String, Option<String>) = sqlx::query_as(
