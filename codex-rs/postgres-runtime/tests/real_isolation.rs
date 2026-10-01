@@ -88,13 +88,13 @@ async fn real_postgres_roles_isolate_two_schemas() {
     owner_sql(
         &default_migrator,
         "SET LOCAL ROLE codex_owner",
-        "CREATE TABLE codex_storage.isolation_probe (value INTEGER NOT NULL)",
+        "DROP TABLE IF EXISTS codex_storage.isolation_probe; CREATE TABLE codex_storage.isolation_probe (value INTEGER NOT NULL)",
     )
     .await;
     owner_sql(
         &isolation_migrator,
         "SET LOCAL ROLE codex_isolation_owner",
-        "CREATE TABLE codex_storage_isolation.isolation_probe (value INTEGER NOT NULL)",
+        "DROP TABLE IF EXISTS codex_storage_isolation.isolation_probe; CREATE TABLE codex_storage_isolation.isolation_probe (value INTEGER NOT NULL)",
     )
     .await;
 
@@ -166,4 +166,18 @@ async fn real_postgres_roles_isolate_two_schemas() {
     ] {
         assert_eq!(sqlstate(pool, statement).await, "42501");
     }
+
+    // Later suites bootstrap these namespaces, which must contain only known objects.
+    owner_sql(
+        &default_migrator,
+        "SET LOCAL ROLE codex_owner",
+        "DROP TABLE codex_storage.isolation_probe",
+    )
+    .await;
+    owner_sql(
+        &isolation_migrator,
+        "SET LOCAL ROLE codex_isolation_owner",
+        "DROP TABLE codex_storage_isolation.isolation_probe",
+    )
+    .await;
 }

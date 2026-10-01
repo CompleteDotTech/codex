@@ -51,6 +51,10 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
         .execute(&mut *owner)
         .await
         .expect("assume owner");
+    sqlx::query("DROP TABLE IF EXISTS codex_storage.transaction_probe")
+        .execute(&mut *owner)
+        .await
+        .expect("clear a probe left by an interrupted run");
     sqlx::query("CREATE TABLE codex_storage.transaction_probe (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)")
         .execute(&mut *owner)
         .await
@@ -152,4 +156,24 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
             .await
             .expect("read committed probe values");
     assert_eq!(values, vec![1, 0]);
+    drop(reader);
+
+    // Later suites bootstrap the same namespace, which must contain only known objects.
+    let mut connection = migrator
+        .acquire()
+        .await
+        .expect("acquire migrator for cleanup");
+    let mut owner = connection
+        .begin()
+        .await
+        .expect("begin cleanup transaction");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *owner)
+        .await
+        .expect("assume owner for cleanup");
+    sqlx::query("DROP TABLE codex_storage.transaction_probe")
+        .execute(&mut *owner)
+        .await
+        .expect("drop transaction probe");
+    owner.commit().await.expect("commit probe cleanup");
 }
