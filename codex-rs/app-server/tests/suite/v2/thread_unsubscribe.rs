@@ -38,6 +38,71 @@ use test_case::test_case;
 use tokio::time::timeout;
 
 const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+#[tokio::test]
+async fn persisted_empty_thread_resumes_after_idle_unload() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri())
+        .with_sandbox_mode("danger-full-access")
+        .with_root_config("thread_unload_delay_secs = 0")
+        .write(codex_home.path())?;
+
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+    let response = mcp
+        .start_thread(ThreadStartParams {
+            persist_on_start: true,
+            ..Default::default()
+        })
+        .await?;
+    assert!(response.persisted_on_start);
+    let thread = response.thread;
+    let thread_id = thread.id;
+    let rollout_path = thread.path.expect("persistent thread path");
+    assert!(
+        rollout_path.is_file(),
+        "thread/start must persist before responding"
+    );
+
+    let _: ThreadUnsubscribeResponse = mcp
+        .request(|request_id| ClientRequest::ThreadUnsubscribe {
+            request_id,
+            params: ThreadUnsubscribeParams {
+                thread_id: thread_id.clone(),
+            },
+        })
+        .await?;
+    let closed: ThreadClosedNotification =
+        timeout(DEFAULT_READ_TIMEOUT, mcp.read_notification("thread/closed")).await??;
+    assert_eq!(closed.thread_id, thread_id);
+
+    let read: ThreadReadResponse = mcp
+        .request(|request_id| ClientRequest::ThreadRead {
+            request_id,
+            params: ThreadReadParams {
+                thread_id: thread_id.clone(),
+                include_turns: false,
+            },
+        })
+        .await?;
+    assert_eq!(read.thread.status, ThreadStatus::NotLoaded);
+    let resumed: ThreadResumeResponse = mcp
+        .request(|request_id| ClientRequest::ThreadResume {
+            request_id,
+            params: ThreadResumeParams {
+                thread_id: thread_id.clone(),
+                ..Default::default()
+            },
+        })
+        .await?;
+    assert_eq!(resumed.thread.id, thread_id);
+    assert_eq!(resumed.thread.turns, Vec::new());
+    Ok(())
+}
+
 #[tokio::test]
 async fn thread_unsubscribe_keeps_thread_loaded_until_idle_timeout() -> Result<()> {
     let server = create_mock_responses_server_repeating_assistant("Done").await;
