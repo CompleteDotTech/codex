@@ -4,6 +4,8 @@
 //! candidate configuration. Callers that need the preprovisioned storage
 //! schema must explicitly invoke the transactional `bootstrap_codex_storage`
 //! entry point.
+//! Only PostgreSQL 17.11 is qualified by the current real-server fixture. This
+//! exact-version gate does not assert support for every PostgreSQL 17 release.
 
 #![expect(
     clippy::disallowed_methods,
@@ -23,6 +25,9 @@ use sqlx_sqlite as _;
 use std::fmt;
 use std::net::IpAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -35,9 +40,20 @@ pub use compatibility::CompatibilityError;
 pub use compatibility::CompatibilityResult;
 pub use compatibility::RequiredAccess;
 pub use compatibility::check_codex_storage_compatibility;
+mod namespace;
+pub use namespace::InvalidNamespace;
+pub use namespace::NamedNamespace;
+mod named_bootstrap;
+pub use named_bootstrap::bootstrap_named_namespace;
+mod named_compatibility;
+pub use named_compatibility::check_named_namespace_compatibility;
+mod transaction;
+pub use transaction::PostgresTransaction;
+pub use transaction::TransactionError;
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_CONNECTIONS: u32 = 32;
+const QUALIFIED_SERVER_VERSION_NUM: &str = "170011";
 
 /// Resolved by the owning host. The password must not be logged or persisted.
 pub struct ConnectionSettings {
@@ -73,6 +89,7 @@ pub enum PoolError {
     Tls,
     Unavailable,
     Closed,
+    UnsupportedServer,
 }
 
 impl fmt::Display for PoolError {
@@ -95,6 +112,14 @@ fn classify(error: &sqlx::Error) -> PoolError {
             PoolError::Tls
         }
         _ => PoolError::Unavailable,
+    }
+}
+
+fn require_qualified_server_version(version: &str) -> Result<(), PoolError> {
+    if version == QUALIFIED_SERVER_VERSION_NUM {
+        Ok(())
+    } else {
+        Err(PoolError::UnsupportedServer)
     }
 }
 
@@ -148,6 +173,7 @@ impl PostgresPool {
             .ssl_mode(PgSslMode::VerifyFull)
             .ssl_root_cert(&settings.ca_certificate)
             .disable_statement_logging();
+        let rejected_version = Arc::new(AtomicBool::new(false));
         let pool = timeout(
             limits.connect_timeout,
             PgPoolOptions::new()
@@ -155,11 +181,39 @@ impl PostgresPool {
                 // SQLx uses this limit during startup too. The outer timeouts
                 // enforce each operation's own deadline.
                 .acquire_timeout(limits.connect_timeout.max(limits.acquire_timeout))
+                .after_connect({
+                    let rejected_version = Arc::clone(&rejected_version);
+                    move |connection, _| {
+                        let rejected_version = Arc::clone(&rejected_version);
+                        Box::pin(async move {
+                            let version =
+                                sqlx::query_scalar::<_, String>("SHOW server_version_num")
+                                    .fetch_one(connection)
+                                    .await
+                                    .map_err(|error| {
+                                        sqlx::Error::Configuration(Box::new(classify(&error)))
+                                    })?;
+                            require_qualified_server_version(&version).map_err(|error| {
+                                rejected_version.store(true, Ordering::Relaxed);
+                                sqlx::Error::Configuration(Box::new(error))
+                            })
+                        })
+                    }
+                })
                 .connect_with(options),
         )
         .await
-        .map_err(|_| PoolError::Timeout)?
-        .map_err(|error| classify(&error))?;
+        .map_err(|_| PoolError::Timeout)
+        .and_then(|result| result.map_err(|error| classify(&error)))
+        .map_err(|error| {
+            // SQLx discards and retries failed after_connect checks. Preserve the
+            // initial version rejection when no qualified connection was found.
+            if rejected_version.load(Ordering::Relaxed) {
+                PoolError::UnsupportedServer
+            } else {
+                error
+            }
+        })?;
         Ok(Self {
             pool,
             acquire_timeout: limits.acquire_timeout,
