@@ -278,6 +278,17 @@ async fn plans_list_what_moves_and_only_a_clear_plan_can_start() {
             plan(StoragePlanAction::Return, Vec::new()),
             80,
         ),
+        (
+            "storage_plan_credentials_missing",
+            plan(
+                StoragePlanAction::Migrate,
+                vec![
+                    StorageBlocker::CredentialUnavailable,
+                    StorageBlocker::MigratorCredentialMissing,
+                ],
+            ),
+            80,
+        ),
         ("storage_plan_attach_ready", attach_plan(Vec::new()), 80),
         (
             "storage_plan_attach_already_managed",

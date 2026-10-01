@@ -142,6 +142,23 @@ fn blocker_line(blocker: StorageBlocker) -> Line<'static> {
     Line::from(vec!["  ✗ ".red(), blocker_text(blocker).into()])
 }
 
+/// Secrets never travel through this screen, so say where they are stored instead.
+fn credential_hint(blockers: &[StorageBlocker]) -> Option<Line<'static>> {
+    blockers
+        .iter()
+        .any(|blocker| {
+            matches!(
+                blocker,
+                StorageBlocker::CredentialUnavailable | StorageBlocker::MigratorCredentialMissing
+            )
+        })
+        .then(|| {
+            "  Store a credential on this host with `codex storage credential set <id>`, then name it in the saved profile."
+                .dim()
+                .into()
+        })
+}
+
 fn back_item() -> SelectionItem {
     SelectionItem {
         name: "Back to storage".to_string(),
@@ -193,6 +210,7 @@ pub(super) fn status_view(status: &StorageStatus) -> SelectionViewParams {
         header.push(Line::from("No remote profile is saved on this host.".dim()));
     }
     header.extend(status.blockers.iter().copied().map(blocker_line));
+    header.extend(credential_hint(&status.blockers));
 
     let mut items = Vec::new();
     match status.authority {
@@ -340,6 +358,7 @@ pub(super) fn plan_view(plan: &StoragePlan) -> SelectionViewParams {
         );
     }
     header.extend(plan.blockers.iter().copied().map(blocker_line));
+    header.extend(credential_hint(&plan.blockers));
     let mut items = Vec::new();
     if plan.blockers.is_empty() {
         header.push(Line::from(
