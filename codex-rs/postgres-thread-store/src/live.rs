@@ -12,6 +12,7 @@ use codex_git_utils::get_git_repo_root;
 use codex_postgres_rollout_store::RolloutStoreError;
 use codex_postgres_rollout_store::append_in;
 use codex_postgres_runtime::PostgresPool;
+use codex_postgres_thread_catalog::get_thread_in;
 use codex_postgres_thread_catalog::upsert_thread_in;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::GitInfo as ProtocolGitInfo;
@@ -24,6 +25,7 @@ use codex_protocol::protocol::ThreadMemoryMode;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
 use codex_rollout::builder_from_items;
+use codex_state::apply_rollout_item;
 use codex_thread_store::CreateThreadParams;
 use codex_thread_store::ThreadStoreError;
 use codex_thread_store::ThreadStoreResult;
@@ -76,6 +78,9 @@ impl Ordinals {
     }
 }
 
+/// Serialized lines with the items they carry, kept until their commit is confirmed.
+type StagedBatch = (Vec<(Option<u64>, String)>, Vec<RolloutItem>);
+
 /// Everything the store tracks for a thread it holds open for writing.
 pub(crate) struct LiveThread {
     pub(crate) history_mode: ThreadHistoryMode,
@@ -84,13 +89,11 @@ pub(crate) struct LiveThread {
     /// Canonical header not yet written.
     meta: Option<SessionMeta>,
     pending: Vec<RolloutItem>,
-    /// Lines already serialized but whose commit is not confirmed.
-    staged: Option<Vec<(Option<u64>, String)>>,
+    /// Lines already serialized but whose commit is not confirmed, with the items they carry.
+    staged: Option<StagedBatch>,
     pub(crate) materialized: bool,
     pub(crate) next_position: u64,
     ordinals: Ordinals,
-    /// The first batch, kept until the thread row it creates is committed.
-    first_items: Option<Vec<RolloutItem>>,
 }
 
 impl LiveThread {
@@ -144,7 +147,6 @@ impl LiveThread {
             materialized: false,
             next_position: 0,
             ordinals: Ordinals::for_new(params.history_mode, params.history_base),
-            first_items: None,
         }
     }
 
@@ -166,7 +168,6 @@ impl LiveThread {
             materialized: true,
             next_position,
             ordinals: Ordinals::resume(history_mode, last_ordinal),
-            first_items: None,
         }
     }
 
@@ -226,13 +227,10 @@ impl LiveThread {
                 lines.push((ordinal, json));
                 ordinals.advance();
             }
-            self.staged = Some(lines);
+            self.staged = Some((lines, items));
             self.ordinals = ordinals;
             self.meta = None;
             self.pending.clear();
-            if !self.materialized {
-                self.first_items = Some(items);
-            }
         }
         self.commit_staged(pool, thread_id, default_model_provider_id)
             .await
@@ -244,17 +242,13 @@ impl LiveThread {
         thread_id: ThreadId,
         default_model_provider_id: &str,
     ) -> ThreadStoreResult<()> {
-        let Some(lines) = self.staged.clone() else {
+        let Some((lines, items)) = self.staged.clone() else {
             return Ok(());
         };
         let count = lines.len() as u64;
-        let first_items = if self.materialized {
-            None
-        } else {
-            Some(self.first_items.clone().unwrap_or_default())
-        };
         let expected = self.next_position;
         let memory_mode = self.memory_mode;
+        let history_mode = self.history_mode;
         let default_provider = default_model_provider_id.to_string();
         let mut connection = pool
             .acquire()
@@ -264,23 +258,36 @@ impl LiveThread {
             })?;
         let outcome: Result<(), ThreadStoreError> = async {
             let mut tx = connection.begin().await.map_err(database)?;
-            if let Some(items) = first_items {
-                let builder =
-                    builder_from_items(&items, std::path::Path::new("")).ok_or_else(|| {
-                        ThreadStoreError::Internal {
-                            message: "the first rollout items carry no session metadata"
-                                .to_string(),
-                        }
-                    })?;
-                let mut metadata = builder.build(&default_provider);
-                metadata.rollout_path = PathBuf::new();
-                metadata.history_mode = self.history_mode;
-                upsert_thread_in(&mut tx, &metadata, memory_mode)
-                    .await
-                    .map_err(|error| ThreadStoreError::Internal {
-                        message: format!("failed to create thread metadata: {error}"),
-                    })?;
+            // The catalog row follows the items it summarizes, in the same transaction.
+            let existing = get_thread_in(&mut tx, thread_id, /*lock*/ true)
+                .await
+                .map_err(|error| ThreadStoreError::Internal {
+                    message: format!("failed to read thread metadata: {error}"),
+                })?;
+            let mut metadata =
+                match existing {
+                    Some(metadata) => metadata,
+                    None => {
+                        let builder = builder_from_items(&items, std::path::Path::new(""))
+                            .ok_or_else(|| ThreadStoreError::Internal {
+                                message: "the first rollout items carry no session metadata"
+                                    .to_string(),
+                            })?;
+                        let mut metadata = builder.build(&default_provider);
+                        metadata.rollout_path = PathBuf::new();
+                        metadata.history_mode = history_mode;
+                        metadata
+                    }
+                };
+            for item in &items {
+                apply_rollout_item(&mut metadata, item, &default_provider);
             }
+            metadata.updated_at = Utc::now();
+            upsert_thread_in(&mut tx, &metadata, memory_mode)
+                .await
+                .map_err(|error| ThreadStoreError::Internal {
+                    message: format!("failed to write thread metadata: {error}"),
+                })?;
             append_in(&mut tx, thread_id, expected, &lines)
                 .await
                 .map_err(rollout_error)?;
@@ -291,7 +298,6 @@ impl LiveThread {
         outcome?;
         self.next_position = expected + count;
         self.staged = None;
-        self.first_items = None;
         self.materialized = true;
         Ok(())
     }

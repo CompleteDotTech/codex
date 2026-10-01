@@ -178,14 +178,12 @@ impl PostgresThreadStore {
         include_archived: bool,
         include_history: bool,
     ) -> ThreadStoreResult<StoredThread> {
-        let metadata = self
-            .catalog_thread(thread_id)
-            .await?
-            .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
+        let missing = || ThreadStoreError::InvalidRequest {
+            message: format!("no rollout found for thread id {thread_id}"),
+        };
+        let metadata = self.catalog_thread(thread_id).await?.ok_or_else(missing)?;
         if metadata.archived_at.is_some() && !include_archived {
-            return Err(ThreadStoreError::InvalidRequest {
-                message: format!("thread {thread_id} is archived"),
-            });
+            return Err(missing());
         }
         let meta = self.session_meta(thread_id).await?;
         let parent_thread_id = meta.as_ref().and_then(|meta| meta.parent_thread_id);
@@ -244,7 +242,9 @@ impl PostgresThreadStore {
                 existing = self.catalog_thread(thread_id).await?;
             }
         }
-        let mut metadata = existing.ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
+        let mut metadata = existing.ok_or_else(|| ThreadStoreError::InvalidRequest {
+            message: format!("thread not found: {thread_id}"),
+        })?;
         let history_mode = metadata.history_mode;
         let name = patch.name.clone();
         let project_id = patch.project_id.clone();
@@ -836,14 +836,12 @@ impl ThreadStore for PostgresThreadStore {
     fn unarchive_thread(&self, params: ArchiveThreadParams) -> ThreadStoreFuture<'_, StoredThread> {
         Box::pin(async move {
             let thread_id = params.thread_id;
-            let metadata = self
-                .catalog_thread(thread_id)
-                .await?
-                .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
+            let missing = || ThreadStoreError::InvalidRequest {
+                message: format!("no archived rollout found for thread id {thread_id}"),
+            };
+            let metadata = self.catalog_thread(thread_id).await?.ok_or_else(missing)?;
             if metadata.archived_at.is_none() {
-                return Err(ThreadStoreError::InvalidRequest {
-                    message: format!("thread {thread_id} is not archived"),
-                });
+                return Err(missing());
             }
             self.catalog
                 .mark_unarchived(thread_id, Path::new(""))
@@ -907,15 +905,12 @@ impl PostgresThreadStore {
                 message: format!("thread {thread_id} already has an active writer"),
             });
         }
-        let metadata = self.catalog_thread(thread_id).await?.ok_or_else(|| {
-            ThreadStoreError::InvalidRequest {
-                message: format!("no rollout found for thread id {thread_id}"),
-            }
-        })?;
+        let missing = || ThreadStoreError::InvalidRequest {
+            message: format!("no rollout found for thread id {thread_id}"),
+        };
+        let metadata = self.catalog_thread(thread_id).await?.ok_or_else(missing)?;
         if metadata.archived_at.is_some() {
-            return Err(ThreadStoreError::InvalidRequest {
-                message: format!("thread {thread_id} is already archived"),
-            });
+            return Err(missing());
         }
         self.catalog
             .mark_archived(thread_id, Path::new(""), Utc::now())

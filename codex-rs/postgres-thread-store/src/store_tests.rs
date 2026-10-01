@@ -211,6 +211,8 @@ async fn scenario(
                     title: Some("hello".to_string()),
                     first_user_message: Some("hello world".to_string()),
                     model: Some("test-model".to_string()),
+                    source: Some(SessionSource::Exec),
+                    cwd: Some(cwd.to_path_buf()),
                     ..Default::default()
                 },
             })

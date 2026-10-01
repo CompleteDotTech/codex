@@ -506,7 +506,7 @@ impl PostgresThreadCatalog {
 type PgQuery<'q> = sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments>;
 
 /// Read one thread, optionally locking its row for a read-modify-write.
-async fn get_thread_in(
+pub async fn get_thread_in(
     connection: &mut PgConnection,
     id: ThreadId,
     lock: bool,
