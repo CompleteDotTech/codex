@@ -189,3 +189,6 @@ mod exclusive_fixture;
 
 #[cfg(all(test, unix))]
 mod exclusive_fixture_io;
+
+#[cfg(all(test, unix))]
+mod exclusive_fixture_settings;
