@@ -4236,6 +4236,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-postgres-goal-store"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-postgres-runtime",
+ "codex-protocol",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "codex-postgres-import-store"
 version = "0.0.0"
 dependencies = [

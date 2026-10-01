@@ -92,6 +92,7 @@ members = [
     "network-proxy",
     "ollama",
     "process-hardening",
+    "postgres-goal-store",
     "postgres-import-store",
     "postgres-runtime",
     "realtime-webrtc",
@@ -177,6 +178,7 @@ codex-realtime-webrtc = { path = "realtime-webrtc" }
 app_test_support = { path = "app-server/tests/common" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
+codex-postgres-goal-store = { path = "postgres-goal-store" }
 codex-postgres-import-store = { path = "postgres-import-store" }
 codex-postgres-runtime = { path = "postgres-runtime" }
 codex-storage-candidate-preflight = { path = "storage-candidate-preflight" }
