@@ -148,6 +148,7 @@ members = [
     "codex-client",
     "codex-api",
     "state",
+    "storage-authority",
     "terminal-detection",
     "test-binary-support",
     "thread-manager-sample",
