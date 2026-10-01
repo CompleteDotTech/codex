@@ -164,6 +164,9 @@ jobs:
       - name: Compare external-agent import records across SQLite and PostgreSQL
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_IMPORT_STORE_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-import-store real_postgres_import_records_match_sqlite
+      - name: Compare goal persistence across SQLite and PostgreSQL
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_GOAL_STORE_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-goal-store real_postgres_goals_match_sqlite
       - name: Test two-namespace role isolation against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_postgres_roles_isolate_two_schemas

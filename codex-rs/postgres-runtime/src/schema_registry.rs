@@ -55,6 +55,16 @@ pub(crate) const PROTECTED_TABLES: &[ProtectedTable] = &[
         runtime_privileges: "SELECT, INSERT, UPDATE",
         indexes: &["thread_writer_ownership_pkey"],
     },
+    ProtectedTable {
+        name: "thread_goals",
+        runtime_privileges: "SELECT, INSERT, UPDATE, DELETE",
+        indexes: &["thread_goals_pkey"],
+    },
+    ProtectedTable {
+        name: "thread_goal_continuation_deferrals",
+        runtime_privileges: "SELECT, INSERT, DELETE",
+        indexes: &["thread_goal_continuation_deferrals_pkey"],
+    },
 ];
 
 /// What a migration must look like before its schema qualifier is rewritten for a named
@@ -123,6 +133,22 @@ pub(crate) const MIGRATION_SHAPES: &[MigrationShape] = &[
             META_UPDATE,
         ],
         qualified_identifiers: 2,
+    },
+    MigrationShape {
+        version: 7,
+        starts_with: Some("-- Inactive goal persistence"),
+        contains: &[
+            "
+CREATE TABLE codex_storage.thread_goals (
+",
+            "REFERENCES codex_storage.threads (id) ON DELETE CASCADE",
+            "
+CREATE TABLE codex_storage.thread_goal_continuation_deferrals (
+",
+            "REFERENCES codex_storage.thread_goals (thread_id) ON DELETE CASCADE",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 5,
     },
 ];
 
