@@ -21,6 +21,8 @@ always includes `"activation_permitted": false`.
   fixture tables and reports unresolved forward/reverse treatment explicitly.
 - `control_plan.py`: a separate, offline operation-plan validator and exclusion
   preview for initialize, local migration, and attachment; see `CONTROL_PLAN.md`.
+- `compatibility.py`: a strict offline descriptor and observation prefilter for
+  proposed read, write, update and restore operations; see `COMPATIBILITY_PREFILTER.md`.
 - `test_*.py`: synthetic bundle tests and disposable SQLite/process-boundary tests.
 
 No third-party Python packages are required. Source syntax targets the enclosing
