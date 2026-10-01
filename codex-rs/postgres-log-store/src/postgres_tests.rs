@@ -94,16 +94,12 @@ fn token() -> String {
 }
 
 /// Runs the log operations a caller can observe and records their results. Row ids are
-/// reported relative to the highest id present before the scenario starts, and every query
+/// reported relative to the first row the scenario inserts, and every query
 /// is scoped to this run's module path so rows from other runs cannot leak in.
 async fn scenario(store: &dyn RuntimeLogStore, token: &str, now: i64) -> Vec<String> {
     let mut log = Vec::new();
     let thread = |n: u8| format!("{token}-thread-{n}");
     let process = |n: u8| format!("{token}-process-{n}");
-    let base = store
-        .max_log_id(&LogQuery::default())
-        .await
-        .expect("base id");
     let scoped = |query: LogQuery| LogQuery {
         module_like: [vec![token.to_string()], query.module_like.clone()].concat(),
         ..query
@@ -178,6 +174,16 @@ async fn scenario(store: &dyn RuntimeLogStore, token: &str, now: i64) -> Vec<Str
     ];
     store.insert_logs(&batch).await.expect("insert batch");
     store.insert_logs(&[]).await.expect("insert empty batch");
+    // Rows pruned in earlier runs can leave the counter ahead of the highest stored id, so
+    // ids are made relative to this run's first row.
+    let first = store
+        .query_logs(&scoped(LogQuery {
+            limit: Some(1),
+            ..Default::default()
+        }))
+        .await
+        .expect("first row");
+    let base = first[0].id - 1;
 
     let queries = vec![
         ("all", LogQuery::default()),
