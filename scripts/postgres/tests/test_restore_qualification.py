@@ -56,6 +56,29 @@ class RestoreQualificationTests(unittest.TestCase):
                     )
             self.assertIs(raised.exception, failure)
 
+    def test_wrapper_preserves_service_error_primary_when_cleanup_service_error(self):
+        failure = ServiceError("qualification_failed")
+
+        def fail_after_roles(source, destination, owned_roles):
+            owned_roles.append(True)
+            raise failure
+
+        with (
+            patch.object(
+                qualification, "_qualify_restore_access", side_effect=fail_after_roles
+            ),
+            patch.object(
+                qualification,
+                "_cleanup_roles",
+                side_effect=ServiceError("cleanup_failed"),
+            ),
+        ):
+            with self.assertRaisesRegex(ServiceError, "qualification_failed") as raised:
+                qualification.qualify_restore_access(
+                    Path("source"), Path("destination")
+                )
+        self.assertIs(raised.exception, failure)
+
     def test_wrapper_reports_cleanup_failure_after_success(self):
         cleanup_failure = ServiceError("cleanup_failed")
         with (

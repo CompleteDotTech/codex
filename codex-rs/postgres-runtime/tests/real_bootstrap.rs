@@ -4,16 +4,24 @@
 )]
 
 use codex_postgres_runtime::BootstrapError;
+use codex_postgres_runtime::ClientCapabilities;
+use codex_postgres_runtime::CompatibilityError;
+use codex_postgres_runtime::CompatibilityResult;
 use codex_postgres_runtime::ConnectionSettings;
 use codex_postgres_runtime::PoolLimits;
 use codex_postgres_runtime::PostgresPool;
+use codex_postgres_runtime::RequiredAccess;
 use codex_postgres_runtime::bootstrap_codex_storage;
+use codex_postgres_runtime::check_codex_storage_compatibility;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use sqlx::Acquire;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+
+#[path = "compatibility/real_compatibility_tests.rs"]
+mod real_compatibility_cases;
 
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
     let receipt: Value = serde_json::from_slice(
@@ -28,7 +36,8 @@ fn settings(state: &Path, role: &str) -> ConnectionSettings {
         password: std::fs::read_to_string(state.join(format!("secrets/{role}.password")))
             .expect("read private role credential")
             .trim()
-            .to_string(),
+            .to_string()
+            .into(),
         ca_certificate: state.join("secrets/ca.crt"),
         limits: PoolLimits {
             connect_timeout: Duration::from_secs(5),
@@ -441,12 +450,12 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
 
     for (raise_minimum, reset_minimum) in [
         (
-            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 2",
-            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 1",
+            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 14",
+            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 13",
         ),
         (
-            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 2",
-            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 1",
+            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 14",
+            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 13",
         ),
     ] {
         owner_query(&migrator_a, raise_minimum).await;
@@ -558,7 +567,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
 
     owner_query(
         &migrator_a,
-        "CREATE SCHEMA codex_typed_fixture AUTHORIZATION codex_owner; CREATE TYPE codex_typed_fixture.codex_meta_type AS (singleton BOOLEAN, format_version INTEGER, min_reader_version INTEGER, min_writer_version INTEGER); DROP TABLE codex_storage.codex_schema_meta; CREATE TABLE codex_storage.codex_schema_meta OF codex_typed_fixture.codex_meta_type (CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (singleton), CONSTRAINT codex_schema_meta_singleton_check CHECK (singleton), CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0), CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0), CONSTRAINT codex_schema_meta_min_writer_version_check CHECK (min_writer_version > 0)); INSERT INTO codex_storage.codex_schema_meta VALUES (TRUE, 1, 1, 1)",
+        "CREATE SCHEMA codex_typed_fixture AUTHORIZATION codex_owner; CREATE TYPE codex_typed_fixture.codex_meta_type AS (singleton BOOLEAN, format_version INTEGER, min_reader_version INTEGER, min_writer_version INTEGER); DROP TABLE codex_storage.codex_schema_meta; CREATE TABLE codex_storage.codex_schema_meta OF codex_typed_fixture.codex_meta_type (CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (singleton), CONSTRAINT codex_schema_meta_singleton_check CHECK (singleton), CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0), CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0), CONSTRAINT codex_schema_meta_min_writer_version_check CHECK (min_writer_version > 0)); INSERT INTO codex_storage.codex_schema_meta VALUES (TRUE, 13, 13, 13)",
     )
     .await;
     assert_eq!(
@@ -567,7 +576,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
     owner_query(
         &migrator_a,
-        "DROP TABLE codex_storage.codex_schema_meta; DROP SCHEMA codex_typed_fixture CASCADE; CREATE TABLE codex_storage.codex_schema_meta (singleton BOOLEAN DEFAULT TRUE, format_version INTEGER NOT NULL, min_reader_version INTEGER NOT NULL, min_writer_version INTEGER NOT NULL, CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (singleton), CONSTRAINT codex_schema_meta_singleton_check CHECK (singleton), CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0), CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0), CONSTRAINT codex_schema_meta_min_writer_version_check CHECK (min_writer_version > 0)); INSERT INTO codex_storage.codex_schema_meta VALUES (TRUE, 1, 1, 1); REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime, codex_backup; GRANT SELECT ON codex_storage.codex_schema_meta TO codex_runtime, codex_backup",
+        "DROP TABLE codex_storage.codex_schema_meta; DROP SCHEMA codex_typed_fixture CASCADE; CREATE TABLE codex_storage.codex_schema_meta (singleton BOOLEAN DEFAULT TRUE, format_version INTEGER NOT NULL, min_reader_version INTEGER NOT NULL, min_writer_version INTEGER NOT NULL, CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (singleton), CONSTRAINT codex_schema_meta_singleton_check CHECK (singleton), CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0), CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0), CONSTRAINT codex_schema_meta_min_writer_version_check CHECK (min_writer_version > 0)); INSERT INTO codex_storage.codex_schema_meta VALUES (TRUE, 13, 13, 13); REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime, codex_backup; GRANT SELECT ON codex_storage.codex_schema_meta TO codex_runtime, codex_backup",
     )
     .await;
     assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
@@ -642,7 +651,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
             BootstrapError::IncompatibleNamespace,
         ),
         (
-            "ALTER TABLE codex_storage._codex_pg_migrations ADD CONSTRAINT history_version_limit CHECK (version <= 1)",
+            "ALTER TABLE codex_storage._codex_pg_migrations ADD CONSTRAINT history_version_limit CHECK (version <= 13)",
             "ALTER TABLE codex_storage._codex_pg_migrations DROP CONSTRAINT history_version_limit",
             BootstrapError::IncompatibleNamespace,
         ),
@@ -720,4 +729,155 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
         bootstrap_codex_storage(&runtime).await,
         Err(BootstrapError::Privilege)
     );
+
+    let capabilities = ClientCapabilities {
+        min_schema_format: 13,
+        max_schema_format: 13,
+        reader_version: 13,
+        writer_version: 13,
+    };
+    let compatible = Ok(CompatibilityResult {
+        schema_format: 13,
+        activation_permitted: false,
+    });
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        compatible
+    );
+    assert_eq!(
+        check_codex_storage_compatibility(&runtime, capabilities, RequiredAccess::ReadOnly).await,
+        Err(CompatibilityError::Privilege)
+    );
+
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 14",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        compatible
+    );
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadWrite)
+            .await,
+        Err(CompatibilityError::WriterTooOld)
+    );
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 14",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::ReaderTooOld)
+    );
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage.codex_schema_meta SET format_version = 14, min_reader_version = 13, min_writer_version = 13",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::UnsupportedSchema)
+    );
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage.codex_schema_meta SET format_version = 13",
+    )
+    .await;
+
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage._codex_pg_migrations SET success = FALSE WHERE version = 1",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::DirtyMigration)
+    );
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage._codex_pg_migrations SET success = TRUE WHERE version = 1",
+    )
+    .await;
+    let mut connection = migrator_a.acquire().await.expect("save migration checksum");
+    let mut transaction = connection.begin().await.expect("begin checksum read");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for checksum read");
+    let checksum: Vec<u8> = sqlx::query_scalar(
+        "SELECT checksum FROM codex_storage._codex_pg_migrations WHERE version = 1",
+    )
+    .fetch_one(&mut *transaction)
+    .await
+    .expect("read checksum");
+    transaction.rollback().await.expect("finish checksum read");
+    drop(connection);
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage._codex_pg_migrations SET checksum = '\\x00'::bytea WHERE version = 1",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::IncompatibleHistory)
+    );
+    owner_query(
+        &migrator_a,
+        "UPDATE codex_storage._codex_pg_migrations SET checksum = repeat('x', 1048576)::bytea WHERE version = 1",
+    )
+    .await;
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        Err(CompatibilityError::IncompatibleHistory)
+    );
+    let mut connection = migrator_a
+        .acquire()
+        .await
+        .expect("restore migration checksum");
+    let mut transaction = connection.begin().await.expect("begin checksum restore");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for checksum restore");
+    sqlx::query("UPDATE codex_storage._codex_pg_migrations SET checksum = $1 WHERE version = 1")
+        .bind(checksum)
+        .execute(&mut *transaction)
+        .await
+        .expect("restore checksum");
+    transaction.commit().await.expect("commit checksum restore");
+    drop(connection);
+    let mut connection = migrator_a
+        .acquire()
+        .await
+        .expect("begin interrupted migration");
+    let mut transaction = connection
+        .begin()
+        .await
+        .expect("begin interrupted transaction");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for interrupted transaction");
+    sqlx::query("UPDATE codex_storage._codex_pg_migrations SET success = FALSE WHERE version = 1")
+        .execute(&mut *transaction)
+        .await
+        .expect("write uncommitted dirty marker");
+    drop(transaction);
+    drop(connection);
+    assert_eq!(
+        check_codex_storage_compatibility(&migrator_a, capabilities, RequiredAccess::ReadOnly)
+            .await,
+        compatible
+    );
+    real_compatibility_cases::run(&migrator_a, state).await;
 }

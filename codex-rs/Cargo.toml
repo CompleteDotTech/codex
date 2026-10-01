@@ -92,6 +92,14 @@ members = [
     "network-proxy",
     "ollama",
     "process-hardening",
+    "postgres-goal-store",
+    "postgres-import-store",
+    "postgres-log-store",
+    "postgres-memory-store",
+    "postgres-message-board",
+    "postgres-thread-catalog",
+    "postgres-thread-rows",
+    "postgres-queue-store",
     "postgres-runtime",
     "realtime-webrtc",
     "voice-host",
@@ -149,6 +157,7 @@ members = [
     "codex-api",
     "state",
     "storage-authority",
+    "storage-candidate-preflight",
     "terminal-detection",
     "test-binary-support",
     "thread-manager-sample",
@@ -175,6 +184,16 @@ codex-realtime-webrtc = { path = "realtime-webrtc" }
 app_test_support = { path = "app-server/tests/common" }
 codex-analytics = { path = "analytics" }
 codex-agent-graph-store = { path = "agent-graph-store" }
+codex-postgres-goal-store = { path = "postgres-goal-store" }
+codex-postgres-import-store = { path = "postgres-import-store" }
+codex-postgres-log-store = { path = "postgres-log-store" }
+codex-postgres-memory-store = { path = "postgres-memory-store" }
+codex-postgres-message-board = { path = "postgres-message-board" }
+codex-postgres-thread-catalog = { path = "postgres-thread-catalog" }
+codex-postgres-thread-rows = { path = "postgres-thread-rows" }
+codex-postgres-queue-store = { path = "postgres-queue-store" }
+codex-postgres-runtime = { path = "postgres-runtime" }
+codex-storage-candidate-preflight = { path = "storage-candidate-preflight" }
 codex-agent-identity = { path = "agent-identity" }
 codex-agent-roles = { path = "agent-roles" }
 codex-ansi-escape = { path = "ansi-escape" }

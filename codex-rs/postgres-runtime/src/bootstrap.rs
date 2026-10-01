@@ -3,20 +3,82 @@
 use crate::PoolError;
 use crate::PostgresPool;
 use sqlx::Acquire;
+use sqlx::AssertSqlSafe;
 use sqlx::PgConnection;
+use sqlx::Row;
 use sqlx::migrate::MigrateError;
+use sqlx::migrate::Migration;
 use sqlx::migrate::Migrator;
+use sqlx::postgres::PgRow;
 use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
 use tokio::time::timeout;
 
-const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(30);
 // The schema-wide lock must match scripts/postgres/container/restore-guard.sql.
-const LOCK_CLASS: i32 = 1_414_676_819;
-const LOCK_RESOURCE: i32 = 1; // Fixed codex_storage metadata namespace.
+pub(crate) const LOCK_CLASS: i32 = 1_414_676_819;
+pub(crate) const LOCK_RESOURCE: i32 = 1; // Fixed codex_storage metadata namespace.
 const MIGRATIONS_TABLE: &str = "codex_storage._codex_pg_migrations";
-static BASE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
+pub(crate) static BASE_MIGRATOR: Migrator = sqlx_macros::migrate!("./migrations");
+
+pub(crate) fn history_matches(rows: &[PgRow], migrations: &[Migration], format: i32) -> bool {
+    if !crate::schema_registry::supported_format(format)
+        || rows.len() != format as usize
+        || rows.len() > migrations.len()
+    {
+        return false;
+    }
+    rows.iter().zip(migrations).all(|(row, migration)| {
+        row.try_get::<i64, _>("version").ok() == Some(migration.version)
+            && row.try_get::<bool, _>("success").ok() == Some(true)
+            && row
+                .try_get::<Vec<u8>, _>("checksum")
+                .is_ok_and(|checksum| checksum.as_slice() == migration.checksum.as_ref())
+    })
+}
+
+/// Whether the recorded history is exactly the first `format` embedded migrations.
+///
+/// Checksums are compared on the server so an oversized recorded value never becomes a client
+/// allocation, and one extra row is enough to reject surplus history.
+pub(crate) async fn recorded_history_matches(
+    connection: &mut PgConnection,
+    migrations: &[Migration],
+    format: i32,
+) -> Result<bool, sqlx::Error> {
+    let Ok(expected_len) = usize::try_from(format) else {
+        return Ok(false);
+    };
+    if expected_len == 0 || expected_len > migrations.len() {
+        return Ok(false);
+    }
+    let versions: Vec<i64> = migrations
+        .iter()
+        .map(|migration| migration.version)
+        .collect();
+    let checksums: Vec<&[u8]> = migrations
+        .iter()
+        .map(|migration| migration.checksum.as_ref())
+        .collect();
+    let rows = sqlx::query(
+        "SELECT history.version, history.success, COALESCE(history.checksum = expected.checksum, FALSE) AS checksum_matches
+         FROM ONLY codex_storage._codex_pg_migrations history
+         LEFT JOIN unnest($1::bigint[], $2::bytea[]) expected(version, checksum) ON history.version = expected.version
+         ORDER BY history.version LIMIT $3",
+    )
+    .bind(versions)
+    .bind(checksums)
+    .bind(expected_len as i64 + 1)
+    .fetch_all(connection)
+    .await?;
+    Ok(rows.len() == expected_len
+        && rows.iter().zip(migrations).all(|(row, migration)| {
+            row.try_get::<i64, _>("version").ok() == Some(migration.version)
+                && row.try_get::<bool, _>("success").ok() == Some(true)
+                && row.try_get::<bool, _>("checksum_matches").ok() == Some(true)
+        }))
+}
 
 /// A redacted bootstrap outcome; SQLx diagnostics may contain server details.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,7 +149,7 @@ fn classify_namespace_validation(error: sqlx::Error) -> BootstrapError {
     }
 }
 
-async fn namespace_has_unexpected_objects(
+pub(crate) async fn namespace_has_unexpected_objects(
     connection: &mut PgConnection,
     permitted_relations: &[&str],
 ) -> Result<bool, BootstrapError> {
@@ -122,7 +184,7 @@ async fn namespace_has_unexpected_objects(
     .map_err(|error| classify_sqlx(&error))
 }
 
-async fn require_safe_protected_privileges(
+pub(crate) async fn require_safe_protected_privileges(
     connection: &mut PgConnection,
 ) -> Result<(), BootstrapError> {
     // Check effective access, including column ACLs, PUBLIC, inherited roles,
@@ -385,7 +447,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         // default ACLs are policy; effective table privileges are checked below.
         let unexpected_objects = namespace_has_unexpected_objects(
             &mut transaction,
-            &["_codex_pg_migrations", "_codex_pg_migrations_pkey", "codex_schema_meta", "codex_schema_meta_pkey"],
+            &crate::schema_registry::known_relations(),
         ).await?;
         if unexpected_objects {
             return Err(BootstrapError::IncompatibleNamespace);
@@ -521,7 +583,17 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .fetch_optional(&mut *transaction)
             .await
             .map_err(classify_namespace_validation)?;
-            if version != Some((1, 1, 1)) {
+            let Some((format, min_reader, min_writer)) = version else {
+                return Err(BootstrapError::IncompatibleNamespace);
+            };
+            // Each migration records format, reader, and writer versions as one number.
+            if min_reader != format || min_writer != format {
+                return Err(BootstrapError::IncompatibleNamespace);
+            }
+            if !recorded_history_matches(&mut transaction, BASE_MIGRATOR.migrations.as_ref(), format)
+                .await
+                .map_err(classify_namespace_validation)?
+            {
                 return Err(BootstrapError::IncompatibleNamespace);
             }
             // Refuse privilege drift on an existing namespace before any ACL
@@ -545,6 +617,24 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
             .await
             .map_err(classify_migration)?;
+        for table in crate::schema_registry::PROTECTED_TABLES {
+            for statement in [
+                format!(
+                    "REVOKE ALL ON codex_storage.{} FROM codex_runtime, codex_backup",
+                    table.name
+                ),
+                format!(
+                    "GRANT {} ON codex_storage.{} TO codex_runtime",
+                    table.runtime_privileges, table.name
+                ),
+                format!("GRANT SELECT ON codex_storage.{} TO codex_backup", table.name),
+            ] {
+                sqlx::query(AssertSqlSafe(statement))
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(|error| classify_sqlx(&error))?;
+            }
+        }
         // The fixture's default grants are broad; metadata and history must be immutable to runtime.
         sqlx::query("REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime")
             .execute(&mut *transaction)
@@ -573,7 +663,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         require_safe_protected_privileges(&mut transaction).await?;
         let unexpected_objects = namespace_has_unexpected_objects(
             &mut transaction,
-            &["_codex_pg_migrations", "_codex_pg_migrations_pkey", "codex_schema_meta", "codex_schema_meta_pkey"],
+            &crate::schema_registry::known_relations(),
         )
         .await?;
         if unexpected_objects {
@@ -589,3 +679,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
 #[cfg(test)]
 #[path = "bootstrap_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "bootstrap_v2_tests.rs"]
+mod v2_tests;

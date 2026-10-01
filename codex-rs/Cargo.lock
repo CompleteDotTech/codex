@@ -1907,12 +1907,14 @@ dependencies = [
 name = "codex-agent-graph-store"
 version = "0.0.0"
 dependencies = [
+ "codex-postgres-runtime",
  "codex-protocol",
  "codex-state",
  "codex-utils-absolute-path",
  "pretty_assertions",
  "serde",
  "serde_json",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -4234,18 +4236,167 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-postgres-goal-store"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-postgres-runtime",
+ "codex-protocol",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "codex-postgres-import-store"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "codex-postgres-runtime",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "codex-postgres-log-store"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-postgres-runtime",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "codex-postgres-memory-store"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-postgres-runtime",
+ "codex-postgres-thread-rows",
+ "codex-protocol",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "codex-postgres-message-board"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "caseless",
+ "chrono",
+ "codex-agent-message-board-extension",
+ "codex-postgres-runtime",
+ "codex-protocol",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "futures",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "codex-postgres-queue-store"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "codex-postgres-runtime",
+ "codex-protocol",
+ "codex-rollout",
+ "codex-state",
+ "codex-thread-store",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "codex-postgres-runtime"
 version = "0.0.0"
 dependencies = [
+ "ed25519-dalek",
  "pretty_assertions",
  "rustls",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "sqlx-macros",
  "sqlx-postgres",
  "sqlx-sqlite",
  "tempfile",
  "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "codex-postgres-thread-catalog"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-postgres-memory-store",
+ "codex-postgres-queue-store",
+ "codex-postgres-runtime",
+ "codex-postgres-thread-rows",
+ "codex-protocol",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "codex-postgres-thread-rows"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-protocol",
+ "codex-state",
+ "serde_json",
+ "sqlx",
 ]
 
 [[package]]
@@ -4679,6 +4830,23 @@ dependencies = [
  "uuid",
  "windows-sys 0.52.0",
  "zeroize",
+]
+
+[[package]]
+name = "codex-storage-candidate-preflight"
+version = "0.0.0"
+dependencies = [
+ "codex-config",
+ "codex-keyring-store",
+ "codex-postgres-runtime",
+ "codex-storage-authority",
+ "ed25519-dalek",
+ "pretty_assertions",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "toml 0.9.11+spec-1.1.0",
 ]
 
 [[package]]
@@ -14604,6 +14772,7 @@ dependencies = [
  "sqlx-postgres",
  "sqlx-sqlite",
  "syn 2.0.117",
+ "thiserror 2.0.18",
  "tokio",
  "url",
 ]

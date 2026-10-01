@@ -5,9 +5,7 @@ on:
 
 jobs:
   python-sdk-installation:
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Checkout repository
@@ -36,10 +34,8 @@ jobs:
             '
 
   sdks:
-    runs-on:
-      group: ${{ github.event.repository.name }}-runners
-      labels: ${{ github.event.repository.name }}-linux-x64
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     environment:
       name: bazel
       deployment: false
@@ -104,9 +100,24 @@ jobs:
               'set(//codex-rs/cli:codex //codex-rs/code-mode-host:codex-code-mode-host)' \
               | grep -E '^(/|bazel-out/)'
           )"
-          mapfile -t bazel_output_paths <<< "${cquery_output}"
-          if [[ ${#bazel_output_paths[@]} -ne 2 ]]; then
-            echo "Expected both Bazel-built binaries, found ${#bazel_output_paths[@]}." >&2
+          codex_path=""
+          host_path=""
+          codex_count=0
+          host_count=0
+          while IFS= read -r path; do
+            case "${path##*/}" in
+              codex)
+                codex_count=$((codex_count + 1))
+                codex_path="${path}"
+                ;;
+              codex-code-mode-host)
+                host_count=$((host_count + 1))
+                host_path="${path}"
+                ;;
+            esac
+          done <<< "${cquery_output}"
+          if [[ ${codex_count} -ne 1 || ${host_count} -ne 1 || ! -f "${codex_path}" || ! -f "${host_path}" ]]; then
+            printf 'Expected one Bazel-built codex and code-mode host; cquery returned:\n%s\n' "${cquery_output}" >&2
             exit 1
           fi
 
@@ -114,7 +125,7 @@ jobs:
           # code-mode host while the SDK tests spawn the CLI directly.
           install_dir="${GITHUB_WORKSPACE}/.tmp/sdk-ci"
           mkdir -p "${install_dir}"
-          install -m 755 "${bazel_output_paths[@]}" "${install_dir}"
+          install -m 755 "${codex_path}" "${host_path}" "${install_dir}"
           echo "CODEX_EXEC_PATH=${install_dir}/codex" >> "$GITHUB_ENV"
 
       - name: Warm up Bazel-built codex
