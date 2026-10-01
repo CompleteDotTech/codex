@@ -16,6 +16,8 @@ pub struct SqliteSource {
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum SourceDatabase {
     State,
+    Goals,
+    Queue,
 }
 
 impl SqliteSource {
@@ -45,6 +47,8 @@ impl SqliteSource {
     pub(crate) async fn pool(&self, database: SourceDatabase) -> Result<Option<SqlitePool>> {
         let path = match database {
             SourceDatabase::State => self.config.state_db_path(),
+            SourceDatabase::Goals => self.config.goals_db_path(),
+            SourceDatabase::Queue => self.config.queue_db_path(),
         };
         if !path.exists() {
             return Ok(None);

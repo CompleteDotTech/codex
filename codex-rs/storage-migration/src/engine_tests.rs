@@ -11,6 +11,8 @@ use codex_protocol::protocol::SubAgentSource;
 use codex_state::ProjectRoot;
 use codex_state::SqliteConfig;
 use codex_state::StateRuntime;
+use codex_state::ThreadGoal;
+use codex_state::ThreadGoalStatus;
 use codex_state::ThreadMetadata;
 use codex_state::ThreadMetadataBuilder;
 use codex_state::ThreadSectionAppearance;
@@ -171,6 +173,50 @@ async fn populate(home: &Path) -> Vec<ThreadMetadata> {
         }
     }
     runtime
+        .thread_goals()
+        .insert_thread_goal(
+            threads[0].id,
+            "ship the migration",
+            ThreadGoalStatus::Active,
+            Some(5000),
+        )
+        .await
+        .expect("goal")
+        .expect("goal inserted");
+    runtime
+        .thread_goals()
+        .replace_thread_goal_snapshot(&ThreadGoal {
+            thread_id: threads[1].id,
+            goal_id: "goal-with-deferral".to_string(),
+            objective: "defer once".to_string(),
+            status: ThreadGoalStatus::Paused,
+            token_budget: None,
+            tokens_used: 12,
+            time_used_seconds: 3,
+            created_at: base,
+            updated_at: base + chrono::Duration::seconds(5),
+        })
+        .await
+        .expect("goal snapshot");
+    let mut item_ids = Vec::new();
+    for (thread, count) in [(&threads[0], 3), (&threads[1], 2)] {
+        for index in 0..count {
+            let item = runtime
+                .thread_queue()
+                .enqueue(thread.id, &format!("{{\"text\":\"queued {index}\"}}"))
+                .await
+                .expect("enqueue");
+            item_ids.push((thread.id, item.id));
+        }
+    }
+    assert!(
+        runtime
+            .thread_queue()
+            .delete(item_ids[1].0, &item_ids[1].1)
+            .await
+            .expect("delete queued item")
+    );
+    runtime
         .set_thread_memory_mode(threads[4].id, "disabled")
         .await
         .expect("memory mode");
@@ -249,6 +295,9 @@ async fn real_postgres_catalog_migration() {
             ("threads", 9),
             ("attachments", 6),
             ("spawn_edges", 3),
+            ("goals", 2),
+            ("queued_items", 4),
+            ("queue_revisions", 2),
         ]
     );
 

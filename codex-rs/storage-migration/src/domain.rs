@@ -16,6 +16,9 @@ pub enum Domain {
     Threads,
     Attachments,
     SpawnEdges,
+    Goals,
+    QueuedItems,
+    QueueRevisions,
 }
 
 impl Domain {
@@ -27,6 +30,9 @@ impl Domain {
         Domain::Threads,
         Domain::Attachments,
         Domain::SpawnEdges,
+        Domain::Goals,
+        Domain::QueuedItems,
+        Domain::QueueRevisions,
     ];
 
     pub fn name(self) -> &'static str {
@@ -37,6 +43,9 @@ impl Domain {
             Domain::Threads => "threads",
             Domain::Attachments => "attachments",
             Domain::SpawnEdges => "spawn_edges",
+            Domain::Goals => "goals",
+            Domain::QueuedItems => "queued_items",
+            Domain::QueueRevisions => "queue_revisions",
         }
     }
 }

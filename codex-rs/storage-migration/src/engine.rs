@@ -11,8 +11,11 @@ use crate::digest::DigestBuilder;
 use crate::digest::DomainDigest;
 use crate::domain::Domain;
 use crate::domain::DomainOps;
+use crate::goals::Goals;
 use crate::projects::ProjectKeys;
 use crate::projects::Projects;
+use crate::queue::QueueRevisions;
+use crate::queue::QueuedItems;
 use crate::sections::Sections;
 use crate::source::SqliteSource;
 use crate::threads::Threads;
@@ -52,6 +55,18 @@ macro_rules! with_domain {
             }
             Domain::SpawnEdges => {
                 type $ops = SpawnEdges;
+                $body
+            }
+            Domain::Goals => {
+                type $ops = Goals;
+                $body
+            }
+            Domain::QueuedItems => {
+                type $ops = QueuedItems;
+                $body
+            }
+            Domain::QueueRevisions => {
+                type $ops = QueueRevisions;
                 $body
             }
         }
