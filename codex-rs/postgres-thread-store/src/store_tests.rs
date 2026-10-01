@@ -15,6 +15,7 @@ use codex_thread_store::ThreadPersistenceMetadata;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
+use std::time::Duration;
 
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
     let receipt: Value = serde_json::from_slice(
@@ -605,8 +606,8 @@ async fn real_postgres_thread_store() {
             .all(|thread| thread.rollout_path.is_none())
     );
 
-    // Two hosts holding the same thread open cannot interleave: the one that fell behind is
-    // refused, and what the other wrote stays intact.
+    // Only one host can hold a thread open. A host whose lease lapsed without renewal is fenced
+    // out of its writes as soon as another host takes over, and nothing it wrote is lost.
     let metadata = ThreadPersistenceMetadata {
         cwd: Some(cwd.clone()),
         model_provider: provider.clone(),
@@ -620,36 +621,58 @@ async fn real_postgres_thread_store() {
         include_archived: false,
         metadata: metadata.clone(),
     };
-    host_a
+    let slow_a = PostgresThreadStore::new(connect(state, "runtime").await, provider.clone())
+        .with_writer_lease(Duration::from_secs(2), Duration::from_secs(3600));
+    let host_b = PostgresThreadStore::new(connect(state, "runtime").await, provider.clone());
+    slow_a
         .resume_thread(reopen())
         .await
         .expect("reopen on host a");
-    host_b
-        .resume_thread(reopen())
-        .await
-        .expect("reopen on host b");
-    host_a
+    let refused = host_b.resume_thread(reopen()).await;
+    assert!(
+        matches!(refused, Err(ThreadStoreError::InvalidRequest { .. })),
+        "a second host must not open a held thread: {refused:?}"
+    );
+    slow_a
         .append_items(AppendThreadItemsParams {
             thread_id: shared,
             items: vec![user_message("host a continues")],
         })
         .await
-        .expect("host a appends");
-    let stale = host_b
+        .expect("host a appends while its lease is valid");
+    // Host a never renews, so its two second lease lapses and host b can take over.
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        match host_b.resume_thread(reopen()).await {
+            Ok(_) => break,
+            Err(error) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "host b never took over: {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+        }
+    }
+    let fenced = slow_a
         .append_items(AppendThreadItemsParams {
             thread_id: shared,
-            items: vec![user_message("host b is behind")],
+            items: vec![user_message("host a is fenced")],
         })
         .await;
     assert!(
-        matches!(stale, Err(ThreadStoreError::Conflict { .. })),
-        "a stale writer must be refused: {stale:?}"
+        matches!(fenced, Err(ThreadStoreError::Conflict { .. })),
+        "a writer that lost its lease must be refused: {fenced:?}"
     );
-    host_b.discard_thread(shared).await.expect("discard host b");
-    host_a
-        .shutdown_thread(shared)
+    host_b
+        .append_items(AppendThreadItemsParams {
+            thread_id: shared,
+            items: vec![user_message("host b takes over")],
+        })
         .await
-        .expect("close host a again");
+        .expect("host b appends");
+    slow_a.discard_thread(shared).await.expect("discard host a");
+    host_b.shutdown_thread(shared).await.expect("close host b");
     let final_history = host_b
         .load_history(LoadThreadHistoryParams {
             thread_id: shared,
@@ -666,7 +689,11 @@ async fn real_postgres_thread_store() {
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        vec!["from host a".to_string(), "host a continues".to_string()]
+        vec![
+            "from host a".to_string(),
+            "host a continues".to_string(),
+            "host b takes over".to_string()
+        ]
     );
     host_a
         .delete_thread(DeleteThreadParams { thread_id: shared })

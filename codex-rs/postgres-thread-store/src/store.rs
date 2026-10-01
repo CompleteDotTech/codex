@@ -6,6 +6,7 @@
 
 use crate::adapters;
 use crate::live::LiveThread;
+use crate::live::WriterOwnership;
 use crate::live::rollout_error;
 use crate::meta::apply_patch;
 use crate::meta::enum_to_string;
@@ -15,6 +16,8 @@ use chrono::TimeZone;
 use chrono::Utc;
 use codex_postgres_rollout_store::PostgresRolloutStore;
 use codex_postgres_runtime::PostgresPool;
+use codex_postgres_runtime::ThreadOwnership;
+use codex_postgres_runtime::ThreadOwnershipNamespace;
 use codex_postgres_thread_catalog::PostgresThreadCatalog;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionMeta;
@@ -78,6 +81,10 @@ use codex_thread_store::UpdatedProject;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering as AtomicOrdering;
+use std::time::Duration;
+use std::time::Instant;
 use tokio::sync::Mutex;
 
 /// Fixed-namespace thread store. Construction does not activate PostgreSQL.
@@ -88,6 +95,8 @@ pub struct PostgresThreadStore {
     default_model_provider_id: String,
     live: Mutex<HashMap<ThreadId, Arc<Mutex<LiveThread>>>>,
     pending_metadata: Mutex<HashMap<ThreadId, ThreadMetadataPatch>>,
+    writer_lease: Duration,
+    renew_every: Duration,
 }
 
 fn internal(error: impl std::fmt::Display) -> ThreadStoreError {
@@ -105,6 +114,63 @@ impl PostgresThreadStore {
             default_model_provider_id: default_model_provider_id.into(),
             live: Mutex::default(),
             pending_metadata: Mutex::default(),
+            writer_lease: Duration::from_secs(30),
+            renew_every: Duration::from_secs(10),
+        }
+    }
+
+    /// Tune the writer lease. The lease must outlast several renewals so a brief stall does not
+    /// cost a healthy writer its thread.
+    pub fn with_writer_lease(mut self, lease: Duration, renew_every: Duration) -> Self {
+        self.writer_lease = lease;
+        self.renew_every = renew_every;
+        self
+    }
+
+    /// Become the only writer of a thread across every host, or learn that someone else is.
+    async fn claim_writer(&self, thread_id: ThreadId) -> ThreadStoreResult<WriterOwnership> {
+        let busy = || ThreadStoreError::InvalidRequest {
+            message: format!("thread {thread_id} already has a live writer"),
+        };
+        let owner_id = uuid::Uuid::new_v4().to_string();
+        let namespace = ThreadOwnershipNamespace::Default;
+        let id = thread_id.to_string();
+        let claim = match self
+            .pool
+            .claim_thread_ownership(namespace.clone(), &id, &owner_id, self.writer_lease)
+            .await
+        {
+            Ok(Some(claim)) => claim,
+            Ok(None) => return Err(busy()),
+            // An unknown commit outcome is resolved by reading back this attempt's owner id.
+            Err(_) => self
+                .pool
+                .recover_thread_ownership(namespace, &id, &owner_id)
+                .await
+                .map_err(internal)?
+                .ok_or_else(busy)?,
+        };
+        let lost = Arc::new(AtomicBool::new(false));
+        let renewer = tokio::spawn(renew_lease(
+            self.pool.clone(),
+            claim.clone(),
+            self.writer_lease,
+            self.renew_every,
+            lost.clone(),
+        ));
+        Ok(WriterOwnership {
+            claim,
+            lost,
+            renewer,
+        })
+    }
+
+    async fn release_writer(&self, ownership: Option<WriterOwnership>) {
+        if let Some(ownership) = ownership {
+            ownership.renewer.abort();
+            if let Err(error) = self.pool.release_thread_ownership(&ownership.claim).await {
+                tracing::warn!("failed to release a writer lease: {error}");
+            }
         }
     }
 
@@ -364,16 +430,30 @@ impl ThreadStore for PostgresThreadStore {
     fn create_thread(&self, params: CreateThreadParams) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
             let thread_id = params.thread_id;
-            let mut live = self.live.lock().await;
-            if live.contains_key(&thread_id) {
+            if self.live.lock().await.contains_key(&thread_id) {
                 return Err(ThreadStoreError::InvalidRequest {
                     message: format!("thread {thread_id} already has a live writer"),
                 });
             }
-            live.insert(
-                thread_id,
-                Arc::new(Mutex::new(LiveThread::for_create(&params))),
-            );
+            let ownership = self.claim_writer(thread_id).await?;
+            let mut live_thread = LiveThread::for_create(&params);
+            live_thread.ownership = Some(ownership);
+            let rejected = {
+                let mut live = self.live.lock().await;
+                match live.entry(thread_id) {
+                    std::collections::hash_map::Entry::Occupied(_) => Some(live_thread),
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(Arc::new(Mutex::new(live_thread)));
+                        None
+                    }
+                }
+            };
+            if let Some(mut rejected) = rejected {
+                self.release_writer(rejected.ownership.take()).await;
+                return Err(ThreadStoreError::InvalidRequest {
+                    message: format!("thread {thread_id} already has a live writer"),
+                });
+            }
             Ok(())
         })
     }
@@ -419,16 +499,27 @@ impl ThreadStore for PostgresThreadStore {
                     message: format!("thread {thread_id} already has a live writer"),
                 });
             }
-            let metadata = self
-                .catalog_thread(thread_id)
-                .await?
-                .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
-            if metadata.archived_at.is_some() && !params.include_archived {
-                return Err(ThreadStoreError::InvalidRequest {
-                    message: format!("thread {thread_id} is archived"),
-                });
+            let ownership = self.claim_writer(thread_id).await?;
+            let loaded = async {
+                let metadata = self
+                    .catalog_thread(thread_id)
+                    .await?
+                    .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
+                if metadata.archived_at.is_some() && !params.include_archived {
+                    return Err(ThreadStoreError::InvalidRequest {
+                        message: format!("thread {thread_id} is archived"),
+                    });
+                }
+                self.load_items(thread_id).await
             }
-            let (stored, next_position, last_ordinal) = self.load_items(thread_id).await?;
+            .await;
+            let (stored, next_position, last_ordinal) = match loaded {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    self.release_writer(Some(ownership)).await;
+                    return Err(error);
+                }
+            };
             let revision = Self::revision(thread_id, next_position);
             let history = match params.history {
                 Some(history)
@@ -446,20 +537,30 @@ impl ThreadStore for PostgresThreadStore {
             };
             let history_mode = crate::live::canonical_history_mode(&history);
             let cwd = params.metadata.cwd.clone().unwrap_or_default();
-            let live = LiveThread::for_resume(
+            let mut live = LiveThread::for_resume(
                 history_mode,
                 cwd,
                 params.metadata.memory_mode,
                 next_position,
                 last_ordinal,
             );
-            let mut live_threads = self.live.lock().await;
-            if live_threads.contains_key(&thread_id) {
+            live.ownership = Some(ownership);
+            let rejected = {
+                let mut live_threads = self.live.lock().await;
+                match live_threads.entry(thread_id) {
+                    std::collections::hash_map::Entry::Occupied(_) => Some(live),
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert(Arc::new(Mutex::new(live)));
+                        None
+                    }
+                }
+            };
+            if let Some(mut rejected) = rejected {
+                self.release_writer(rejected.ownership.take()).await;
                 return Err(ThreadStoreError::InvalidRequest {
                     message: format!("thread {thread_id} already has a live writer"),
                 });
             }
-            live_threads.insert(thread_id, Arc::new(Mutex::new(live)));
             Ok(history)
         })
     }
@@ -518,7 +619,11 @@ impl ThreadStore for PostgresThreadStore {
                         .await?;
                 }
             }
-            self.live.lock().await.remove(&thread_id);
+            let removed = self.live.lock().await.remove(&thread_id);
+            if let Some(live) = removed {
+                let ownership = live.lock().await.ownership.take();
+                self.release_writer(ownership).await;
+            }
             Ok(())
         })
     }
@@ -526,12 +631,15 @@ impl ThreadStore for PostgresThreadStore {
     fn discard_thread(&self, thread_id: ThreadId) -> ThreadStoreFuture<'_, ()> {
         Box::pin(async move {
             self.pending_metadata.lock().await.remove(&thread_id);
-            self.live
+            let removed = self
+                .live
                 .lock()
                 .await
                 .remove(&thread_id)
-                .map(|_| ())
-                .ok_or(ThreadStoreError::ThreadNotFound { thread_id })
+                .ok_or(ThreadStoreError::ThreadNotFound { thread_id })?;
+            let ownership = removed.lock().await.ownership.take();
+            self.release_writer(ownership).await;
+            Ok(())
         })
     }
 
@@ -916,6 +1024,33 @@ impl PostgresThreadStore {
             .mark_archived(thread_id, Path::new(""), Utc::now())
             .await
             .map_err(internal)
+    }
+}
+
+/// Keep a writer lease alive. The writer is marked lost when a renewal is refused or when the
+/// lease has gone unrenewed for a full term, because after that another host may own the thread.
+async fn renew_lease(
+    pool: Arc<PostgresPool>,
+    claim: ThreadOwnership,
+    lease: Duration,
+    renew_every: Duration,
+    lost: Arc<AtomicBool>,
+) {
+    let mut last_success = Instant::now();
+    loop {
+        tokio::time::sleep(renew_every).await;
+        match pool.renew_thread_ownership(&claim, lease).await {
+            Ok(true) => last_success = Instant::now(),
+            Ok(false) => {
+                lost.store(true, AtomicOrdering::SeqCst);
+                return;
+            }
+            Err(_) if last_success.elapsed() >= lease => {
+                lost.store(true, AtomicOrdering::SeqCst);
+                return;
+            }
+            Err(_) => {}
+        }
     }
 }
 

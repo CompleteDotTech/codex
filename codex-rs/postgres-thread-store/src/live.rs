@@ -12,6 +12,7 @@ use codex_git_utils::get_git_repo_root;
 use codex_postgres_rollout_store::RolloutStoreError;
 use codex_postgres_rollout_store::append_in;
 use codex_postgres_runtime::PostgresPool;
+use codex_postgres_runtime::ThreadOwnership;
 use codex_postgres_thread_catalog::get_thread_in;
 use codex_postgres_thread_catalog::upsert_thread_in;
 use codex_protocol::ThreadId;
@@ -32,6 +33,9 @@ use codex_thread_store::ThreadStoreResult;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use sqlx::Acquire;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering as AtomicOrdering;
 
 /// Per-thread record ordinals: legacy rollouts carry none, paginated ones count upward.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +82,20 @@ impl Ordinals {
     }
 }
 
+/// The lease that makes this process the only writer of a thread, and its renewal.
+pub(crate) struct WriterOwnership {
+    pub(crate) claim: ThreadOwnership,
+    /// Set by the renewal task when the lease can no longer be trusted.
+    pub(crate) lost: Arc<AtomicBool>,
+    pub(crate) renewer: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for WriterOwnership {
+    fn drop(&mut self) {
+        self.renewer.abort();
+    }
+}
+
 /// Serialized lines with the items they carry, kept until their commit is confirmed.
 type StagedBatch = (Vec<(Option<u64>, String)>, Vec<RolloutItem>);
 
@@ -94,6 +112,7 @@ pub(crate) struct LiveThread {
     pub(crate) materialized: bool,
     pub(crate) next_position: u64,
     ordinals: Ordinals,
+    pub(crate) ownership: Option<WriterOwnership>,
 }
 
 impl LiveThread {
@@ -147,6 +166,7 @@ impl LiveThread {
             materialized: false,
             next_position: 0,
             ordinals: Ordinals::for_new(params.history_mode, params.history_base),
+            ownership: None,
         }
     }
 
@@ -168,6 +188,7 @@ impl LiveThread {
             materialized: true,
             next_position,
             ordinals: Ordinals::resume(history_mode, last_ordinal),
+            ownership: None,
         }
     }
 
@@ -246,6 +267,17 @@ impl LiveThread {
             return Ok(());
         };
         let count = lines.len() as u64;
+        if self
+            .ownership
+            .as_ref()
+            .is_some_and(|ownership| ownership.lost.load(AtomicOrdering::SeqCst))
+        {
+            return Err(ownership_lost(thread_id));
+        }
+        let fence = self
+            .ownership
+            .as_ref()
+            .map(|ownership| (ownership.claim.owner_id.clone(), ownership.claim.token));
         let expected = self.next_position;
         let memory_mode = self.memory_mode;
         let history_mode = self.history_mode;
@@ -258,6 +290,24 @@ impl LiveThread {
             })?;
         let outcome: Result<(), ThreadStoreError> = async {
             let mut tx = connection.begin().await.map_err(database)?;
+            // The lease is checked while holding its row, so a takeover cannot slip in between
+            // this check and the commit that follows it.
+            if let Some((owner_id, token)) = fence {
+                let held: Option<i32> = sqlx::query_scalar(
+                    "SELECT 1 FROM codex_storage.thread_writer_ownership \
+                     WHERE thread_id = $1::uuid AND owner_id = $2::uuid AND token = $3 \
+                       AND lease_until > clock_timestamp() FOR SHARE",
+                )
+                .bind(thread_id.to_string())
+                .bind(owner_id)
+                .bind(token)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(database)?;
+                if held.is_none() {
+                    return Err(ownership_lost(thread_id));
+                }
+            }
             // The catalog row follows the items it summarizes, in the same transaction.
             let existing = get_thread_in(&mut tx, thread_id, /*lock*/ true)
                 .await
@@ -348,4 +398,10 @@ pub(crate) fn canonical_history_mode(items: &[RolloutItem]) -> ThreadHistoryMode
             _ => None,
         })
         .unwrap_or_default()
+}
+
+fn ownership_lost(thread_id: ThreadId) -> ThreadStoreError {
+    ThreadStoreError::Conflict {
+        message: format!("the writer lease for thread {thread_id} was lost"),
+    }
 }
