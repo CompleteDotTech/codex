@@ -1,0 +1,8 @@
+---
+source: tui/src/app/tests/session_picker_settings_tests.rs
+assertion_line: 181
+expression: "crate::chatwidget::tests::helpers::normalize_snapshot_paths(render_bottom_popup(&app.chat_widget,\n80,))"
+---
+› retained resume-picker draft
+
+  GPT-5.6-Sol default · /tmp/project            Plan mode (shift+tab to cycle)
