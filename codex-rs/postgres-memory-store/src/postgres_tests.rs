@@ -158,7 +158,6 @@ fn phase2_token(outcome: Phase2JobClaimOutcome) -> String {
 /// Ownership tokens are random, so only their effects are recorded.
 async fn scenario(
     store: &dyn RuntimeMemoryStore,
-    token: &str,
     threads: &[ThreadMetadata],
     current: ThreadId,
     now: i64,
@@ -184,7 +183,7 @@ async fn scenario(
                 max_claimed: 2,
                 max_age_days: 30,
                 min_rollout_idle_hours: 1,
-                allowed_sources: &[token.to_string()],
+                allowed_sources: std::slice::from_ref(&a.source),
                 lease_seconds: 600,
             },
         )
@@ -653,8 +652,8 @@ async fn real_postgres_memory_matches_sqlite() {
         sqlite.upsert_thread(metadata).await.expect("sqlite thread");
         insert_postgres_thread(&pool, metadata).await;
     }
-    let expected = scenario(sqlite.memories(), &token, &threads, current, now).await;
-    let actual = scenario(&postgres, &token, &threads, current, now).await;
+    let expected = scenario(sqlite.memories(), &threads, current, now).await;
+    let actual = scenario(&postgres, &threads, current, now).await;
     assert_eq!(actual.len(), expected.len());
     for (actual, expected) in actual.iter().zip(&expected) {
         assert_eq!(actual, expected);
