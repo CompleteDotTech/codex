@@ -471,7 +471,7 @@ async fn scenario(
             ),
         );
     }
-    board
+    let after_opt_out = board
         .post(
             worker,
             post(
@@ -483,8 +483,9 @@ async fn scenario(
         )
         .await
         .expect("post after opt-out");
+    labels.0.push(after_opt_out.message_id);
     log.push(labels.render(&host.take_notifications()));
-    board
+    let to_channel = board
         .post(
             root,
             post(
@@ -496,6 +497,7 @@ async fn scenario(
         )
         .await
         .expect("post to channel");
+    labels.0.push(to_channel.message_id);
     log.push(labels.render(&host.take_notifications()));
 
     // Listing and search.
