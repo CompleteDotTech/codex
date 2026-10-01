@@ -180,6 +180,15 @@ pub(crate) const PROTECTED_TABLES: &[ProtectedTable] = &[
         runtime_privileges: "SELECT, INSERT",
         indexes: &["project_idempotency_keys_pkey"],
     },
+    ProtectedTable {
+        name: "thread_attachments",
+        runtime_privileges: "SELECT, INSERT, DELETE",
+        indexes: &[
+            "thread_attachments_pkey",
+            "thread_attachments_identity_key",
+            "idx_thread_attachments_thread_created_id",
+        ],
+    },
 ];
 
 /// What a migration must look like before its schema qualifier is rewritten for a named
@@ -447,6 +456,20 @@ CREATE INDEX idx_threads_project_id
             META_UPDATE,
         ],
         qualified_identifiers: 9,
+    },
+    MigrationShape {
+        version: 15,
+        starts_with: Some("-- Inactive thread attachment persistence"),
+        contains: &[
+            "
+CREATE TABLE codex_storage.thread_attachments (
+",
+            "
+CREATE INDEX idx_thread_attachments_thread_created_id
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 4,
     },
 ];
 

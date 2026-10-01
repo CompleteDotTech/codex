@@ -1,8 +1,10 @@
 //! Unwired fixed-namespace PostgreSQL persistence for the thread catalog.
 
+mod attachments;
 mod catalog;
 mod list;
 mod projects;
+mod sections;
 mod timestamps;
 
 pub use catalog::PostgresThreadCatalog;

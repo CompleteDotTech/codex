@@ -4,7 +4,10 @@ use codex_postgres_runtime::ConnectionSettings;
 use codex_postgres_runtime::bootstrap_codex_storage;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_state::AddThreadAttachmentOutcome;
 use codex_state::Anchor;
+use codex_state::MAX_THREAD_ATTACHMENTS_PER_THREAD;
+use codex_state::PINNED_THREAD_SECTION_ID;
 use codex_state::Project;
 use codex_state::ProjectRoot;
 use codex_state::ProjectSortKey;
@@ -12,14 +15,18 @@ use codex_state::SortDirection;
 use codex_state::SortKey;
 use codex_state::SqliteConfig;
 use codex_state::StateRuntime;
+use codex_state::ThreadAttachment;
 use codex_state::ThreadFilterOptions;
 use codex_state::ThreadMetadataBuilder;
 use codex_state::ThreadRelationFilter;
+use codex_state::ThreadSectionAppearance;
 use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use sqlx::Row;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
+use uuid::Uuid;
 
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
     let receipt: Value = serde_json::from_slice(
@@ -1262,11 +1269,515 @@ async fn real_postgres_projects_match_sqlite() {
     }
 }
 
+/// Replaces generated section and attachment ids with labels, so each backend can mint its own.
+struct IdLabels(Vec<String>);
+
+impl IdLabels {
+    fn text(&mut self, text: String) -> String {
+        let mut text = text;
+        for (index, id) in self.0.iter().enumerate() {
+            text = text.replace(id, &format!("id-{index}"));
+        }
+        text
+    }
+
+    fn add(&mut self, id: &str) {
+        if !self.0.iter().any(|known| known == id) {
+            self.0.push(id.to_string());
+        }
+    }
+}
+
+async fn section_scenario(
+    backend: &Backend,
+    token: &str,
+    base: DateTime<Utc>,
+    ids: &[ThreadId],
+) -> Vec<String> {
+    let mut log = Vec::new();
+    let mut labels = IdLabels(Vec::new());
+
+    // Start from the built-in sections only: custom sections from earlier runs would share the
+    // listing.
+    loop {
+        let page = both!(backend, list_thread_sections(None, 100)).expect("list leftovers");
+        let custom: Vec<_> = page
+            .sections
+            .iter()
+            .filter(|section| section.id != PINNED_THREAD_SECTION_ID)
+            .collect();
+        if custom.is_empty() {
+            break;
+        }
+        for section in custom {
+            both!(backend, delete_thread_section(&section.id)).expect("delete leftover");
+        }
+    }
+    for (index, id) in ids.iter().enumerate() {
+        let mut thread = metadata(*id, index as i64, base, SessionSource::Cli);
+        thread.model_provider = format!("{token}-sections");
+        thread.title = format!("section member {index}");
+        both!(backend, upsert_thread(&thread)).expect("upsert member");
+    }
+
+    let first = both!(
+        backend,
+        create_thread_section(
+            "First",
+            Some(ThreadSectionAppearance {
+                icon: Some("star".to_string()),
+                color: None,
+            })
+        )
+    )
+    .expect("create first");
+    let second = both!(backend, create_thread_section("Second", None)).expect("create second");
+    labels.add(&first.id);
+    labels.add(&second.id);
+    log.push(labels.text(format!("created: {first:?} {second:?}")));
+
+    for (label, id, name, appearance) in [
+        ("rename", first.id.clone(), "First renamed", None),
+        (
+            "set appearance",
+            first.id.clone(),
+            "First renamed",
+            Some(Some(ThreadSectionAppearance {
+                icon: None,
+                color: Some("blue".to_string()),
+            })),
+        ),
+        (
+            "clear appearance",
+            first.id.clone(),
+            "First again",
+            Some(None),
+        ),
+        ("unknown", "missing".to_string(), "x", None),
+        ("pinned", PINNED_THREAD_SECTION_ID.to_string(), "x", None),
+    ] {
+        let renamed = both!(backend, rename_thread_section(&id, name, appearance))
+            .map(|section| format!("{section:?}"))
+            .unwrap_or_else(|error| error.to_string());
+        log.push(labels.text(format!("{label}: {renamed}")));
+    }
+    log.push(labels.text(format!(
+        "get: {:?} {:?}",
+        both!(backend, get_thread_section(&first.id)).expect("get"),
+        both!(backend, get_thread_section("missing")).expect("get missing"),
+    )));
+    let mut cursor: Option<String> = None;
+    for page_number in 0..5 {
+        let page = both!(backend, list_thread_sections(cursor.as_deref(), 2)).expect("list");
+        log.push(labels.text(format!("sections page {page_number}: {page:?}")));
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    let [a, b, c, d] = [ids[0], ids[1], ids[2], ids[3]];
+    let show_order =
+        |label: &str,
+         log: &mut Vec<String>,
+         order: HashMap<ThreadId, (Option<i64>, Option<DateTime<Utc>>)>| {
+            let mut entries: Vec<_> = [a, b, c, d]
+                .into_iter()
+                .map(|id| {
+                    (
+                        id.to_string(),
+                        order
+                            .get(&id)
+                            .map(|(position, entered)| (*position, entered.is_some())),
+                    )
+                })
+                .collect();
+            entries.sort();
+            log.push(format!("{label}: {entries:?}"));
+        };
+    for (label, thread, section, before) in [
+        ("append a", a, Some(first.id.as_str()), None),
+        ("append b", b, Some(first.id.as_str()), None),
+        ("append c", c, Some(first.id.as_str()), None),
+        ("c before a", c, Some(first.id.as_str()), Some(a)),
+        ("b before c", b, Some(first.id.as_str()), Some(c)),
+        ("a to second", a, Some(second.id.as_str()), None),
+        ("d to second before a", d, Some(second.id.as_str()), Some(a)),
+        (
+            "before in other section",
+            b,
+            Some(first.id.as_str()),
+            Some(d),
+        ),
+        ("before itself", b, Some(first.id.as_str()), Some(b)),
+        ("unknown section", b, Some("missing"), None),
+        ("before without section", b, None, Some(a)),
+        (
+            "unknown thread",
+            ThreadId::new(),
+            Some(first.id.as_str()),
+            None,
+        ),
+    ] {
+        let moved = both!(backend, move_thread_to_section(thread, section, before))
+            .map(|moved| moved.to_string())
+            .unwrap_or_else(|error| error.to_string());
+        let order = both!(backend, get_thread_section_ordering(&[a, b, c, d])).expect("order");
+        log.push(labels.text(format!("move {label}: {moved}")));
+        show_order(label, &mut log, order);
+    }
+    log.push(labels.text(format!(
+        "empty ordering: {:?}",
+        both!(backend, get_thread_section_ordering(&[])).expect("empty")
+    )));
+
+    // Repeatedly moving the last thread to the front halves the gap until a renumber is needed.
+    for round in 0..24 {
+        let order = both!(backend, get_thread_section_ordering(&[a, b, c, d])).expect("order");
+        let members: Vec<ThreadId> = [a, b, c, d]
+            .into_iter()
+            .filter(|id| order[id].0.is_some())
+            .collect();
+        let mut sorted = members.clone();
+        sorted.sort_by_key(|id| (order[id].0, id.to_string()));
+        let (Some(front), Some(last)) = (sorted.first().copied(), sorted.last().copied()) else {
+            break;
+        };
+        if front == last {
+            break;
+        }
+        let section = both!(backend, get_thread(last))
+            .expect("get")
+            .and_then(|thread| thread.section)
+            .map(|section| section.id)
+            .expect("member section");
+        both!(
+            backend,
+            move_thread_to_section(last, Some(&section), Some(front))
+        )
+        .expect("move to front");
+        let order = both!(backend, get_thread_section_ordering(&[a, b, c, d])).expect("order");
+        show_order(&format!("round {round}"), &mut log, order);
+    }
+
+    log.push(labels.text(format!(
+            "thread view: {:?}",
+            both!(backend, get_thread(c))
+                .expect("get")
+                .map(|thread| (thread.section, thread.section_position.is_some()))
+        )));
+    log.push(format!(
+        "clear: {}",
+        both!(backend, move_thread_to_section(c, None, None)).expect("clear")
+    ));
+    log.push(labels.text(format!(
+            "after clear: {:?}",
+            both!(backend, get_thread(c))
+                .expect("get")
+                .map(|thread| (thread.section, thread.section_position))
+        )));
+    log.push(format!(
+        "delete: {} {} {:?}",
+        both!(backend, delete_thread_section(&first.id)).expect("delete"),
+        both!(backend, delete_thread_section(&first.id)).expect("delete again"),
+        both!(backend, delete_thread_section(PINNED_THREAD_SECTION_ID))
+            .map_err(|error| error.to_string()),
+    ));
+    let order = both!(backend, get_thread_section_ordering(&[a, b, c, d])).expect("order");
+    show_order("after delete", &mut log, order);
+    log
+}
+
+async fn attachment_scenario(
+    backend: &Backend,
+    token: &str,
+    base: DateTime<Utc>,
+    ids: &[ThreadId],
+) -> Vec<String> {
+    let mut log = Vec::new();
+    let mut labels = IdLabels(Vec::new());
+    let [source, fork, missing] = [ids[0], ids[1], ids[2]];
+    for (index, id) in [source, fork].iter().enumerate() {
+        let mut thread = metadata(*id, index as i64, base, SessionSource::Cli);
+        thread.model_provider = format!("{token}-attachments");
+        both!(backend, upsert_thread(&thread)).expect("upsert attachment owner");
+    }
+    let render = |labels: &mut IdLabels, outcome: String| labels.text(outcome);
+    let describe = |attachment: &ThreadAttachment| {
+        format!(
+            "{} {} {} {} {}",
+            attachment.id,
+            attachment.thread_id,
+            attachment.attachment_type,
+            attachment.identity_key,
+            attachment.payload
+        )
+    };
+
+    for (label, thread, attachment_type, key, payload) in [
+        (
+            "first",
+            source,
+            "file",
+            "a.txt",
+            serde_json::json!({"size": 1}),
+        ),
+        (
+            "repeat",
+            source,
+            "file",
+            "a.txt",
+            serde_json::json!({"size": 99}),
+        ),
+        (
+            "second",
+            source,
+            "file",
+            "b.txt",
+            serde_json::json!({"size": 2}),
+        ),
+        (
+            "other type",
+            source,
+            "link",
+            "a.txt",
+            serde_json::json!(null),
+        ),
+        (
+            "unknown thread",
+            missing,
+            "file",
+            "a.txt",
+            serde_json::json!({}),
+        ),
+        ("empty type", source, "  ", "a.txt", serde_json::json!({})),
+        ("empty key", source, "file", "", serde_json::json!({})),
+        (
+            "long type",
+            source,
+            &"t".repeat(257),
+            "a.txt",
+            serde_json::json!({}),
+        ),
+        (
+            "long key",
+            source,
+            "file",
+            &"k".repeat(257),
+            serde_json::json!({}),
+        ),
+        (
+            "large payload",
+            source,
+            "file",
+            "big",
+            serde_json::json!({"text": "x".repeat(70_000)}),
+        ),
+    ] {
+        let outcome = both!(
+            backend,
+            add_thread_attachment(thread, attachment_type, key, &payload)
+        )
+        .map(|outcome| match outcome {
+            AddThreadAttachmentOutcome::Created(attachment) => {
+                labels.add(&attachment.id);
+                format!("created {}", describe(&attachment))
+            }
+            AddThreadAttachmentOutcome::Existing(attachment) => {
+                labels.add(&attachment.id);
+                format!("existing {}", describe(&attachment))
+            }
+        })
+        .unwrap_or_else(|error| error.to_string());
+        log.push(render(&mut labels, format!("add {label}: {outcome}")));
+    }
+
+    // The per-thread limit holds, and removing an attachment frees its slot.
+    let mut added = 3;
+    for index in 0..MAX_THREAD_ATTACHMENTS_PER_THREAD {
+        let result = both!(
+            backend,
+            add_thread_attachment(
+                source,
+                "bulk",
+                &format!("item-{index}"),
+                &serde_json::json!(index)
+            )
+        );
+        match result {
+            Ok(AddThreadAttachmentOutcome::Created(attachment)) => {
+                labels.add(&attachment.id);
+                added += 1;
+            }
+            Ok(AddThreadAttachmentOutcome::Existing(_)) => {
+                log.push("unexpected existing".to_string())
+            }
+            Err(error) => {
+                log.push(render(
+                    &mut labels,
+                    format!("bulk {index} (after {added}): {error}"),
+                ));
+                break;
+            }
+        }
+    }
+    log.push(render(
+        &mut labels,
+        format!(
+            "remove: {:?} {:?} {:?}",
+            both!(backend, remove_thread_attachment(source, "bulk", "item-0"))
+                .map(|outcome| format!("{outcome:?}"))
+                .map_err(|error| error.to_string()),
+            both!(backend, remove_thread_attachment(source, "bulk", "item-0"))
+                .map(|outcome| format!("{outcome:?}"))
+                .map_err(|error| error.to_string()),
+            both!(backend, remove_thread_attachment(missing, "bulk", "item-0"))
+                .map(|outcome| format!("{outcome:?}"))
+                .map_err(|error| error.to_string()),
+        ),
+    ));
+    log.push(render(
+        &mut labels,
+        format!(
+            "after remove: {:?}",
+            both!(
+                backend,
+                add_thread_attachment(source, "bulk", "after-remove", &serde_json::json!(true))
+            )
+            .map(|outcome| matches!(outcome, AddThreadAttachmentOutcome::Created(_)))
+            .map_err(|error| error.to_string())
+        ),
+    ));
+
+    let mut cursor: Option<String> = None;
+    for page_number in 0..8 {
+        let page = both!(
+            backend,
+            list_thread_attachments(source, cursor.as_deref(), 40)
+        )
+        .expect("list");
+        for attachment in &page.attachments {
+            labels.add(&attachment.id);
+        }
+        // Creation seconds can differ between backends, so only keys and cursors are compared.
+        let keys: Vec<_> = page
+            .attachments
+            .iter()
+            .map(|a| (a.attachment_type.as_str(), a.identity_key.as_str()))
+            .take(3)
+            .collect();
+        log.push(render(
+            &mut labels,
+            format!(
+                "page {page_number}: {} first {keys:?} next {:?}",
+                page.attachments.len(),
+                page.next_cursor.as_ref().map(|cursor| cursor
+                    .split('|')
+                    .map(str::to_string)
+                    .enumerate()
+                    .filter(|(index, _)| *index != 1)
+                    .map(|(_, part)| part)
+                    .collect::<Vec<_>>())
+            ),
+        ));
+        cursor = page.next_cursor;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    for (label, cursor, limit) in [
+        ("zero limit", None, 0),
+        ("huge limit", None, 101),
+        ("garbage cursor", Some("garbage".to_string()), 5),
+        (
+            "other thread cursor",
+            Some(format!("{fork}|1|{}", Uuid::now_v7())),
+            5,
+        ),
+    ] {
+        let outcome = both!(
+            backend,
+            list_thread_attachments(source, cursor.as_deref(), limit)
+        )
+        .map(|page| page.attachments.len().to_string())
+        .unwrap_or_else(|error| error.to_string());
+        log.push(render(&mut labels, format!("list {label}: {outcome}")));
+    }
+
+    both!(backend, copy_thread_attachments(source, fork)).expect("copy");
+    let copied = both!(backend, list_thread_attachments(fork, None, 100)).expect("list copy");
+    log.push(format!(
+        "copied: {} {:?}",
+        copied.attachments.len(),
+        copied
+            .attachments
+            .iter()
+            .take(3)
+            .map(|a| (
+                a.attachment_type.as_str(),
+                a.identity_key.as_str(),
+                a.payload.to_string()
+            ))
+            .collect::<Vec<_>>()
+    ));
+    log.push(render(
+        &mut labels,
+        format!(
+            "copy to unknown: {:?}",
+            both!(backend, copy_thread_attachments(source, missing))
+                .map_err(|error| error.to_string())
+        ),
+    ));
+    log
+}
+
+async fn real_postgres_sections_and_attachments_match_sqlite() {
+    let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_THREAD_CATALOG_STATE") else {
+        return;
+    };
+    let pool = setup(Path::new(&state)).await;
+    let home = tempfile::tempdir().expect("sqlite fixture home");
+    let sqlite = StateRuntime::init(
+        SqliteConfig::new_for_testing(home.path().abs()),
+        "provider".to_string(),
+    )
+    .await
+    .expect("sqlite runtime");
+    let token = format!(
+        "sect{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    );
+    let base = run_base(&pool).await + chrono::Duration::seconds(60_000);
+    let sqlite = Backend::Sqlite(sqlite);
+    let postgres = Backend::Postgres(PostgresThreadCatalog::new(pool));
+
+    let ids: Vec<ThreadId> = (0..4).map(|_| ThreadId::new()).collect();
+    let expected = section_scenario(&sqlite, &token, base, &ids).await;
+    let actual = section_scenario(&postgres, &token, base, &ids).await;
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(&expected) {
+        assert_eq!(actual, expected);
+    }
+
+    let ids: Vec<ThreadId> = (0..3).map(|_| ThreadId::new()).collect();
+    let base = base + chrono::Duration::seconds(10_000);
+    let expected = attachment_scenario(&sqlite, &token, base, &ids).await;
+    let actual = attachment_scenario(&postgres, &token, base, &ids).await;
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(&expected) {
+        assert_eq!(actual, expected);
+    }
+}
+
 /// The checks share the namespace-wide timestamp marks, so they run one after another.
 #[tokio::test]
 async fn real_postgres_thread_catalog() {
     real_postgres_threads_match_sqlite().await;
     real_postgres_listing_matches_sqlite().await;
     real_postgres_projects_match_sqlite().await;
+    real_postgres_sections_and_attachments_match_sqlite().await;
     real_postgres_delete_removes_thread_state_and_keeps_queue_changes_visible().await;
 }
