@@ -11,6 +11,7 @@ use codex_state::PINNED_THREAD_SECTION_ID;
 use codex_state::Project;
 use codex_state::ProjectRoot;
 use codex_state::ProjectSortKey;
+use codex_state::RemoveThreadAttachmentOutcome;
 use codex_state::SortDirection;
 use codex_state::SortKey;
 use codex_state::SqliteConfig;
@@ -1494,6 +1495,16 @@ async fn section_scenario(
     log
 }
 
+fn removal_text(outcome: &RemoveThreadAttachmentOutcome) -> String {
+    match outcome {
+        RemoveThreadAttachmentOutcome::Removed(attachment) => format!(
+            "removed {} {} {} {}",
+            attachment.id, attachment.attachment_type, attachment.identity_key, attachment.payload
+        ),
+        RemoveThreadAttachmentOutcome::NotFound => "not found".to_string(),
+    }
+}
+
 async fn attachment_scenario(
     backend: &Backend,
     token: &str,
@@ -1632,13 +1643,13 @@ async fn attachment_scenario(
         format!(
             "remove: {:?} {:?} {:?}",
             both!(backend, remove_thread_attachment(source, "bulk", "item-0"))
-                .map(|outcome| format!("{outcome:?}"))
+                .map(|outcome| removal_text(&outcome))
                 .map_err(|error| error.to_string()),
             both!(backend, remove_thread_attachment(source, "bulk", "item-0"))
-                .map(|outcome| format!("{outcome:?}"))
+                .map(|outcome| removal_text(&outcome))
                 .map_err(|error| error.to_string()),
             both!(backend, remove_thread_attachment(missing, "bulk", "item-0"))
-                .map(|outcome| format!("{outcome:?}"))
+                .map(|outcome| removal_text(&outcome))
                 .map_err(|error| error.to_string()),
         ),
     ));
