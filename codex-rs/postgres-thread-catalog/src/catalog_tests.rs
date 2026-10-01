@@ -82,12 +82,9 @@ fn metadata(
 }
 
 /// Runs the thread operations a caller can observe and records each result.
-async fn scenario(backend: &Backend, base: DateTime<Utc>) -> Vec<String> {
+async fn scenario(backend: &Backend, base: DateTime<Utc>, ids: [ThreadId; 4]) -> Vec<String> {
     let mut log = Vec::new();
-    let parent = ThreadId::new();
-    let child = ThreadId::new();
-    let plain = ThreadId::new();
-    let missing = ThreadId::new();
+    let [parent, child, plain, missing] = ids;
     let parent_metadata = metadata(parent, 0, base, SessionSource::Cli);
     let child_source = SessionSource::SubAgent(SubAgentSource::ThreadSpawn {
         parent_thread_id: parent,
@@ -302,8 +299,19 @@ async fn real_postgres_threads_match_sqlite() {
     .await
     .expect("sqlite runtime");
     let base = run_base();
-    let expected = scenario(&Backend::Sqlite(sqlite), base).await;
-    let actual = scenario(&Backend::Postgres(PostgresThreadCatalog::new(pool)), base).await;
+    let ids = [
+        ThreadId::new(),
+        ThreadId::new(),
+        ThreadId::new(),
+        ThreadId::new(),
+    ];
+    let expected = scenario(&Backend::Sqlite(sqlite), base, ids).await;
+    let actual = scenario(
+        &Backend::Postgres(PostgresThreadCatalog::new(pool)),
+        base,
+        ids,
+    )
+    .await;
     assert_eq!(actual.len(), expected.len());
     for (actual, expected) in actual.iter().zip(&expected) {
         assert_eq!(actual, expected);
