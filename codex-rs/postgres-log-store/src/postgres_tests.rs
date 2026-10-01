@@ -435,7 +435,13 @@ async fn real_postgres_logs_match_sqlite() {
     let token = token();
     let expected = scenario(&*sqlite, &token).await;
     let actual = scenario(&postgres, &token).await;
-    assert_eq!(actual, expected);
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(&expected) {
+        // Entries can hold multi-megabyte bodies, so only a bounded prefix is shown on failure.
+        let shown = |text: &str| text.chars().take(600).collect::<String>();
+        assert_eq!(shown(actual), shown(expected));
+        assert_eq!(actual.len(), expected.len());
+    }
 }
 
 async fn real_postgres_logs_allocate_ids_in_commit_order() {
