@@ -1,5 +1,6 @@
 use super::BootstrapError;
 use super::classify_migration;
+use super::classify_namespace_validation;
 use super::classify_sqlx;
 use pretty_assertions::assert_eq;
 use sqlx::migrate::MigrateError;
@@ -29,5 +30,12 @@ fn classify_post_acquisition_transport_failures_as_unavailable() {
     assert_eq!(
         classify_sqlx(&sqlx::Error::RowNotFound),
         BootstrapError::Migration
+    );
+    assert_eq!(
+        classify_namespace_validation(sqlx::Error::ColumnDecode {
+            index: "format_version".to_string(),
+            source: Box::new(sqlx::error::UnexpectedNullError),
+        }),
+        BootstrapError::IncompatibleNamespace
     );
 }
