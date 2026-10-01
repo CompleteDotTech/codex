@@ -16,10 +16,13 @@ use std::os::unix::fs::OpenOptionsExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+mod blocking_reader;
 mod error_metrics;
+mod path_metadata;
 mod read_metrics;
 
 use error_metrics::FailureMetric;
+pub(crate) use path_metadata::existing_rollout_with_metadata_sync;
 use read_metrics::ReadFailureSource;
 use read_metrics::ReadMetrics;
 
@@ -116,6 +119,7 @@ pub(crate) async fn materialize_rollout_for_append(
 /// Materializes a compressed rollout back to plain `.jsonl` for blocking append paths.
 pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result<PathBuf> {
     let plain_path = plain_rollout_path(path);
+    ensure_single_rollout_representation(&plain_path)?;
     if plain_path.exists() {
         metrics::materialize("plain_exists");
         return Ok(plain_path);
@@ -152,7 +156,7 @@ pub(crate) fn materialize_rollout_for_append_blocking(path: &Path) -> io::Result
         stage = "publish";
         match std::fs::hard_link(temp_path.as_path(), plain_path.as_path()) {
             Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Err(err),
             Err(_) => persist_temp_file_noclobber(temp_path.as_path(), plain_path.as_path())?,
         }
         stage = "set_metadata";
@@ -184,9 +188,41 @@ fn persist_temp_file_noclobber(temp_path: &Path, destination: &Path) -> io::Resu
     let temp_path = tempfile::TempPath::try_from_path(temp_path)?;
     match temp_path.persist_noclobber(destination) {
         Ok(()) => Ok(()),
-        Err(err) if err.error.kind() == io::ErrorKind::AlreadyExists => Ok(()),
         Err(err) => Err(err.error),
     }
+}
+
+/// Refuses an ambiguous local rollout without selecting or deleting either representation.
+pub fn ensure_single_rollout_representation(path: &Path) -> io::Result<()> {
+    fn regular_or_absent(path: &Path) -> io::Result<bool> {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "rollout representation is not a regular file: {}",
+                    path.display()
+                ),
+            )),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(err) => Err(err),
+        }
+    }
+
+    let plain_path = plain_rollout_path(path);
+    let compressed_path = path::compressed_rollout_path(&plain_path);
+    let plain_exists = regular_or_absent(&plain_path)?;
+    let compressed_exists = regular_or_absent(&compressed_path)?;
+    if plain_exists && compressed_exists {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!(
+                "both plain and compressed rollout files exist for {}",
+                plain_path.display()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Returns the plain `.jsonl` path for a plain or compressed rollout path.
@@ -297,6 +333,30 @@ impl RolloutLineReader {
             Err(err) => self.metrics.failed("read", failure_source, err),
         }
         result
+    }
+
+    /// Keeps a compressed scan on one worker while retaining this reader's format and I/O metrics.
+    pub(crate) async fn find_map<T: Send + 'static>(
+        mut self,
+        mut find: impl FnMut(&str) -> Option<T> + Send + 'static,
+    ) -> io::Result<Option<T>> {
+        let RolloutLineReaderInner::Blocking(Some(reader)) = self.inner else {
+            while let Some(line) = self.next_line().await? {
+                if let Some(found) = find(&line) {
+                    return Ok(Some(found));
+                }
+            }
+            return Ok(None);
+        };
+        blocking_reader::scan_lines(reader, self.metrics, move |lines| {
+            for line in lines {
+                if let Some(found) = find(&line?) {
+                    return Ok(Some(found));
+                }
+            }
+            Ok(None)
+        })
+        .await
     }
 }
 
@@ -1304,19 +1364,11 @@ mod path {
     ///
     /// Returning the metadata lets callers inspect the selected file without a second stat.
     pub(super) async fn existing_rollout_with_metadata(path: &Path) -> Option<(PathBuf, Metadata)> {
-        let plain_path = plain_rollout_path(path);
-        if let Ok(metadata) = tokio::fs::metadata(plain_path.as_path()).await
-            && metadata.is_file()
-        {
-            return Some((plain_path, metadata));
-        }
-        let compressed_path = compressed_rollout_path(plain_path.as_path());
-        if let Ok(metadata) = tokio::fs::metadata(compressed_path.as_path()).await
-            && metadata.is_file()
-        {
-            return Some((compressed_path, metadata));
-        }
-        None
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || super::existing_rollout_with_metadata_sync(&path))
+            .await
+            .ok()
+            .flatten()
     }
 }
 

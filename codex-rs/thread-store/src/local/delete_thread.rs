@@ -70,10 +70,11 @@ pub(super) async fn delete_thread(
     let thread_id = params.thread_id;
     let _lifecycle_guard = store.live_writer_locks.lock_lifecycle(thread_id).await;
     let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
+    let mut writer_guards = store.acquire_writer_locks(&[thread_id]).await?;
+    super::rollout_move_transaction::replay_pending_move(store, thread_id).await?;
     let reference_index = scan_reference_index(store).await?;
     let thread_rollouts = ThreadRollouts::from_index(&reference_index, thread_id);
     ensure_no_external_references(&reference_index, std::slice::from_ref(&thread_rollouts))?;
-    let mut writer_guards = store.acquire_writer_locks(&[thread_id]).await?;
     if let Some(cleanup) = &store.thread_data_cleanup {
         cleanup(vec![thread_id]).await?;
     }
@@ -113,6 +114,11 @@ pub(super) async fn delete_threads(
         _live_writer_guards.push(store.live_writer_locks.lock(thread_id).await);
     }
 
+    let mut writer_guards = store.acquire_writer_locks(&lock_thread_ids).await?;
+    for &thread_id in &lock_thread_ids {
+        super::rollout_move_transaction::replay_pending_move(store, thread_id).await?;
+    }
+
     let reference_index = scan_reference_index(store).await?;
     let thread_rollouts = thread_ids
         .iter()
@@ -120,7 +126,6 @@ pub(super) async fn delete_threads(
         .collect::<Vec<_>>();
     ensure_no_external_references(&reference_index, thread_rollouts.as_slice())?;
 
-    let mut writer_guards = store.acquire_writer_locks(&lock_thread_ids).await?;
     if let Some(cleanup) = &store.thread_data_cleanup {
         cleanup(thread_ids.clone()).await?;
     }
@@ -189,8 +194,13 @@ async fn scan_reference_index(
 ) -> ThreadStoreResult<RolloutReferenceIndex> {
     RolloutReferenceIndex::scan(store.config.codex_home.as_path())
         .await
-        .map_err(|err| ThreadStoreError::Internal {
-            message: format!("failed to scan fork history references: {err}"),
+        .map_err(|err| match err.kind() {
+            ErrorKind::AlreadyExists => ThreadStoreError::Conflict {
+                message: err.to_string(),
+            },
+            _ => ThreadStoreError::Internal {
+                message: format!("failed to scan fork history references: {err}"),
+            },
         })
 }
 
@@ -341,6 +351,25 @@ mod tests {
                 .expect("session file");
         let compressed_path = active_path.with_extension("jsonl.zst");
         std::fs::write(&compressed_path, b"compressed sibling").expect("compressed sibling");
+        let ambiguous_thread_id =
+            ThreadId::from_string(&Uuid::from_u128(301).to_string()).expect("thread id");
+        let active_before = std::fs::read(&active_path).expect("active bytes");
+        let error = store
+            .delete_thread(DeleteThreadParams {
+                thread_id: ambiguous_thread_id,
+            })
+            .await
+            .expect_err("ambiguous copies must block deletion");
+        assert!(matches!(error, ThreadStoreError::Conflict { .. }));
+        assert_eq!(
+            std::fs::read(&active_path).expect("active bytes"),
+            active_before
+        );
+        assert_eq!(
+            std::fs::read(&compressed_path).expect("compressed bytes"),
+            b"compressed sibling"
+        );
+        std::fs::remove_file(&compressed_path).expect("remove synthetic collision");
         let cases = [
             (Uuid::from_u128(301), active_path),
             (
@@ -794,6 +823,7 @@ SELECT
 
         store
             .resume_thread(ResumeThreadParams {
+                history_revision: None,
                 thread_id,
                 rollout_path: Some(rollout_path),
                 history: None,

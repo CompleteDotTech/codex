@@ -747,7 +747,6 @@ async fn session_info_uses_availability_nux_tooltip_override() {
         /*is_first_event*/ false,
         Some("Model just became available".to_string()),
         Some(PlanType::Free),
-        /*show_fast_status*/ false,
     );
 
     let rendered = render_transcript(&cell).join("\n");
@@ -771,7 +770,6 @@ async fn session_info_availability_nux_tooltip_snapshot() {
         /*is_first_event*/ false,
         Some("Model just became available".to_string()),
         Some(PlanType::Free),
-        /*show_fast_status*/ false,
     );
 
     let rendered = render_transcript(&cell).join("\n");
@@ -793,7 +791,6 @@ async fn session_info_preserves_styled_tooltip_links() {
                 .to_string(),
         ),
         Some(PlanType::Free),
-        /*show_fast_status*/ false,
     );
 
     let lines = cell.transcript_hyperlink_lines(/*width*/ 30);
@@ -843,7 +840,6 @@ async fn session_info_first_event_suppresses_tooltips_and_nux() {
         /*is_first_event*/ true,
         Some("Model just became available".to_string()),
         Some(PlanType::Free),
-        /*show_fast_status*/ false,
     );
 
     let rendered = render_transcript(&cell).join("\n");
@@ -864,7 +860,6 @@ async fn session_info_hides_tooltips_when_disabled() {
         /*is_first_event*/ false,
         Some("Model just became available".to_string()),
         Some(PlanType::Free),
-        /*show_fast_status*/ false,
     );
 
     let rendered = render_transcript(&cell).join("\n");
@@ -1526,7 +1521,7 @@ fn code_mode_tool_call_uses_title_and_preserves_full_transcript() {
       └ 012345678901234567890123456789012345
         678901234567890123456789012345678901
         234567890123456789012345678901234567
-        +1 line (ctrl+t to view transcript)
+        +1 line (⌃t to view transcript)
 
     transcript:
     • Called node_repl.js({"title":"Inspect Spotify workspace","code":"await tools.exec_command({ cmd: 'git status' })"})

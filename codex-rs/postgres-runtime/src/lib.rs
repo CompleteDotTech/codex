@@ -1,7 +1,9 @@
 //! A bounded PostgreSQL connection pool for host-resolved credentials.
 //!
-//! This crate does not create tables, select the active storage backend, or
-//! grant authority to a candidate configuration.
+//! The pool does not select the active storage backend or grant authority to a
+//! candidate configuration. Callers that need the preprovisioned storage
+//! schema must explicitly invoke the transactional `bootstrap_codex_storage`
+//! entry point.
 //! Only PostgreSQL 17.11 is qualified by the current real-server fixture. This
 //! exact-version gate does not assert support for every PostgreSQL 17 release.
 
@@ -14,9 +16,12 @@ use sqlx::ConnectOptions;
 use sqlx::PgPool;
 use sqlx::Postgres;
 use sqlx::pool::PoolConnection;
-use sqlx::postgres::PgConnectOptions;
-use sqlx::postgres::PgPoolOptions;
-use sqlx::postgres::PgSslMode;
+use sqlx_postgres::PgConnectOptions;
+use sqlx_postgres::PgPoolOptions;
+use sqlx_postgres::PgSslMode;
+// The workspace SQLx facade includes SQLite. Every enabled driver must provide
+// the offline API once PostgreSQL enables it on their shared sqlx-core crate.
+use sqlx_sqlite as _;
 use std::fmt;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -169,7 +174,9 @@ impl PostgresPool {
             limits.connect_timeout,
             PgPoolOptions::new()
                 .max_connections(limits.max_connections)
-                .acquire_timeout(limits.connect_timeout)
+                // SQLx uses this limit during startup too. The outer timeouts
+                // enforce each operation's own deadline.
+                .acquire_timeout(limits.connect_timeout.max(limits.acquire_timeout))
                 .connect_with(options),
         )
         .await

@@ -1,0 +1,32 @@
+---
+source: tui/src/app/tests/background_task_defaults_tests.rs
+assertion_line: 135
+expression: "crate::chatwidget::tests::helpers::normalize_snapshot_paths(snapshots.join(\"\\n\\n\"))"
+---
+owned=false
+startup:
+
+
+› draft during startup
+
+
+attached:
+
+
+› draft during startup
+
+  GPT-6.1-Sol default · /tmp/project                 ⚠ 1 warning · f2 to view
+
+owned=true
+startup:
+
+› draft during startup
+
+
+
+attached:
+
+› draft during startup
+
+  GPT-6.1-Sol default · /tmp/project
+                                                       ⚠ 1 warning · f2 to view
