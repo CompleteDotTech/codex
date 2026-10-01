@@ -71,7 +71,7 @@ pub(super) async fn reset_target(pool: &PostgresPool) {
     let mut connection = pool.acquire().await.expect("connection");
     for statement in [
         "DELETE FROM storage_migration_runs",
-        "UPDATE storage_activation SET state = 'open', run_id = NULL",
+        "UPDATE storage_activation SET state = 'open', run_id = NULL, generation = 0, dataset_id = NULL",
         "DELETE FROM thread_spawn_edges",
         "DELETE FROM threads",
         "DELETE FROM projects",
