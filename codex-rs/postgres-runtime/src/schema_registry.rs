@@ -65,6 +65,24 @@ pub(crate) const PROTECTED_TABLES: &[ProtectedTable] = &[
         runtime_privileges: "SELECT, INSERT, DELETE",
         indexes: &["thread_goal_continuation_deferrals_pkey"],
     },
+    ProtectedTable {
+        name: "queued_items",
+        runtime_privileges: "SELECT, INSERT, UPDATE, DELETE",
+        indexes: &["queued_items_pkey", "queued_items_thread_order_idx"],
+    },
+    ProtectedTable {
+        name: "queue_change_counter",
+        runtime_privileges: "SELECT, UPDATE",
+        indexes: &["queue_change_counter_pkey"],
+    },
+    ProtectedTable {
+        name: "queued_thread_revisions",
+        runtime_privileges: "SELECT, INSERT, UPDATE",
+        indexes: &[
+            "queued_thread_revisions_pkey",
+            "queued_thread_revisions_revision_idx",
+        ],
+    },
 ];
 
 /// What a migration must look like before its schema qualifier is rewritten for a named
@@ -149,6 +167,33 @@ CREATE TABLE codex_storage.thread_goal_continuation_deferrals (
             META_UPDATE,
         ],
         qualified_identifiers: 5,
+    },
+    MigrationShape {
+        version: 8,
+        starts_with: Some("-- Inactive queue persistence"),
+        contains: &[
+            "
+CREATE TABLE codex_storage.queued_items (
+",
+            "REFERENCES codex_storage.threads (id) ON DELETE CASCADE",
+            "
+CREATE UNIQUE INDEX queued_items_thread_order_idx
+",
+            "
+CREATE TABLE codex_storage.queue_change_counter (
+",
+            "
+INSERT INTO codex_storage.queue_change_counter (singleton, version) VALUES (TRUE, 0);
+",
+            "
+CREATE TABLE codex_storage.queued_thread_revisions (
+",
+            "
+CREATE INDEX queued_thread_revisions_revision_idx
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 9,
     },
 ];
 
