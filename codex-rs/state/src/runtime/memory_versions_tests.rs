@@ -1,4 +1,5 @@
 use super::*;
+use crate::Phase2JobClaimOutcome;
 use crate::SqliteConfig;
 use crate::Stage1JobClaimOutcome;
 use crate::runtime::test_support::test_thread_metadata;
@@ -108,6 +109,80 @@ async fn versions_isolate_jobs_outputs_and_reset_without_losing_threads() -> any
     assert!(db.get_thread(thread_id).await?.is_some());
     db.close().await;
     assert!(StateRuntime::clear_memory_data_in_sqlite_home(&sqlite).await?);
+    tokio::fs::remove_dir_all(home).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn polluting_v2_thread_enqueues_v2_forgetting() -> anyhow::Result<()> {
+    let home = crate::runtime::test_support::unique_temp_dir();
+    let sqlite = SqliteConfig::new_for_testing(home.as_path().abs());
+    let db = StateRuntime::init(sqlite.clone(), "test-provider".to_string()).await?;
+    let thread_id = ThreadId::new();
+    let metadata = test_thread_metadata(home.as_path(), thread_id, home.join("project"));
+    db.upsert_thread(&metadata).await?;
+    let v2 = db.memories_for_version(MemoryVersion::V2).await?;
+    let Stage1JobClaimOutcome::Claimed { ownership_token } = v2
+        .try_claim_stage1_job(
+            thread_id,
+            thread_id,
+            metadata.updated_at.timestamp(),
+            /*lease_seconds*/ 60,
+            /*max_running_jobs*/ 1,
+        )
+        .await?
+    else {
+        panic!("expected v2 stage one claim");
+    };
+    assert!(
+        v2.mark_stage1_job_succeeded(
+            thread_id,
+            &ownership_token,
+            metadata.updated_at.timestamp(),
+            "",
+            "rollout summary",
+            /*rollout_slug*/ None,
+        )
+        .await?
+    );
+    let outputs = v2.list_stage1_outputs_for_global(/*n*/ 10).await?;
+    let Phase2JobClaimOutcome::Claimed {
+        ownership_token,
+        input_watermark,
+    } = v2
+        .try_claim_global_phase2_job(thread_id, /*lease_seconds*/ 60)
+        .await?
+    else {
+        panic!("expected v2 phase two claim");
+    };
+    assert!(
+        v2.mark_global_phase2_job_succeeded(&ownership_token, input_watermark, &outputs)
+            .await?
+    );
+    let v2_pool = sqlite.open_memories_v2_db().await?;
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM jobs WHERE kind = 'memory_consolidate_global' AND job_key = 'global'",
+    )
+    .fetch_one(&v2_pool)
+    .await?;
+    assert_eq!(status, "done");
+
+    assert!(
+        db.mark_thread_memory_mode_polluted_for_version(MemoryVersion::V2, thread_id)
+            .await?
+    );
+    assert_eq!(
+        db.get_thread_memory_mode(thread_id).await?.as_deref(),
+        Some("polluted")
+    );
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM jobs WHERE kind = 'memory_consolidate_global' AND job_key = 'global'",
+    )
+    .fetch_one(&v2_pool)
+    .await?;
+    assert_eq!(status, "pending");
+    db.close().await;
+    v2_pool.close().await;
     tokio::fs::remove_dir_all(home).await?;
     Ok(())
 }
