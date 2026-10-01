@@ -165,6 +165,79 @@ PRIMARY_PROJECT_EDGES = {
     },
 }
 
+# Direct queue data and notification edges. The revision table is written by
+# SQLite triggers, not by queued_items.rs. These source clauses cover the local
+# adapter and service entry points, but not every app-server RPC caller.
+QUEUE_EDGES = {
+    "queued_items": {
+        "state/queue_migrations/0001_queued_items.sql": {
+            "schema": "CREATE TABLE queued_items (",
+            "constraint": "CREATE UNIQUE INDEX queued_items_thread_order_idx",
+        },
+        "state/src/runtime/queued_items.rs": {
+            "enqueue": "INSERT INTO queued_items (",
+            "list_page": "FROM queued_items",
+            "update": "UPDATE queued_items",
+            "delete": "DELETE FROM queued_items",
+            "reorder": "UPDATE queued_items SET queue_order = ?, updated_at_ms = ?",
+            "delete_thread_queue": "DELETE FROM queued_items WHERE thread_id = ?",
+        },
+        "thread-store/src/queue_store.rs": {
+            "adapter": "self.queue().list_page(thread_id, offset, limit)",
+        },
+        "ext/queue/src/service.rs": {
+            "consumer": ".list_page(thread_id, offset, limit)",
+        },
+        "app-server/src/message_processor.rs": {
+            "factory": "LocalQueueStore::new(Arc::clone(state_db))",
+        },
+    },
+    "queued_thread_revisions": {
+        "state/queue_migrations/0002_queued_thread_revisions.sql": {
+            "schema": "CREATE TABLE queued_thread_revisions (",
+            "insert_trigger": """CREATE TRIGGER queued_items_revision_after_insert
+AFTER INSERT ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (NEW.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
+            "update_trigger": """CREATE TRIGGER queued_items_revision_after_update
+AFTER UPDATE ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (NEW.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
+            "delete_trigger": """CREATE TRIGGER queued_items_revision_after_delete
+AFTER DELETE ON queued_items
+BEGIN
+    INSERT INTO queued_thread_revisions (thread_id)
+    VALUES (OLD.thread_id)
+    ON CONFLICT(thread_id) DO UPDATE
+    SET revision = (SELECT COALESCE(MAX(revision), 0) + 1 FROM queued_thread_revisions);
+END;""",
+        },
+        "state/src/runtime/queued_items.rs": {
+            "revision_read": "SELECT thread_id, revision FROM queued_thread_revisions WHERE revision > ",
+            "commit_observation": "PRAGMA data_version",
+        },
+        "thread-store/src/queue_store.rs": {
+            "adapter": "self.queue().changes_since(revision, thread_ids)",
+            "commit_observation": "self.queue().change_version()",
+        },
+        "ext/queue/src/service.rs": {
+            "watcher": ".changes_since(last_revision, &thread_ids)",
+            "commit_observation": "service.queue.change_version().await",
+        },
+        "app-server/src/message_processor.rs": {
+            "factory": "LocalQueueStore::new(Arc::clone(state_db))",
+        },
+    },
+}
+
 
 def audit_coverage() -> dict:
     """Match every pinned fixture table and expose unfinished decisions."""
@@ -186,6 +259,9 @@ def audit_coverage() -> dict:
                 "forward_reverse_decision": "unresolved",
                 "observed_direct_sql": PRIMARY_PROJECT_EDGES.get(table, {})
                 if store == "state_5.sqlite"
+                else {},
+                "observed_queue_edges": QUEUE_EDGES.get(table, {})
+                if store == "queue_1.sqlite"
                 else {},
             }
             for table, (issue, source) in entries.items()
