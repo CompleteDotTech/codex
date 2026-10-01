@@ -64,7 +64,8 @@ pub(super) async fn gate_phase(
 ) {
     reset_target(pool).await;
     let interrupted = Migrator::new(source.clone(), pool.clone())
-        .with_batch_limit(1)
+        .with_batch_size(2)
+        .with_batch_limit(3)
         .import()
         .await;
     assert!(
