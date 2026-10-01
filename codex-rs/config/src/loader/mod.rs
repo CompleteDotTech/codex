@@ -591,6 +591,9 @@ async fn load_config_toml_for_required_layer_raw(
     {
         Ok(contents) => {
             let config: TomlValue = toml::from_str(&contents).map_err(|err| {
+                if let Some(redacted) = crate::storage_candidate::redacted_parse_error(&contents) {
+                    return redacted;
+                }
                 let config_error =
                     config_error_from_toml(toml_file.as_path(), &contents, err.clone());
                 io_error_from_config_error(io::ErrorKind::InvalidData, config_error, Some(err))
@@ -632,6 +635,7 @@ fn validate_config_toml_strictly(
     value: &TomlValue,
     base_dir: &Path,
 ) -> io::Result<()> {
+    crate::storage_candidate::validate_storage_candidate_value(value)?;
     let _guard = AbsolutePathBufGuard::new(base_dir);
     if let Some(config_error) = config_error_from_ignored_toml_value_fields::<ConfigToml>(
         toml_file,
@@ -1705,6 +1709,11 @@ async fn discover_project_layers(
                 let config: TomlValue = match toml::from_str(&contents) {
                     Ok(config) => config,
                     Err(e) => {
+                        if let Some(redacted) =
+                            crate::storage_candidate::redacted_parse_error(&contents)
+                        {
+                            return Err(redacted);
+                        }
                         if decision.is_trusted() {
                             let config_file_display = config_file.as_path().display();
                             return Err(io::Error::new(

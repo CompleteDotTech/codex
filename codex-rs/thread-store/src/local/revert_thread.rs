@@ -35,6 +35,7 @@ pub(super) async fn revert(
     let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
     store.ensure_live_recorder_absent(thread_id).await?;
     let writer_lock = store.acquire_writer_lock(thread_id)?;
+    super::rollout_move_transaction::replay_pending_move(store, thread_id).await?;
 
     // Resolution may return a compressed sibling. Keep SQLite's exact stored path for the CAS.
     let stored_metadata = state_db
