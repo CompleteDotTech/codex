@@ -113,6 +113,10 @@ pub struct ThreadStartParams {
     pub multi_agent_mode: Option<MultiAgentMode>,
     #[ts(optional = nullable)]
     pub ephemeral: Option<bool>,
+    /// Materialize an empty persistent thread before responding to `thread/start`.
+    #[experimental("thread/start.persistOnStart")]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub persist_on_start: bool,
     /// Persisted thread history contract to use for this new thread.
     #[experimental("thread/start.historyMode")]
     #[ts(optional = nullable)]
@@ -187,6 +191,11 @@ pub struct MockExperimentalMethodResponse {
 #[ts(export_to = "v2/")]
 pub struct ThreadStartResponse {
     pub thread: Thread,
+    /// Confirms that the empty thread was persisted before this response.
+    /// Older servers omit this field, which clients interpret as `false`.
+    #[experimental("thread/start.persistedOnStart")]
+    #[serde(default)]
+    pub persisted_on_start: bool,
     pub model: String,
     pub model_provider: String,
     pub service_tier: Option<String>,
