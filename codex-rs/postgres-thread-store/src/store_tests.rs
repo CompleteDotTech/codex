@@ -100,13 +100,12 @@ fn describe_item(item: &RolloutItem) -> String {
 
 fn describe_thread(thread: &StoredThread) -> String {
     format!(
-        "{} preview {:?} name {:?} provider {} model {:?} archived {} section {:?} project {:?} \
+        "{} preview {:?} name {:?} provider {} archived {} section {:?} project {:?} \
          cwd {} source {:?} mode {:?} first {:?} approval {:?} history {}",
         thread.thread_id,
         thread.preview,
         thread.name,
         thread.model_provider,
-        thread.model,
         thread.archived_at.is_some(),
         thread.section.as_ref().map(|section| section.name.clone()),
         thread.project_id,
@@ -523,4 +522,32 @@ async fn real_postgres_thread_store() {
         })
         .collect();
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+
+    // The patched model is stored and read back (the local store rebuilds it from its files).
+    let again = ThreadId::new();
+    postgres
+        .create_thread(create_params(again, &provider, &cwd))
+        .await
+        .expect("create");
+    postgres
+        .persist_thread(again, PersistContext::Standard)
+        .await
+        .expect("persist");
+    let patched = postgres
+        .update_thread_metadata(UpdateThreadMetadataParams {
+            thread_id: again,
+            include_archived: false,
+            patch: ThreadMetadataPatch {
+                model: Some("test-model".to_string()),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect("patch")
+        .expect("thread");
+    assert_eq!(patched.model.as_deref(), Some("test-model"));
+    postgres
+        .delete_thread(DeleteThreadParams { thread_id: again })
+        .await
+        .expect("delete");
 }
