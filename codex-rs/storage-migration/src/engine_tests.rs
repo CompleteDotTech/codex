@@ -53,15 +53,17 @@ async fn connect(state: &Path, role: &str) -> Arc<PostgresPool> {
 }
 
 /// Leave the shared namespace with no migrated data and no run, as a fresh target would be.
-async fn reset_target(owner: &PostgresPool) {
-    let mut connection = owner.acquire().await.expect("owner connection");
+/// Project keys cannot be deleted by the runtime role; the live-test fixtures clear them before
+/// this test, and a rerun of the same source writes the same keys.
+async fn reset_target(pool: &PostgresPool) {
+    let mut connection = pool.acquire().await.expect("connection");
     for statement in [
-        "TRUNCATE codex_storage.storage_migration_runs CASCADE",
+        "DELETE FROM codex_storage.storage_migration_runs",
         "UPDATE codex_storage.storage_activation SET state = 'open', run_id = NULL",
-        "TRUNCATE codex_storage.threads CASCADE",
-        "TRUNCATE codex_storage.projects CASCADE",
-        "TRUNCATE codex_storage.project_idempotency_keys",
-        "DELETE FROM codex_storage.thread_sections WHERE id <> '01984de2-8f74-7c91-a3b2-5c5e937cf318'",
+        "DELETE FROM codex_storage.thread_spawn_edges",
+        "DELETE FROM codex_storage.threads",
+        "DELETE FROM codex_storage.projects",
+        "DELETE FROM codex_storage.thread_sections",
     ] {
         sqlx::query(statement)
             .execute(&mut *connection)
@@ -195,7 +197,6 @@ async fn real_postgres_catalog_migration() {
     bootstrap_codex_storage(&*connect(state, "migrator").await)
         .await
         .expect("bootstrap migration schema");
-    let owner = connect(state, "admin").await;
     let pool = connect(state, "runtime").await;
     let home = tempfile::tempdir().expect("source home");
     let threads = populate(home.path()).await;
@@ -203,7 +204,7 @@ async fn real_postgres_catalog_migration() {
     let source = SqliteSource::new(config.clone());
 
     // An interrupted run resumes from its checkpoints, and nobody else can take the store.
-    reset_target(&owner).await;
+    reset_target(&pool).await;
     let interrupted = Migrator::new(source.clone(), pool.clone())
         .with_batch_size(2)
         .with_batch_limit(3)
@@ -267,7 +268,7 @@ async fn real_postgres_catalog_migration() {
 
     // A second run on a populated target is refused, a changed source fails verification, and a
     // tampered row is caught.
-    reset_target(&owner).await;
+    reset_target(&pool).await;
     let first = Migrator::new(source.clone(), pool.clone())
         .import()
         .await
@@ -303,5 +304,5 @@ async fn real_postgres_catalog_migration() {
         matches!(changed, Err(MigrationError::SourceChanged)),
         "{changed:?}"
     );
-    reset_target(&owner).await;
+    reset_target(&pool).await;
 }
