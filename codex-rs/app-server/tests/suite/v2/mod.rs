@@ -99,6 +99,7 @@ mod plugin_reconcile;
 mod plugin_search;
 mod plugin_share;
 mod plugin_uninstall;
+mod postgres_storage;
 mod process_exec;
 mod projects;
 mod rate_limit_reset_credits;

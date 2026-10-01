@@ -2123,6 +2123,7 @@ dependencies = [
  "codex-network-proxy",
  "codex-otel",
  "codex-plugin",
+ "codex-postgres-runtime",
  "codex-prompts",
  "codex-protocol",
  "codex-queue-extension",
