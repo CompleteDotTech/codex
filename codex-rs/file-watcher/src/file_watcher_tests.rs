@@ -86,15 +86,16 @@ async fn throttled_receiver_flushes_pending_on_shutdown() {
     assert_eq!(closed, None);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn debounced_receiver_coalesces_each_event_batch() {
     let (tx, rx) = watch_channel();
     let mut debounced = DebouncedWatchReceiver::new(rx, TEST_THROTTLE_INTERVAL);
 
     tx.add_changed_paths(&[path("a")]).await;
-    let first = timeout(TEST_THROTTLE_INTERVAL * 2, debounced.recv())
-        .await
-        .expect("first emit timeout");
+    let (first, ()) = tokio::join!(debounced.recv(), async {
+        tokio::task::yield_now().await;
+        tokio::time::advance(TEST_THROTTLE_INTERVAL).await;
+    });
     assert_eq!(
         first,
         Some(FileWatcherEvent {
@@ -103,13 +104,19 @@ async fn debounced_receiver_coalesces_each_event_batch() {
     );
 
     tx.add_changed_paths(&[path("c")]).await;
-    let blocked = timeout(TEST_THROTTLE_INTERVAL / 2, debounced.recv()).await;
-    assert_eq!(blocked.is_err(), true);
+    let next = debounced.recv();
+    tokio::pin!(next);
+    tokio::select! {
+        biased;
+        event = &mut next => panic!("debounced event arrived early: {event:?}"),
+        () = async {
+            tokio::task::yield_now().await;
+            tokio::time::advance(TEST_THROTTLE_INTERVAL / 2).await;
+        } => {}
+    }
 
     tx.add_changed_paths(&[path("d")]).await;
-    let second = timeout(TEST_THROTTLE_INTERVAL * 2, debounced.recv())
-        .await
-        .expect("second emit timeout");
+    let (second, ()) = tokio::join!(next, tokio::time::advance(TEST_THROTTLE_INTERVAL));
     assert_eq!(
         second,
         Some(FileWatcherEvent {

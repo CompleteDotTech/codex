@@ -1,0 +1,26 @@
+[package]
+name = "codex-storage-candidate-preflight"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+codex-config = { workspace = true }
+codex-postgres-runtime = { workspace = true }
+codex-storage-authority = { workspace = true }
+
+[dev-dependencies]
+codex-keyring-store = { workspace = true }
+ed25519-dalek = { workspace = true }
+pretty_assertions = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+toml = { workspace = true }

@@ -5,15 +5,9 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
-# Keep this list focused on first-party Rust targets whose compile surface can
-# differ when `cfg(not(debug_assertions))` becomes active.
-#
-# Exclude the experimental `v8-poc` target because it pulls in expensive V8
-# build machinery that is unrelated to the release-only Rust regression this
-# workflow is meant to catch.
-# The normal test job covers the Wine smoke test; omit its downloaded runtime
-# and cross-compile from this build-only release sweep.
-printf '%s\n' \
-  "//codex-rs/..." \
-  "-//codex-rs/core/tests/remote_env_windows:smoke-test" \
-  "-//codex-rs/v8-poc:all"
+# Compile production Rust crates with release assertions disabled. Test
+# executables are covered by the test matrix; building every test binary here
+# exhausts the hosted Linux runner before this release check can finish.
+# Exclude the experimental V8 proof of concept from this sweep.
+./.github/scripts/run-bazel-query-ci.sh --output=label -- \
+  'attr("testonly", "^0$", kind("rust_(binary|library|proc_macro) rule", //codex-rs/... except //codex-rs/v8-poc/...))'

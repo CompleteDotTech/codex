@@ -31,7 +31,22 @@ config_setting(
 
 alias(
     name = "v8_150_4_0_x86_64_pc_windows_msvc",
-    actual = "@rusty_v8_150_4_0_x86_64_pc_windows_msvc_archive//file",
+    actual = ":v8_150_4_0_x86_64_pc_windows_msvc_without_allocator_shim",
+)
+
+# The published archive's static UCRT allocator shim conflicts with MSVC /MD
+# consumers. Remove that member from a Bazel output; keep the verified input immutable.
+genrule(
+    name = "v8_150_4_0_x86_64_pc_windows_msvc_without_allocator_shim",
+    srcs = ["@rusty_v8_150_4_0_x86_64_pc_windows_msvc_archive//file"],
+    outs = ["rusty_v8_150_4_0_x86_64_pc_windows_msvc_without_allocator_shim.lib"],
+    cmd = "\"$(execpath @python_3_12//:python3)\" -c \"import gzip,shutil;shutil.copyfileobj(gzip.open(r'$(location @rusty_v8_150_4_0_x86_64_pc_windows_msvc_archive//file)', 'rb'),open(r'$@','wb'))\" && \"$(location @llvm//tools:llvm-ar)\" d \"$@\" obj/third_party/partition_alloc/src/partition_alloc/allocator_shim/allocator_shim_win_static.obj",
+    cmd_bat = "call \"$(execpath @python_3_12//:python3)\" -c \"import gzip,shutil;shutil.copyfileobj(gzip.open(r'$(location @rusty_v8_150_4_0_x86_64_pc_windows_msvc_archive//file)', 'rb'),open(r'$@','wb'))\" && \"$(location @llvm//tools:llvm-ar)\" d \"$@\" obj/third_party/partition_alloc/src/partition_alloc/allocator_shim/allocator_shim_win_static.obj",
+    tools = [
+        "@llvm//tools:llvm-ar",
+        "@python_3_12//:files",
+        "@python_3_12//:python3",
+    ],
 )
 
 alias(

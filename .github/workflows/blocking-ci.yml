@@ -7,6 +7,12 @@ on:
   push:
     branches: [main]
 
+# A new PR head supersedes its previous checks. Give main pushes their own
+# groups so every landed commit retains its complete required check family.
+concurrency:
+  group: blocking-ci::${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   changed:
     name: Select checks

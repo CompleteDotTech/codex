@@ -735,7 +735,12 @@ async fn delete_current_thread_navigates_only_after_success() -> Result<()> {
         let mut side_config = app.config.clone();
         side_config.ephemeral = true;
         let side = server
-            .fork_side_thread(&app.local_settings, side_config.clone(), thread_id)
+            .fork_side_thread(
+                &app.local_settings,
+                side_config.clone(),
+                thread_id,
+                /*selected_profile*/ None,
+            )
             .await?;
         let side_id = side.session.thread_id;
         app.side_threads
@@ -745,7 +750,12 @@ async fn delete_current_thread_navigates_only_after_success() -> Result<()> {
             side_config.cwd = side_config.cwd.join("failure");
             assert!(
                 server
-                    .fork_side_thread(&app.local_settings, side_config, thread_id)
+                    .fork_side_thread(
+                        &app.local_settings,
+                        side_config,
+                        thread_id,
+                        /*selected_profile*/ None
+                    )
                     .await
                     .is_err()
             );
@@ -996,13 +1006,22 @@ async fn archive_current_thread_reports_success_only_after_archiving() -> Result
 #[tokio::test]
 async fn archive_current_thread_returns_shared_servers_to_agents() -> Result<()> {
     let endpoint = crate::resolve_remote_addr("ws://127.0.0.1:4500")?;
-    for target in [
+    for (target, attachment, side_exists) in [
         AppServerTarget::LocalDaemon {
             allow_embedded_fallback: true,
             endpoint: endpoint.clone(),
         },
         AppServerTarget::Remote { endpoint },
-    ] {
+    ]
+    .into_iter()
+    .flat_map(|target| {
+        [
+            (ThreadEventAttachment::Live, true),
+            (ThreadEventAttachment::ReplayOnly, true),
+            (ThreadEventAttachment::ReplayOnly, false),
+        ]
+        .map(|(attachment, side_exists)| (target.clone(), attachment, side_exists))
+    }) {
         let (mut app, _codex_home) = make_history_test_app().await?;
         let thread_id =
             create_history_rollout(&app.config, ThreadHistoryMode::Legacy, "archive me")?;
@@ -1020,12 +1039,26 @@ async fn archive_current_thread_returns_shared_servers_to_agents() -> Result<()>
                 crate::app_server_session::ResumeModelSettings::RestoreFromThread,
             )
             .await?;
-        let mut side_config = app.config.clone();
-        side_config.ephemeral = true;
-        let side = server
-            .fork_side_thread(&app.local_settings, side_config, thread_id)
-            .await?;
-        let side_id = side.session.thread_id;
+        let side_id = if side_exists {
+            let mut side_config = app.config.clone();
+            side_config.ephemeral = true;
+            server
+                .fork_side_thread(
+                    &app.local_settings,
+                    side_config,
+                    thread_id,
+                    /*selected_profile*/ None,
+                )
+                .await?
+                .session
+                .thread_id
+        } else {
+            // The saved side transcript outlived its ephemeral server thread.
+            ThreadId::new()
+        };
+        if attachment == ThreadEventAttachment::ReplayOnly {
+            app.ensure_thread_channel(side_id).mark_replay_only();
+        }
         app.side_threads
             .insert(side_id, SideThreadState::new(thread_id));
         app.app_server_target = target;
@@ -1068,6 +1101,10 @@ async fn archive_current_thread_returns_shared_servers_to_agents() -> Result<()>
             recorded_params(&requests, "thread/unsubscribe"),
             vec![serde_json::json!({"threadId": side_id.to_string()})]
         );
+        assert_eq!(
+            recorded_params(&requests, "turn/interrupt"),
+            vec![serde_json::json!({"threadId": side_id.to_string(), "turnId": ""})]
+        );
         assert!(app.chat_widget.composer_is_empty());
         assert_eq!(
             recorded_params(&requests, "thread/archive"),
@@ -1092,9 +1129,6 @@ async fn local_daemon_registers_approval_gated_mcp_tools_for_both_start_paths() 
     let codex_home = tempdir()?;
     app.config.codex_home = codex_home.path().to_path_buf().abs();
     app.config.sqlite = SqliteConfig::new_for_testing(codex_home.path().abs());
-    app.config
-        .web_search_mode
-        .set(codex_protocol::config_types::WebSearchMode::Live)?;
     std::fs::write(
         codex_home.path().join("config.toml"),
         "web_search = \"disabled\"\n",
@@ -1164,7 +1198,7 @@ async fn local_daemon_registers_approval_gated_mcp_tools_for_both_start_paths() 
     assert_eq!(starts.len(), 2);
     for params in &starts {
         assert_eq!(params["dynamicTools"], serde_json::Value::Null);
-        assert_eq!(params["config"]["web_search"], "live");
+        assert_eq!(params["config"].get("web_search"), None);
         let server = &params["config"]["mcp_servers.codex_tui"];
         assert!(
             server["url"]
@@ -1361,20 +1395,29 @@ async fn local_daemon_registers_approval_gated_mcp_tools_for_both_start_paths() 
         )
         .send(),
     );
-    let registration = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), events.recv())
-        .await?
-        .expect("fork registration event");
-    let AppEvent::DynamicToolThreadStarted { thread, .. } = &registration else {
-        panic!("expected the MCP fork to register")
-    };
-    let forked_thread_id = ThreadId::from_string(&thread.id)?;
-    let expected_thread = thread.clone();
+    let mut registered_ids = Vec::new();
     let mut tui = crate::tui::test_support::make_test_tui()?;
-    Box::pin(app.handle_event(&mut tui, &mut app_server, registration)).await?;
-    assert_eq!(
-        app.agents_overview.threads[&forked_thread_id],
-        Some(expected_thread)
-    );
+    for _ in 0..2 {
+        let registration = tokio::time::timeout(Duration::from_secs(/*secs*/ 5), events.recv())
+            .await?
+            .expect("fork registration event");
+        let AppEvent::DynamicToolThreadStarted { thread, .. } = &registration else {
+            panic!("expected the MCP fork to register")
+        };
+        let forked_thread_id = ThreadId::from_string(&thread.id)?;
+        let expected_thread = thread.clone();
+        if registered_ids.is_empty() {
+            assert!(recorded_params(&requests, "thread/fork").is_empty());
+        }
+        Box::pin(app.handle_event(&mut tui, &mut app_server, registration)).await?;
+        assert_eq!(
+            app.agents_overview.threads[&forked_thread_id],
+            Some(expected_thread)
+        );
+        registered_ids.push(forked_thread_id);
+    }
+    assert_eq!(registered_ids[0], fork_source);
+    let forked_thread_id = registered_ids[1];
     let forked = forked.await??;
     assert!(forked.status().is_success());
     assert!(forked.text().await?.contains(&forked_thread_id.to_string()));
@@ -2832,6 +2875,7 @@ async fn paginated_workflows_never_request_full_thread_history() -> Result<()> {
         &crate::local_settings::LocalSettings::from(&side_config),
         side_config,
         paginated_thread_id,
+        /*selected_profile*/ None,
     ))
     .await?;
 

@@ -35,7 +35,31 @@ IDENTITY = {
 
 class ForkPackageIdentityTest(unittest.TestCase):
     def test_source_identity_uses_committed_ancestor_and_fork_head(self) -> None:
-        repository = Path(__file__).resolve().parents[2]
+        fixture_env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
+        fixture_env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+        self.enterContext(patch.dict(os.environ, fixture_env, clear=True))
+        repository = Path(self.temp.name) / "source"
+        repository.mkdir()
+        subprocess.check_call(["git", "init", "--initial-branch=main", str(repository)])
+        for key, value in {
+            "user.name": "Package identity fixture",
+            "user.email": "fixture@example.invalid",
+            "commit.gpgsign": "false",
+            "core.hooksPath": str(repository / "no-hooks"),
+            "core.autocrlf": "false",
+        }.items():
+            subprocess.check_call(["git", "-C", str(repository), "config", key, value])
+        source = repository / "source.txt"
+        for contents in ("upstream\n", "fork\n"):
+            source.write_text(contents, encoding="utf-8")
+            subprocess.check_call(["git", "-C", str(repository), "add", "source.txt"])
+            subprocess.check_call(
+                ["git", "-C", str(repository), "commit", "-m", contents.strip()]
+            )
         upstream = subprocess.check_output(
             ["git", "-C", str(repository), "rev-parse", "HEAD^"], text=True
         ).strip()
@@ -56,15 +80,11 @@ class ForkPackageIdentityTest(unittest.TestCase):
         )
         from codex_package import fork_identity
 
-        original_git = fork_identity.git
-        with patch.object(
-            fork_identity,
-            "git",
-            side_effect=lambda *args: (
-                b"" if args[0] == "status" else original_git(*args)
-            ),
-        ):
+        with patch.object(fork_identity, "REPO_ROOT", repository):
             identity = source_identity(upstream, "preview")
+        self.assertEqual(identity["declaredBaseCommit"], upstream)
+        self.assertNotEqual(upstream, fork)
+        self.assertTrue(patchset)
         self.assertEqual(identity["forkCommit"], fork)
         self.assertEqual(
             identity["patchsetSha256"], "sha256:" + hashlib.sha256(patchset).hexdigest()
