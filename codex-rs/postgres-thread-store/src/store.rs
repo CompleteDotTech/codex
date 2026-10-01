@@ -366,8 +366,8 @@ impl ThreadStore for PostgresThreadStore {
             let thread_id = params.thread_id;
             let mut live = self.live.lock().await;
             if live.contains_key(&thread_id) {
-                return Err(ThreadStoreError::Conflict {
-                    message: format!("thread {thread_id} already has an active writer"),
+                return Err(ThreadStoreError::InvalidRequest {
+                    message: format!("thread {thread_id} already has a live writer"),
                 });
             }
             live.insert(
@@ -415,8 +415,8 @@ impl ThreadStore for PostgresThreadStore {
         Box::pin(async move {
             let thread_id = params.thread_id;
             if self.live.lock().await.contains_key(&thread_id) {
-                return Err(ThreadStoreError::Conflict {
-                    message: format!("thread {thread_id} already has an active writer"),
+                return Err(ThreadStoreError::InvalidRequest {
+                    message: format!("thread {thread_id} already has a live writer"),
                 });
             }
             let metadata = self
@@ -455,8 +455,8 @@ impl ThreadStore for PostgresThreadStore {
             );
             let mut live_threads = self.live.lock().await;
             if live_threads.contains_key(&thread_id) {
-                return Err(ThreadStoreError::Conflict {
-                    message: format!("thread {thread_id} already has an active writer"),
+                return Err(ThreadStoreError::InvalidRequest {
+                    message: format!("thread {thread_id} already has a live writer"),
                 });
             }
             live_threads.insert(thread_id, Arc::new(Mutex::new(live)));

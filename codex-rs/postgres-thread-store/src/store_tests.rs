@@ -509,7 +509,16 @@ async fn real_postgres_thread_store() {
     let expected = scenario(&local, &provider, &cwd, ids).await;
     let actual = scenario(&postgres, &provider, &cwd, ids).await;
     assert_eq!(actual.len(), expected.len());
-    for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
-        assert_eq!((index, actual), (index, expected));
-    }
+    // Only the backend name inside a message may differ.
+    let normalize = |text: &String| text.replace("live local writer", "live writer");
+    let mismatches: Vec<String> = actual
+        .iter()
+        .zip(&expected)
+        .enumerate()
+        .filter(|(_, (actual, expected))| normalize(actual) != normalize(expected))
+        .map(|(index, (actual, expected))| {
+            format!("[{index}]\n  postgres: {actual}\n  local:    {expected}")
+        })
+        .collect();
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }
