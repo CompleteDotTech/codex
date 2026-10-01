@@ -235,7 +235,7 @@ MEMORY_EDGES = {
             "delete": "DELETE FROM stage1_outputs",
         },
         "memories/write/src/runtime.rs": {
-            "writer_selection": ".memories_for_version(self.version)",
+            "writer_selection": ".memory_store_for_version(self.version)",
         },
         "memories/write/src/phase2.rs": {
             "file_materialization": "sync_rollout_summaries_from_memories(root, raw_memories, raw_memory_count)",
