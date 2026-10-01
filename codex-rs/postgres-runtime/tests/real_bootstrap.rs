@@ -20,6 +20,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[path = "compatibility/real_compatibility_tests.rs"]
+mod real_compatibility_cases;
+
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
     let receipt: Value = serde_json::from_slice(
         &std::fs::read(state.join("receipt.json")).expect("read isolated PostgreSQL receipt"),
@@ -875,4 +878,5 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
             .await,
         compatible
     );
+    real_compatibility_cases::run(&migrator_a, state).await;
 }
