@@ -500,7 +500,7 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
         .bind(1_700_000_000_789_i64)
         .bind(cwd)
         .bind(1_700_000_000_i64)
-        .bind("section-without-catalog-yet")
+        .bind("01984de2-8f74-7c91-a3b2-5c5e937cf318")
         .bind("project-without-catalog-yet")
         .fetch_one(&mut *connection)
         .await
@@ -514,7 +514,7 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
             1_700_000_000_456,
             1_700_000_000_789,
             Some(1_700_000_000),
-            Some("section-without-catalog-yet".to_string()),
+            Some("01984de2-8f74-7c91-a3b2-5c5e937cf318".to_string()),
             Some("project-without-catalog-yet".to_string())
         )
     );
@@ -578,6 +578,7 @@ async fn real_v4_upgrade_to_section_catalog_rejects_orphans_and_preserves_join()
     v4.run_direct(/*target*/ None, &mut *transaction, /*skip*/ false)
         .await
         .expect("materialize exact v4 migration prefix");
+    harden_metadata_grants(&mut transaction).await;
     transaction.commit().await.expect("commit v4 fixture");
     drop(connection);
     let old = ClientCapabilities {
