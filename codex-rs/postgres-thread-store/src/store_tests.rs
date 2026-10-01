@@ -550,4 +550,126 @@ async fn real_postgres_thread_store() {
         .delete_thread(DeleteThreadParams { thread_id: again })
         .await
         .expect("delete");
+
+    // A second host with its own connections and no shared files sees the same thread.
+    let host_a = PostgresThreadStore::new(connect(state, "runtime").await, provider.clone());
+    let host_b = PostgresThreadStore::new(connect(state, "runtime").await, provider.clone());
+    let shared = ThreadId::new();
+    host_a
+        .create_thread(create_params(shared, &provider, &cwd))
+        .await
+        .expect("create on host a");
+    host_a
+        .append_items(AppendThreadItemsParams {
+            thread_id: shared,
+            items: vec![user_message("from host a")],
+        })
+        .await
+        .expect("append on host a");
+    host_a
+        .persist_thread(shared, PersistContext::Standard)
+        .await
+        .expect("persist on host a");
+    host_a.shutdown_thread(shared).await.expect("close host a");
+    let seen = host_b
+        .load_history(LoadThreadHistoryParams {
+            thread_id: shared,
+            include_archived: false,
+        })
+        .await
+        .expect("host b reads host a history");
+    assert_eq!(seen.items.len(), 2);
+    let listed = host_b
+        .list_threads(ListThreadsParams {
+            page_size: 10,
+            cursor: None,
+            sort_key: ThreadSortKey::UpdatedAt,
+            sort_direction: SortDirection::Desc,
+            allowed_sources: Vec::new(),
+            model_providers: Some(vec![provider.clone()]),
+            cwd_filters: None,
+            section: None,
+            project_id: None,
+            archived: false,
+            search_term: None,
+            relation_filter: None,
+            use_state_db_only: true,
+        })
+        .await
+        .expect("host b lists");
+    assert!(listed.items.iter().any(|thread| thread.thread_id == shared));
+    assert!(
+        listed
+            .items
+            .iter()
+            .all(|thread| thread.rollout_path.is_none())
+    );
+
+    // Two hosts holding the same thread open cannot interleave: the one that fell behind is
+    // refused, and what the other wrote stays intact.
+    let metadata = ThreadPersistenceMetadata {
+        cwd: Some(cwd.clone()),
+        model_provider: provider.clone(),
+        memory_mode: ThreadMemoryMode::Enabled,
+    };
+    let reopen = || ResumeThreadParams {
+        thread_id: shared,
+        rollout_path: None,
+        history: None,
+        history_revision: None,
+        include_archived: false,
+        metadata: metadata.clone(),
+    };
+    host_a
+        .resume_thread(reopen())
+        .await
+        .expect("reopen on host a");
+    host_b
+        .resume_thread(reopen())
+        .await
+        .expect("reopen on host b");
+    host_a
+        .append_items(AppendThreadItemsParams {
+            thread_id: shared,
+            items: vec![user_message("host a continues")],
+        })
+        .await
+        .expect("host a appends");
+    let stale = host_b
+        .append_items(AppendThreadItemsParams {
+            thread_id: shared,
+            items: vec![user_message("host b is behind")],
+        })
+        .await;
+    assert!(
+        matches!(stale, Err(ThreadStoreError::Conflict { .. })),
+        "a stale writer must be refused: {stale:?}"
+    );
+    host_b.discard_thread(shared).await.expect("discard host b");
+    host_a
+        .shutdown_thread(shared)
+        .await
+        .expect("close host a again");
+    let final_history = host_b
+        .load_history(LoadThreadHistoryParams {
+            thread_id: shared,
+            include_archived: false,
+        })
+        .await
+        .expect("final history");
+    assert_eq!(
+        final_history
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                RolloutItem::EventMsg(EventMsg::UserMessage(event)) => Some(event.message.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec!["from host a".to_string(), "host a continues".to_string()]
+    );
+    host_a
+        .delete_thread(DeleteThreadParams { thread_id: shared })
+        .await
+        .expect("delete shared thread");
 }
