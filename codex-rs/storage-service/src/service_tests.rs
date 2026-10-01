@@ -283,6 +283,17 @@ async fn real_postgres_storage_service() {
     let active = service.activate(operation).await.expect("activate");
     assert_eq!(active.state, OperationState::Active);
     assert_eq!(service.activate(operation).await.expect("again"), active);
+    // The local files stay in place, and a record of them was kept before the switch.
+    let manifest =
+        codex_storage_migration::source_manifest_path(home.path(), active.run_id.expect("run id"));
+    let recorded: codex_storage_migration::SourceManifest =
+        serde_json::from_slice(&std::fs::read(manifest).expect("manifest")).expect("json");
+    assert!(
+        recorded
+            .files
+            .iter()
+            .any(|file| file.name.ends_with(".sqlite") && file.bytes > 0)
+    );
     let status = service.status(true).await;
     assert_eq!(status.active_backend, BackendName::RemotePostgres);
     assert_eq!(status.authority, AuthorityLabel::Remote);

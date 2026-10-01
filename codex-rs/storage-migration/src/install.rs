@@ -56,7 +56,7 @@ fn corrupt(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_string())
 }
 
-fn sha256_file(path: &Path) -> io::Result<String> {
+pub(crate) fn sha256_file(path: &Path) -> io::Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 1 << 16];
@@ -74,7 +74,7 @@ fn sha256_file(path: &Path) -> io::Result<String> {
         .collect())
 }
 
-fn directory_totals(path: &Path) -> io::Result<(u64, u64)> {
+pub(crate) fn directory_totals(path: &Path) -> io::Result<(u64, u64)> {
     let mut entries = 0;
     let mut bytes = 0;
     let mut pending = vec![path.to_path_buf()];

@@ -22,6 +22,7 @@ mod return_cutover;
 mod rollouts;
 mod sections;
 mod source;
+mod source_manifest;
 mod sqlite_target;
 mod threads;
 
@@ -46,4 +47,7 @@ pub use install::read_plan;
 pub use install::verify_backup;
 pub use return_cutover::ReturnCutover;
 pub use source::SqliteSource;
+pub use source_manifest::SourceManifest;
+pub use source_manifest::source_manifest_path;
+pub use source_manifest::write_source_manifest;
 pub use sqlite_target::SqliteTarget;

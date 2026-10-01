@@ -294,6 +294,9 @@ impl StorageService {
         let run_id = record
             .run_id
             .ok_or(StorageError(BlockerCode::OperationConflict))?;
+        // What stays behind is recorded before the home stops being authoritative.
+        codex_storage_migration::write_source_manifest(&self.inputs.codex_home, run_id)
+            .map_err(internal)?;
         let storage = self.connect().await?;
         self.save(&mut record, OperationState::Committing)?;
         let cutover = Cutover::new(self.inputs.codex_home.clone(), self.migrator(&storage));
