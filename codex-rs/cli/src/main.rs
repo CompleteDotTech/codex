@@ -74,6 +74,7 @@ mod remote_control_cmd;
 #[cfg(target_os = "windows")]
 mod sandbox_setup;
 mod state_db_recovery;
+mod storage_cmd;
 #[cfg(not(windows))]
 mod wsl_paths;
 
@@ -83,6 +84,7 @@ use crate::plugin_cmd::PluginCli;
 use crate::plugin_cmd::PluginSubcommand;
 use crate::queue_cmd::QueueCommand;
 use crate::remote_control_cmd::RemoteControlCommand;
+use crate::storage_cmd::StorageCommand;
 use doctor::DoctorCommand;
 use state_db_recovery as local_state_db;
 
@@ -143,6 +145,9 @@ struct MultitoolCli {
 enum Subcommand {
     /// Browse all agent sessions on the shared local app-server daemon.
     Agents(AgentsCommand),
+
+    /// Inspect, migrate and recover where Codex keeps its history.
+    Storage(StorageCommand),
 
     /// Internal: forward a local TCP socket through an HTTP/3 CONNECT proxy.
     #[clap(hide = true)]
@@ -1476,6 +1481,9 @@ async fn cli_main(
             .await?;
             println!("{output}");
         }
+        Some(Subcommand::Storage(cmd)) => {
+            storage_cmd::run_storage_command(cmd, root_config_overrides.clone()).await?;
+        }
         Some(Subcommand::Queue(cmd)) => {
             let output = queue_cmd::run_queue_command(
                 cmd,
@@ -2247,6 +2255,7 @@ fn unsupported_subcommand_name_for_strict_config(
         }
         Some(Subcommand::RemoteControl(remote_control)) => Some(remote_control.subcommand_name()),
         Some(Subcommand::Mcp(_)) => Some("mcp"),
+        Some(Subcommand::Storage(_)) => Some("storage"),
         Some(Subcommand::Plugin(_)) => Some("plugin"),
         Some(Subcommand::MigrateRollouts(_)) => Some("migrate-rollouts"),
         #[cfg(any(target_os = "macos", target_os = "windows"))]

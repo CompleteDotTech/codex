@@ -6,7 +6,8 @@ use std::env;
 use std::fmt;
 use zeroize::Zeroizing;
 
-const KEYRING_SERVICE: &str = "codex-postgres-storage";
+/// The keyring service that holds every credential a storage profile refers to.
+pub const KEYRING_SERVICE: &str = "codex-postgres-storage";
 const MAX_CREDENTIAL_BYTES: usize = 8192;
 
 /// A credential held only for a connection attempt and zeroed on drop.

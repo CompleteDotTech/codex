@@ -19,6 +19,7 @@ mod credential_resolution;
 mod cutover;
 pub use credential_resolution::CredentialResolutionError;
 pub use credential_resolution::HostCredentialResolver;
+pub use credential_resolution::KEYRING_SERVICE;
 pub use credential_resolution::ResolvedCredential;
 pub use cutover::AuthorityState;
 pub use cutover::CutoverIntent;
