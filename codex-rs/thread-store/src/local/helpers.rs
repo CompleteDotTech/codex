@@ -68,6 +68,17 @@ pub(super) fn rollout_path_is_archived(codex_home: &Path, path: &Path) -> bool {
             .any(|component| component.as_os_str() == OsStr::new(ARCHIVED_SESSIONS_SUBDIR))
 }
 
+pub(super) fn ensure_unambiguous_rollout(path: &Path) -> ThreadStoreResult<()> {
+    codex_rollout::ensure_single_rollout_representation(path).map_err(|err| match err.kind() {
+        std::io::ErrorKind::AlreadyExists => ThreadStoreError::Conflict {
+            message: err.to_string(),
+        },
+        _ => ThreadStoreError::Internal {
+            message: format!("failed to inspect rollout representations: {err}"),
+        },
+    })
+}
+
 /// Returns rollout files whose session metadata belongs to `thread_id`.
 pub(super) async fn owned_rollout_paths(
     store: &LocalThreadStore,
@@ -75,8 +86,13 @@ pub(super) async fn owned_rollout_paths(
 ) -> ThreadStoreResult<Vec<PathBuf>> {
     RolloutReferenceIndex::scan(store.config.codex_home.as_path())
         .await
-        .map_err(|err| ThreadStoreError::Internal {
-            message: format!("failed to scan thread rollout files: {err}"),
+        .map_err(|err| match err.kind() {
+            std::io::ErrorKind::AlreadyExists => ThreadStoreError::Conflict {
+                message: err.to_string(),
+            },
+            _ => ThreadStoreError::Internal {
+                message: format!("failed to scan thread rollout files: {err}"),
+            },
         })
         .map(|index| owned_rollout_paths_from_index(&index, thread_id))
 }

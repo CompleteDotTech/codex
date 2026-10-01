@@ -141,6 +141,22 @@ Multi-file rollback and durable ownership-checked recovery remain separate
 requirements; these fixtures do not establish a cross-store transaction.
 Cross-volume moves fail without copy fallback and preserve the source.
 
+The native `compressed_rollout_survives_archive_and_unarchive` fixture starts
+with a compressed-only canonical file and exercises local archive and unarchive
+through `ThreadStore`. It compares the exact compressed bytes, full returned
+history, and SQLite path/archive state at both transitions. This covers one
+cold-file lifecycle; the authoritative choice and reconciliation of divergent
+plain/compressed siblings remain unresolved for capture.
+
+Native append/resume/archive/unarchive now refuse simultaneous plain and
+compressed regular-file siblings; resume and lifecycle moves check under their
+existing writer locks. Fixtures use divergent valid histories and verify both
+byte streams and SQLite metadata survive refusal. Materialization also refuses
+a plain file published during compressed decode, before removing the compressed
+source. Readers and directory listings still prefer plain when both exist, so
+capture must inventory both siblings, identify their provenance, and reconcile
+them explicitly.
+
 The remaining #2/#11 inventory must trace every app-server/TUI/exec/daemon read
 entry point, file-backed attachment implementation, ephemeral sessions (which
 have no durable rollout to capture), caller-supplied history, memory files,

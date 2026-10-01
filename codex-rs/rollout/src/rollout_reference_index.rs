@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::collections::hash_map::Entry;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
@@ -13,7 +12,7 @@ use codex_protocol::protocol::HistoryPosition;
 
 use crate::ARCHIVED_SESSIONS_SUBDIR;
 use crate::SESSIONS_SUBDIR;
-use crate::compression::RolloutFile;
+use crate::compression::parse_rollout_file_name;
 use crate::rollout_file_name::RolloutFileName;
 
 /// Direct history-base edges discovered from local rollout metadata.
@@ -60,7 +59,8 @@ impl RolloutReferenceIndex {
 
     /// Scans unarchived files whose canonical filenames belong to the requested threads.
     ///
-    /// Skips unrelated rollout contents, including compressed files. Metadata still determines
+    /// Skips unrelated rollout contents. Collision detection is limited to canonical filenames
+    /// belonging to the requested threads in the active collection. Metadata still determines
     /// ownership among the candidates. Reference counts are partial and must not be used to
     /// decide whether a rollout can be deleted or compressed.
     pub async fn scan_unarchived_threads(
@@ -75,7 +75,8 @@ impl RolloutReferenceIndex {
         mut stack: Vec<PathBuf>,
         thread_ids: Option<&HashSet<ThreadId>>,
     ) -> io::Result<Self> {
-        let mut rollouts_by_id = HashMap::new();
+        let mut seen_rollout_ids = HashSet::new();
+        let mut candidates = Vec::new();
         while let Some(directory) = stack.pop() {
             let mut entries = match tokio::fs::read_dir(directory.as_path()).await {
                 Ok(entries) => entries,
@@ -95,27 +96,41 @@ impl RolloutReferenceIndex {
                 if !file_type.is_file() {
                     continue;
                 }
-                let Some(rollout_file) = RolloutFile::from_path(path) else {
-                    continue;
-                };
-                let Some(file_name) = RolloutFileName::parse(rollout_file.plain_file_name()) else {
+                let Some(file_name) = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(parse_rollout_file_name)
+                    .and_then(RolloutFileName::parse)
+                else {
                     continue;
                 };
                 if thread_ids.is_some_and(|ids| !ids.contains(&file_name.thread_id())) {
                     continue;
                 }
                 let rollout_id = file_name.rollout_id();
-                let Ok(meta) = crate::read_session_meta_line(rollout_file.path()).await else {
-                    continue;
-                };
-                if let Entry::Vacant(entry) = rollouts_by_id.entry(rollout_id) {
-                    entry.insert(IndexedRollout {
-                        thread_id: meta.meta.id,
-                        path: rollout_file.into_path(),
-                        history_base: meta.meta.history_base,
-                    });
+                if !seen_rollout_ids.insert(rollout_id) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!("multiple physical files for rollout {rollout_id}"),
+                    ));
                 }
+                candidates.push((rollout_id, path));
             }
+        }
+
+        let mut rollouts_by_id = HashMap::new();
+        for (rollout_id, path) in candidates {
+            let Ok(meta) = crate::read_session_meta_line(path.as_path()).await else {
+                continue;
+            };
+            rollouts_by_id.insert(
+                rollout_id,
+                IndexedRollout {
+                    thread_id: meta.meta.id,
+                    path,
+                    history_base: meta.meta.history_base,
+                },
+            );
         }
 
         let mut reference_counts_by_rollout = HashMap::new();

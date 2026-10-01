@@ -52,29 +52,57 @@ async fn scans_active_archived_and_compressed_history_bases() -> anyhow::Result<
 }
 
 #[tokio::test]
-async fn active_duplicate_wins_without_double_counting() -> anyhow::Result<()> {
+async fn active_archive_duplicate_is_rejected_without_changing_files() -> anyhow::Result<()> {
     let home = TempDir::new()?;
     let active_source_id = thread_id(Uuid::from_u128(8))?;
     let archived_source_id = thread_id(Uuid::from_u128(9))?;
     let child_uuid = Uuid::from_u128(10);
     let child_id = thread_id(Uuid::from_u128(10))?;
     let active_base = history_position(active_source_id);
+    let active_path = active_rollout_path(home.path(), child_uuid);
+    let archived_path = archived_rollout_path(home.path(), child_uuid);
+    write_rollout(active_path.clone(), child_id, Some(active_base))?;
     write_rollout(
-        active_rollout_path(home.path(), child_uuid),
-        child_id,
-        Some(active_base),
-    )?;
-    write_rollout(
-        archived_rollout_path(home.path(), child_uuid),
+        archived_path.clone(),
         child_id,
         Some(history_position(archived_source_id)),
     )?;
 
-    let index = RolloutReferenceIndex::scan(home.path()).await?;
+    let active_before = fs::read(&active_path)?;
+    let archived_before = fs::read(&archived_path)?;
+    let error = RolloutReferenceIndex::scan(home.path()).await.unwrap_err();
 
-    assert_eq!(index.history_base(child_id), Some(&active_base));
-    assert_eq!(index.reference_count(active_source_id), 1);
-    assert_eq!(index.reference_count(archived_source_id), 0);
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(fs::read(&active_path)?, active_before);
+    assert_eq!(fs::read(&archived_path)?, archived_before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn plain_compressed_sibling_is_rejected_before_reading_invalid_header() -> anyhow::Result<()>
+{
+    let home = TempDir::new()?;
+    let uuid = Uuid::from_u128(19);
+    let thread_id = thread_id(uuid)?;
+    let plain_path = active_rollout_path(home.path(), uuid);
+    write_rollout(plain_path.clone(), thread_id, /*history_base*/ None)?;
+    let compressed_path = crate::compression::compressed_rollout_path(&plain_path);
+    fs::write(&compressed_path, b"invalid compressed payload")?;
+    let plain_before = fs::read(&plain_path)?;
+    let compressed_before = fs::read(&compressed_path)?;
+
+    let error = RolloutReferenceIndex::scan(home.path()).await.unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        RolloutReferenceIndex::scan_unarchived_threads(home.path(), &[thread_id])
+            .await
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(fs::read(&plain_path)?, plain_before);
+    assert_eq!(fs::read(&compressed_path)?, compressed_before);
     Ok(())
 }
 
@@ -170,13 +198,6 @@ async fn filtered_unarchived_scan_includes_reverts_and_requested_descendants() -
 
     write_rollout(original_path.clone(), owner_id, /*history_base*/ None)?;
     compress_now(&original_path)?;
-    write_rollout(
-        replacement_path.clone(),
-        owner_id,
-        /*history_base*/ None,
-    )?;
-    // A leftover compressed sibling must not supersede the plain rollout.
-    compress_now(&replacement_path)?;
     write_rollout(
         replacement_path.clone(),
         owner_id,
