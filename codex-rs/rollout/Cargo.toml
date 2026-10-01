@@ -17,6 +17,7 @@ path = "src/bin/codex_rollout_header_preview.rs"
 workspace = true
 
 [dependencies]
+codex-utils-process = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 codex-extension-items = { workspace = true }

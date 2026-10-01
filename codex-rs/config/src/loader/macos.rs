@@ -226,6 +226,9 @@ fn parse_managed_config_base64(
     let source_name =
         format!("{MANAGED_PREFERENCES_APPLICATION_ID}:{MANAGED_PREFERENCES_CONFIG_KEY}");
     let parsed = toml::from_str::<TomlValue>(&raw_toml).map_err(|err| {
+        if let Some(redacted) = crate::storage_candidate::redacted_parse_error(&raw_toml) {
+            return redacted;
+        }
         tracing::error!("Failed to parse managed config TOML: {err}");
         if strict_config {
             let config_error = config_error_from_toml_for_source(

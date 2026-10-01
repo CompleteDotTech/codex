@@ -141,7 +141,10 @@ pub(super) fn move_rollout_noclobber(
     destination: &Path,
     codex_home: &Path,
 ) -> std::io::Result<()> {
-    let canonical_home = std::fs::canonicalize(codex_home)?;
+    let canonical_sessions =
+        std::fs::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
+    let canonical_archived =
+        std::fs::canonicalize(codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR))?;
     let canonical_source = std::fs::canonicalize(source)?;
     let canonical_destination_parent = std::fs::canonicalize(
         destination
@@ -151,19 +154,22 @@ pub(super) fn move_rollout_noclobber(
     let destination_name = destination
         .file_name()
         .ok_or_else(|| std::io::Error::other("rollout destination has no filename"))?;
-    if !canonical_source.starts_with(&canonical_home)
-        || !canonical_destination_parent.starts_with(&canonical_home)
-        || !std::fs::symlink_metadata(source)?.file_type().is_file()
-    {
+    let within_collections = (canonical_source.starts_with(&canonical_sessions)
+        && canonical_destination_parent.starts_with(&canonical_archived))
+        || (canonical_source.starts_with(&canonical_archived)
+            && canonical_destination_parent.starts_with(&canonical_sessions));
+    if !within_collections || !std::fs::symlink_metadata(source)?.file_type().is_file() {
         return Err(std::io::Error::other(
-            "rollout move is outside the Codex home or is not a file",
+            "rollout move is outside its collection or is not a file",
         ));
     }
 
-    // Both collections are under one home. Linking publishes the destination only if absent.
-    // If unlink fails, retain both links so neither copy is lost.
-    std::fs::hard_link(source, canonical_destination_parent.join(destination_name))?;
-    std::fs::remove_file(source)
+    // One no-replace rename either moves the name or leaves it untouched. In particular,
+    // publication cannot succeed before a separately failing source unlink.
+    super::rollout_move_noclobber_rename::rename_noclobber(
+        &canonical_source,
+        &canonical_destination_parent.join(destination_name),
+    )
 }
 
 pub(super) fn restore_rollout_moves(
@@ -301,17 +307,21 @@ pub(super) async fn resolve_thread_names(
         .await
         .unwrap_or_default();
     if let Some(state_db_ctx) = store.state_db().await {
+        let thread_ids = thread_history_modes.keys().copied().collect::<Vec<_>>();
+        let metadata_by_id = state_db_ctx
+            .get_threads(&thread_ids)
+            .await
+            .unwrap_or_default();
         for (&thread_id, &history_mode) in thread_history_modes {
-            let Ok(Some(metadata)) = state_db_ctx.get_thread(thread_id).await else {
+            let Some(metadata) = metadata_by_id.get(&thread_id) else {
                 continue;
             };
             let name = match history_mode {
-                ThreadHistoryMode::Legacy => distinct_thread_metadata_title(&metadata),
-                ThreadHistoryMode::Paginated => sqlite_thread_name(&metadata),
+                ThreadHistoryMode::Legacy => distinct_thread_metadata_title(metadata),
+                ThreadHistoryMode::Paginated => sqlite_thread_name(metadata),
             };
             if let Some(name) = name {
-                if history_mode == ThreadHistoryMode::Legacy
-                    && has_guardian_default_title(&metadata)
+                if history_mode == ThreadHistoryMode::Legacy && has_guardian_default_title(metadata)
                 {
                     names.entry(thread_id).or_insert(name);
                 } else {
