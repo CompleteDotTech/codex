@@ -504,6 +504,14 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
         Err(CompatibilityError::UnsupportedSchema)
     );
     let mut connection = runtime.acquire().await.expect("runtime connection");
+    // The project catalog exists at this format, so a thread can only reference a real project.
+    sqlx::query(
+        "INSERT INTO codex_storage.projects (id, name, metadata, position, created_at_ms, \
+         updated_at_ms) VALUES ('project-from-source-host', 'origin project', '{}', 0, 1, 1)",
+    )
+    .execute(&mut *connection)
+    .await
+    .expect("runtime inserts the referenced project");
     let id = "00000000-0000-0000-0000-000000000123";
     let path = r"C:\origin-host\rollouts\thread.jsonl";
     let cwd = r"C:\origin-host\project";
@@ -520,7 +528,7 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
         .bind(cwd)
         .bind(1_700_000_000_i64)
         .bind("01984de2-8f74-7c91-a3b2-5c5e937cf318")
-        .bind("project-without-catalog-yet")
+        .bind("project-from-source-host")
         .fetch_one(&mut *connection)
         .await
         .expect("runtime inserts explicit thread id and source-host paths");
@@ -534,7 +542,7 @@ async fn real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths() {
             1_700_000_000_789,
             Some(1_700_000_000),
             Some("01984de2-8f74-7c91-a3b2-5c5e937cf318".to_string()),
-            Some("project-without-catalog-yet".to_string())
+            Some("project-from-source-host".to_string())
         )
     );
     let absent: (Option<String>, Option<String>) = sqlx::query_as(
