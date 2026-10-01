@@ -1,7 +1,9 @@
 //! A bounded PostgreSQL connection pool for host-resolved credentials.
 //!
-//! This crate does not create tables, select the active storage backend, or
-//! grant authority to a candidate configuration.
+//! The pool does not select the active storage backend or grant authority to a
+//! candidate configuration. Callers that need the preprovisioned storage
+//! schema must explicitly invoke the transactional `bootstrap_codex_storage`
+//! entry point.
 
 #![expect(
     clippy::disallowed_methods,
@@ -23,6 +25,10 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use tokio::time::timeout;
+
+mod bootstrap;
+pub use bootstrap::BootstrapError;
+pub use bootstrap::bootstrap_codex_storage;
 
 const MAX_WAIT: Duration = Duration::from_secs(30);
 const MAX_CONNECTIONS: u32 = 32;

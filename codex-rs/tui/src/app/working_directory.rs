@@ -17,6 +17,7 @@ enum DestinationConfig {
 /// Session and configuration prepared before the event loop attaches a managed checkout.
 pub(super) struct ManagedWorktreeAttach {
     started: AppServerStartedThread,
+    archive_on_failed_attach: bool,
     config: Box<Config>,
     local_settings: crate::local_settings::LocalSettings,
     keymap: RuntimeKeymap,
@@ -464,7 +465,7 @@ impl App {
         {
             if session.thread_id != thread_id {
                 let _ = app_server.thread_unsubscribe(session.thread_id).await;
-                if preserve_history {
+                if preserve_history || transitioned.persisted_on_start {
                     let _ = app_server.thread_archive(session.thread_id).await;
                 }
             }
@@ -476,7 +477,7 @@ impl App {
         {
             let replacement_id = transitioned.session.thread_id;
             let _ = app_server.thread_unsubscribe(replacement_id).await;
-            if preserve_history {
+            if preserve_history || transitioned.persisted_on_start {
                 let _ = app_server.thread_archive(replacement_id).await;
             }
             return self.working_directory_error(format!(
@@ -503,7 +504,7 @@ impl App {
         if let Err(error) = app_server.thread_unsubscribe(thread_id).await {
             let replacement_id = transitioned.session.thread_id;
             let _ = app_server.thread_unsubscribe(replacement_id).await;
-            if preserve_history {
+            if preserve_history || transitioned.persisted_on_start {
                 let _ = app_server.thread_archive(replacement_id).await;
             }
             return self.working_directory_error(format!("Cannot change directories: {error}"));
@@ -514,6 +515,7 @@ impl App {
             }
         }
         let attach = ManagedWorktreeAttach {
+            archive_on_failed_attach: preserve_history || transitioned.persisted_on_start,
             started: transitioned,
             config: Box::new(config),
             local_settings,
@@ -539,6 +541,7 @@ impl App {
     ) {
         let ManagedWorktreeAttach {
             started,
+            archive_on_failed_attach,
             config,
             local_settings,
             keymap,
@@ -557,7 +560,12 @@ impl App {
         }
         let attach_widget = App::replace_chat_widget_with_app_server_thread;
         let (lineage, message) = (ThreadAttachPresentation::SessionLineage, None);
+        let replacement_id = started.session.thread_id;
         if let Err(error) = attach_widget(self, tui, started, lineage, message).await {
+            let _ = app_server.thread_unsubscribe(replacement_id).await;
+            if archive_on_failed_attach {
+                let _ = app_server.thread_archive(replacement_id).await;
+            }
             return self.working_directory_error(format!("Could not restore session: {error}"));
         }
         if matches!(

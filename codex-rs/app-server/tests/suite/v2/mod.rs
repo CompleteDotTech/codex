@@ -125,6 +125,8 @@ mod server_diagnostics;
 mod session_end;
 mod skills_list;
 mod sleep;
+#[path = "storage_candidate_config_tests.rs"]
+mod storage_candidate_config_tests;
 mod thread_archive;
 mod thread_attachments;
 mod thread_delete;
@@ -147,6 +149,8 @@ mod thread_sections;
 mod thread_settings_update;
 mod thread_shell_command;
 mod thread_start;
+#[path = "thread_start_persistence_tests.rs"]
+mod thread_start_persistence;
 mod thread_status;
 mod thread_timeline;
 mod thread_unarchive;

@@ -1,10 +1,10 @@
 use super::LocalThreadStore;
+use super::helpers::ensure_unambiguous_rollout;
 use super::helpers::owned_rollout_paths;
-use super::helpers::restore_rollout_moves;
 use super::helpers::rollout_path_is_archived;
 use super::helpers::scoped_rollout_path;
-use super::helpers::touch_modified_time;
 use super::helpers::validated_rollout_file_name;
+use super::rollout_move_file::touch_modified_time;
 use crate::ArchiveThreadParams;
 use crate::ReadThreadParams;
 use crate::StoredThread;
@@ -12,6 +12,9 @@ use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 use codex_rollout::rollout_date_parts;
 
+use super::rollout_move_transaction::MoveDirection;
+use super::rollout_move_transaction::begin_move;
+use super::rollout_move_transaction::replay_pending_move;
 use super::thread_rollout_resolver;
 use super::thread_rollout_resolver::RolloutLocation;
 
@@ -24,6 +27,17 @@ pub(super) async fn unarchive_thread(
     // Archive, delete, and revert use the same cross-process lock while moving or selecting
     // rollout files. Unarchive must participate before it moves those files back.
     let _writer_lock = store.acquire_writer_lock(thread_id)?;
+    if replay_pending_move(store, thread_id).await? == Some(MoveDirection::Unarchive) {
+        return super::read_thread::read_thread(
+            store,
+            ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: false,
+            },
+        )
+        .await;
+    }
     let state_db_ctx = store.state_db().await;
     let selected_archived_path =
         thread_rollout_resolver::resolve_current_including_archived(store, thread_id)
@@ -37,6 +51,11 @@ pub(super) async fn unarchive_thread(
     let mut rollout_paths = owned_rollout_paths(store, thread_id).await?;
     if !rollout_paths.contains(&selected_archived_path) {
         rollout_paths.push(selected_archived_path.clone());
+    }
+    for rollout_path in &rollout_paths {
+        if rollout_path_is_archived(store.config.codex_home.as_path(), rollout_path) {
+            ensure_unambiguous_rollout(rollout_path)?;
+        }
     }
     let mut restored_path = None;
     let mut rollout_moves = Vec::new();
@@ -87,28 +106,22 @@ pub(super) async fn unarchive_thread(
         message: format!("failed to unarchive selected rollout for thread {thread_id}"),
     })?;
 
-    for (index, (source, destination)) in rollout_moves.iter().enumerate() {
-        if let Err(err) = std::fs::rename(source, destination) {
-            if let Err(restore_err) = restore_rollout_moves(&rollout_moves[..index]) {
-                return Err(ThreadStoreError::Internal {
-                    message: format!(
-                        "failed to unarchive thread: {err}; failed to restore moved rollouts: {restore_err}"
-                    ),
-                });
-            }
-            return Err(ThreadStoreError::Internal {
-                message: format!("failed to unarchive thread: {err}"),
-            });
-        }
-    }
+    let pending = begin_move(
+        store.config.codex_home.as_path(),
+        thread_id,
+        MoveDirection::Unarchive,
+        restored_path.as_path(),
+        &rollout_moves,
+    )
+    .map_err(|err| ThreadStoreError::Internal {
+        message: format!("failed to record unarchive move: {err}"),
+    })?;
+    pending
+        .move_all(store.config.codex_home.as_path())
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to unarchive thread: {err}"),
+        })?;
     if let Err(err) = touch_modified_time(restored_path.as_path()) {
-        if let Err(restore_err) = restore_rollout_moves(&rollout_moves) {
-            return Err(ThreadStoreError::Internal {
-                message: format!(
-                    "failed to update unarchived thread timestamp: {err}; failed to restore moved rollouts: {restore_err}"
-                ),
-            });
-        }
         return Err(ThreadStoreError::Internal {
             message: format!("failed to update unarchived thread timestamp: {err}"),
         });
@@ -119,17 +132,15 @@ pub(super) async fn unarchive_thread(
             .mark_unarchived(thread_id, restored_path.as_path())
             .await
     {
-        if let Err(restore_err) = restore_rollout_moves(&rollout_moves) {
-            return Err(ThreadStoreError::Internal {
-                message: format!(
-                    "failed to update unarchived thread metadata: {err}; failed to restore moved rollouts: {restore_err}"
-                ),
-            });
-        }
         return Err(ThreadStoreError::Internal {
             message: format!("failed to update unarchived thread metadata: {err}"),
         });
     }
+    pending
+        .complete()
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to finish unarchive move: {err}"),
+        })?;
 
     super::read_thread::read_thread(
         store,
@@ -157,6 +168,7 @@ mod tests {
     use crate::local::LocalThreadStore;
     use crate::local::test_support::test_config;
     use crate::local::test_support::write_archived_session_file;
+    use crate::local::test_support::write_session_file;
 
     #[tokio::test]
     async fn unarchive_thread_restores_rollout_and_returns_updated_thread() {
@@ -282,5 +294,60 @@ mod tests {
         assert_eq!(updated.archived_at, None);
         assert_eq!(updated.recency_at, metadata.recency_at);
         assert_eq!(updated.section, metadata.section);
+    }
+
+    #[tokio::test]
+    async fn unarchive_does_not_replace_an_existing_canonical_file() {
+        let home = TempDir::new().expect("temp dir");
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(/*v*/ 304);
+        let thread_id = ThreadId::from_string(&uuid.to_string()).expect("valid thread id");
+        let source = write_archived_session_file(home.path(), "2025-01-03T13-00-00", uuid)
+            .expect("archived canonical file");
+        let destination = write_session_file(home.path(), "2025-01-03T13-00-00", uuid)
+            .expect("occupied active file");
+        let source_bytes = std::fs::read(&source).expect("read source");
+        let destination_bytes = std::fs::read(&destination).expect("read destination");
+        assert_ne!(source_bytes, destination_bytes);
+
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await
+        .expect("state db");
+        let mut builder = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            source.clone(),
+            Utc::now(),
+            SessionSource::Cli,
+        );
+        builder.cwd = home.path().to_path_buf();
+        let mut metadata = builder.build(config.default_model_provider_id.as_str());
+        metadata.archived_at = Some(metadata.updated_at);
+        runtime
+            .upsert_thread(&metadata)
+            .await
+            .expect("upsert thread");
+        let before = runtime.get_thread(thread_id).await.expect("state read");
+        let store = LocalThreadStore::new(config, Some(runtime.clone()));
+
+        let error = store
+            .unarchive_thread(ArchiveThreadParams { thread_id })
+            .await
+            .expect_err("occupied destination must prevent unarchive");
+        assert!(matches!(error, ThreadStoreError::Conflict { .. }));
+        assert_eq!(
+            std::fs::read(source).expect("source retained"),
+            source_bytes
+        );
+        assert_eq!(
+            std::fs::read(destination).expect("destination retained"),
+            destination_bytes
+        );
+        assert_eq!(
+            runtime.get_thread(thread_id).await.expect("state read"),
+            before
+        );
     }
 }
