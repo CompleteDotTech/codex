@@ -8,16 +8,87 @@ use chrono::Utc;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionMeta;
 use codex_protocol::protocol::SessionMetaLine;
+use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::ThreadSource;
 use codex_rollout::RolloutItem;
 use codex_rollout::RolloutLine;
+use codex_state::ThreadMetadataBuilder;
 use pretty_assertions::assert_eq;
 use tempfile::TempDir;
+use uuid::Uuid;
 
 use super::LocalThreadStore;
 use super::test_support::test_config;
+use super::test_support::write_session_file;
 use crate::ReadThreadParams;
 use crate::ThreadStore;
+use crate::ThreadStoreError;
+
+#[tokio::test]
+async fn stale_sqlite_path_cannot_substitute_another_threads_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    let home = TempDir::new()?;
+    let config = test_config(home.path());
+    let first_uuid = Uuid::from_u128(/*v*/ 301);
+    let second_uuid = Uuid::from_u128(/*v*/ 302);
+    let first_id = ThreadId::from_string(&first_uuid.to_string())?;
+    let first_path = write_session_file(home.path(), "2025-01-03T14-00-00", first_uuid)?;
+    let second_path = write_session_file(home.path(), "2025-01-03T14-01-00", second_uuid)?;
+    let file_only = LocalThreadStore::new(config.clone(), /*state_db*/ None);
+    let expected = file_only
+        .read_thread(ReadThreadParams {
+            thread_id: first_id,
+            include_archived: false,
+            include_history: true,
+        })
+        .await?;
+
+    let state_db = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await?;
+    let mut builder =
+        ThreadMetadataBuilder::new(first_id, second_path, Utc::now(), SessionSource::Cli);
+    builder.cwd = home.path().to_path_buf();
+    builder.model_provider = Some(config.default_model_provider_id.clone());
+    state_db
+        .upsert_thread(&builder.build(config.default_model_provider_id.as_str()))
+        .await?;
+    let store = LocalThreadStore::new(config, Some(state_db));
+
+    let actual = store
+        .read_thread(ReadThreadParams {
+            thread_id: first_id,
+            include_archived: false,
+            include_history: true,
+        })
+        .await?;
+    assert_eq!(
+        (
+            actual.thread_id,
+            actual.rollout_path,
+            serde_json::to_value(actual.history)?,
+        ),
+        (
+            expected.thread_id,
+            expected.rollout_path,
+            serde_json::to_value(expected.history)?,
+        )
+    );
+
+    std::fs::remove_file(first_path)?;
+    let error = store
+        .read_thread(ReadThreadParams {
+            thread_id: first_id,
+            include_archived: false,
+            include_history: true,
+        })
+        .await
+        .expect_err("missing rightful rollout must not return the other thread");
+    assert!(matches!(error, ThreadStoreError::InvalidRequest { .. }));
+    Ok(())
+}
 
 #[tokio::test]
 async fn empty_archived_reads_without_sqlite_preserve_source_and_file_time()
