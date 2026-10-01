@@ -446,6 +446,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         .await
         .map_err(|error| classify_sqlx(&error))?;
         if owner.as_deref() != Some("codex_owner") {
+            eprintln!("DBG IncompatibleNamespace site 1");
             return Err(BootstrapError::IncompatibleNamespace);
         }
 
@@ -457,6 +458,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             KNOWN_RELATIONS,
         ).await?;
         if unexpected_objects {
+            eprintln!("DBG IncompatibleNamespace site 2");
             return Err(BootstrapError::IncompatibleNamespace);
         }
 
@@ -582,6 +584,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .await
             .map_err(classify_namespace_validation)?;
             if !known_schema_complete {
+                eprintln!("DBG IncompatibleNamespace site 3");
                 return Err(BootstrapError::IncompatibleNamespace);
             }
             let version: Option<(i32, i32, i32)> = sqlx::query_as(
@@ -591,16 +594,19 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
             .await
             .map_err(classify_namespace_validation)?;
             let Some((format, min_reader, min_writer)) = version else {
+                eprintln!("DBG IncompatibleNamespace site 4");
                 return Err(BootstrapError::IncompatibleNamespace);
             };
             // Each migration records format, reader, and writer versions as one number.
             if min_reader != format || min_writer != format {
+                eprintln!("DBG IncompatibleNamespace site 5");
                 return Err(BootstrapError::IncompatibleNamespace);
             }
             if !recorded_history_matches(&mut transaction, BASE_MIGRATOR.migrations.as_ref(), format)
                 .await
                 .map_err(classify_namespace_validation)?
             {
+                eprintln!("DBG IncompatibleNamespace site 6");
                 return Err(BootstrapError::IncompatibleNamespace);
             }
             // Refuse privilege drift on an existing namespace before any ACL
@@ -609,6 +615,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         } else {
             let occupied = namespace_has_unexpected_objects(&mut transaction, &[]).await?;
             if occupied {
+                eprintln!("DBG IncompatibleNamespace site 7");
                 return Err(BootstrapError::IncompatibleNamespace);
             }
         }
@@ -692,6 +699,7 @@ pub async fn bootstrap_codex_storage(pool: &PostgresPool) -> Result<(), Bootstra
         )
         .await?;
         if unexpected_objects {
+            eprintln!("DBG IncompatibleNamespace site 8");
             return Err(BootstrapError::IncompatibleNamespace);
         }
         transaction.commit().await.map_err(|error| classify_sqlx(&error))?;
