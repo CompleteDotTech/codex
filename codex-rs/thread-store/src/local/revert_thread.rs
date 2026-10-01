@@ -35,6 +35,7 @@ pub(super) async fn revert(
     let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
     store.ensure_live_recorder_absent(thread_id).await?;
     let writer_lock = store.acquire_writer_lock(thread_id)?;
+    super::rollout_move_transaction::replay_pending_move(store, thread_id).await?;
 
     // Resolution may return a compressed sibling. Keep SQLite's exact stored path for the CAS.
     let stored_metadata = state_db
@@ -79,7 +80,9 @@ pub(super) async fn revert(
 
     // Preserve old-reader compatibility when introducing the first reference to a standalone
     // source. Already-shared ancestors stay read-only; their offsets address decoded JSONL bytes.
-    let mut lineage = store.resolve_rollout_lineage(thread_id).await?;
+    let mut lineage = store
+        .resolve_rollout_lineage(thread_id, /*initial_path*/ None)
+        .await?;
     for segment in &mut lineage.segments {
         if segment.rollout_id() == current_rollout.rollout_id && source_meta.history_base.is_none()
         {

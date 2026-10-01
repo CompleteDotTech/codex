@@ -4,6 +4,7 @@ use codex_app_server_protocol::ConfigLayerSource as ApiConfigLayerSource;
 use codex_config::ConfigLayer;
 use codex_config::ConfigLayerMetadata;
 use codex_config::ConfigLayerSource;
+use codex_config::STORAGE_CANDIDATE_KEY;
 
 /// Converts a config-layer source owned by `codex-config` into the app-server wire type owned by
 /// `codex-app-server-protocol`.
@@ -57,10 +58,14 @@ pub(crate) fn config_layer_metadata_to_api(
 /// crate. Because this crate owns neither type, Rust's orphan rules require an explicit conversion
 /// function instead of a `From` implementation.
 pub(crate) fn config_layer_to_api(layer: ConfigLayer) -> ApiConfigLayer {
+    let mut config = layer.config;
+    if let Some(table) = config.as_object_mut() {
+        table.remove(STORAGE_CANDIDATE_KEY);
+    }
     ApiConfigLayer {
         name: config_layer_source_to_api(layer.name),
         version: layer.version,
-        config: layer.config,
+        config,
         disabled_reason: layer.disabled_reason,
     }
 }
