@@ -1155,6 +1155,7 @@ impl ThreadRequestProcessor {
             personality,
             multi_agent_mode: _multi_agent_mode,
             ephemeral,
+            persist_on_start,
             history_mode,
             session_start_source,
             thread_source,
@@ -1250,6 +1251,7 @@ impl ThreadRequestProcessor {
                 environments,
                 service_name,
                 allow_provider_model_fallback,
+                persist_on_start,
                 experimental_raw_events,
                 request_trace,
                 initial_config_warnings,
@@ -1332,6 +1334,7 @@ impl ThreadRequestProcessor {
         environment_selections: Option<Vec<TurnEnvironmentSelection>>,
         service_name: Option<String>,
         allow_provider_model_fallback: bool,
+        persist_on_start: bool,
         experimental_raw_events: bool,
         request_trace: Option<W3cTraceContext>,
         initial_config_warnings: Arc<Vec<ConfigWarningNotification>>,
@@ -1345,6 +1348,11 @@ impl ThreadRequestProcessor {
         if config.ephemeral && daybreak_enabled.is_some() {
             return Err(invalid_request(
                 "daybreakEnabled is not supported for ephemeral threads",
+            ));
+        }
+        if config.ephemeral && persist_on_start {
+            return Err(invalid_request(
+                "persistOnStart is not supported for ephemeral threads",
             ));
         }
         // Project-local config can launch host processes, so only the effective
@@ -1542,6 +1550,27 @@ impl ThreadRequestProcessor {
             }
         };
         let session_telemetry = thread.session_telemetry();
+        if persist_on_start
+            && let Err(error) = thread_store
+                .persist_thread(thread_id, PersistContext::Standard)
+                .await
+        {
+            if let Err(shutdown_error) = thread.shutdown_and_wait().await {
+                warn!(%thread_id, %shutdown_error, "failed to shut down thread after persistOnStart error");
+            }
+            listener_task_context
+                .thread_manager
+                .remove_thread_if_matches(&thread_id, &thread)
+                .await;
+            listener_task_context
+                .thread_state_manager
+                .remove_thread_state(thread_id)
+                .await;
+            remove_pending_thread_metadata(thread_store.as_ref(), reserved_thread_id).await;
+            return Err(internal_error(format!(
+                "failed to persist thread before start response: {error}"
+            )));
+        }
         session_telemetry.record_startup_phase(
             "thread_start_create_thread",
             create_thread_started_at.elapsed(),
@@ -1621,6 +1650,7 @@ impl ThreadRequestProcessor {
 
         let response = ThreadStartResponse {
             thread: thread.clone(),
+            persisted_on_start: persist_on_start,
             disabled_plugin_ids: config_snapshot.disabled_plugin_ids,
             model: config_snapshot.model,
             model_provider: config_snapshot.model_provider_id,

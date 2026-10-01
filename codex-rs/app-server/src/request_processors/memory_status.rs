@@ -21,7 +21,7 @@ impl ThreadRequestProcessor {
             .as_ref()
             .ok_or_else(|| internal_error("sqlite state db unavailable for memory status"))?;
         let store = db
-            .memories_for_version(MemoryVersion::V2)
+            .memory_store_for_version(MemoryVersion::V2)
             .await
             .map_err(|error| internal_error(format!("failed to open v2 memory state: {error}")))?;
         let count = store

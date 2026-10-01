@@ -192,6 +192,28 @@ mod tests {
     use crate::local::test_support::write_session_file;
     use crate::local::test_support::write_session_file_with_history_mode;
 
+    #[cfg(unix)]
+    #[test]
+    fn archive_move_accepts_symlinked_sessions_collection() {
+        let home = TempDir::new().expect("temp home");
+        let external = TempDir::new().expect("external sessions");
+        std::os::unix::fs::symlink(external.path(), home.path().join("sessions"))
+            .expect("link sessions collection");
+        let archive = home.path().join(ARCHIVED_SESSIONS_SUBDIR);
+        std::fs::create_dir(&archive).expect("archive collection");
+        let source = external.path().join("rollout.jsonl");
+        std::fs::write(&source, b"owned rollout").expect("source rollout");
+        let destination = archive.join("rollout.jsonl");
+
+        move_rollout_noclobber(&source, &destination, home.path()).expect("archive rollout");
+
+        assert!(!source.exists());
+        assert_eq!(
+            std::fs::read(destination).expect("archived rollout"),
+            b"owned rollout"
+        );
+    }
+
     #[tokio::test]
     async fn archive_waits_for_fork_reservation_without_holding_writer_lock() {
         let home = TempDir::new().expect("temp dir");
