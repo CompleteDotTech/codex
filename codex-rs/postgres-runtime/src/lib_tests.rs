@@ -30,7 +30,8 @@ async fn real_postgres_validates_grown_and_replacement_connections() {
         password: std::fs::read_to_string(state.join("secrets/runtime.password"))
             .expect("read private runtime credential")
             .trim()
-            .to_string(),
+            .to_string()
+            .into(),
         ca_certificate: state.join("secrets/ca.crt"),
         limits: PoolLimits {
             connect_timeout: Duration::from_secs(5),
