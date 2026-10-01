@@ -266,6 +266,17 @@ if [[ "${RUNNER_OS:-}" == "Windows" && $windows_cross_compile -eq 1 && -z "${BUI
 fi
 
 post_config_bazel_args=()
+if [[ "${RUNNER_OS:-}" =~ ^(Linux|macOS)$ && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+  # Hosted Unix runners have limited free disk. The local output tree already
+  # retains build actions; a second disk cache can exhaust the runner on full
+  # test, lint, and release builds.
+  post_config_bazel_args+=(--disk_cache=)
+fi
+if [[ "${RUNNER_OS:-}" == "Windows" && -z "${BUILDBUDDY_API_KEY:-}" && "${bazel_args[0]}" == "test" ]]; then
+  # The unauthenticated local path must retain the ordinary Windows CI test
+  # policy without enabling ci-windows' remote-execution settings.
+  post_config_bazel_args+=(--config=ci-windows-test-policy)
+fi
 if [[ "${RUNNER_OS:-}" == "Windows" && $windows_msvc_host_platform -eq 1 ]]; then
   has_host_platform_override=0
   for arg in "${bazel_args[@]}"; do
@@ -378,6 +389,31 @@ if [[ "${RUNNER_OS:-}" == "Windows" ]]; then
     )
   fi
   post_config_bazel_args+=("--test_env=PATH=${CODEX_BAZEL_WINDOWS_PATH}")
+
+  if [[ -n "${VOICE_WINDOWS_BAZEL_REPOSITORY:-}" ]]; then
+    voice_repository_explicit=0
+    for arg in "${bazel_args[@]}"; do
+      if [[ "$arg" == --inject_repository=voice_windows_tools=* ]]; then
+        voice_repository_explicit=1
+        break
+      fi
+    done
+
+    if [[ $voice_repository_explicit -eq 0 ]]; then
+      : "${VOICE_WINDOWS_SYSTEM_ROOT:?Windows voice SystemRoot is required}"
+      : "${VOICE_WINDOWS_HOST_ARCH:?Windows voice host architecture is required}"
+      post_config_bazel_args+=(
+        "--inject_repository=voice_windows_tools=${VOICE_WINDOWS_BAZEL_REPOSITORY}"
+        "--//third_party/voice:windows_installed_tools=@voice_windows_tools//:tools"
+        "--repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=0"
+        "--extra_toolchains=@local_config_cc//:cc-toolchain-x64_windows,@local_config_cc//:cc-toolchain-arm64_windows,//third_party/voice:windows_pkg_config_toolchain,//third_party/voice:windows_cmake_toolchain"
+        "--action_env=SystemRoot=${VOICE_WINDOWS_SYSTEM_ROOT}"
+        "--host_action_env=SystemRoot=${VOICE_WINDOWS_SYSTEM_ROOT}"
+        "--action_env=PROCESSOR_ARCHITECTURE=${VOICE_WINDOWS_HOST_ARCH}"
+        "--host_action_env=PROCESSOR_ARCHITECTURE=${VOICE_WINDOWS_HOST_ARCH}"
+      )
+    fi
+  fi
 fi
 
 bazel_console_log="$(mktemp)"
@@ -395,6 +431,10 @@ fi
 if (( ${#post_config_bazel_args[@]} > 0 )); then
   bazel_run_args+=("${post_config_bazel_args[@]}")
 fi
+if [[ "${RUNNER_OS:-}" =~ ^(Linux|macOS)$ && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+  echo "Disk capacity before local Bazel:"
+  df -h .
+fi
 set +e
 # Work around Bazel 9 remote repo contents cache / overlay materialization
 # failures seen in CI (for example "is not a symlink" or permission errors
@@ -408,6 +448,11 @@ run_bazel_with_startup_args \
   2>&1 | tee "$bazel_console_log"
 bazel_status=${PIPESTATUS[0]}
 set -e
+
+if [[ "${RUNNER_OS:-}" =~ ^(Linux|macOS)$ && -z "${BUILDBUDDY_API_KEY:-}" ]]; then
+  echo "Disk capacity after local Bazel:"
+  df -h .
+fi
 
 if [[ ${bazel_status:-0} -ne 0 ]]; then
   if [[ $print_failed_bazel_action_summary -eq 1 ]]; then
