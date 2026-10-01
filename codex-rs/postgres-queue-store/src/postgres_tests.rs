@@ -434,7 +434,8 @@ async fn real_postgres_queue_changes_survive_reconnect_and_thread_removal() {
             .expect("second runtime pool"),
     );
     let second = PostgresQueueStore::new(second_pool.clone());
-    assert_eq!(second.change_version().await.expect("version"), version);
+    // Other tests share the counter, so it may have moved on, but it never goes backwards.
+    assert!(second.change_version().await.expect("version") >= version);
     assert_eq!(
         second.changes_since(0, &[thread]).await.expect("changes"),
         recorded
