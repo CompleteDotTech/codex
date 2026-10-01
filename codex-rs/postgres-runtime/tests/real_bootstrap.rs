@@ -647,7 +647,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
             BootstrapError::IncompatibleNamespace,
         ),
         (
-            "ALTER TABLE codex_storage._codex_pg_migrations ADD CONSTRAINT history_version_limit CHECK (version <= 1)",
+            "ALTER TABLE codex_storage._codex_pg_migrations ADD CONSTRAINT history_version_limit CHECK (version <= 4)",
             "ALTER TABLE codex_storage._codex_pg_migrations DROP CONSTRAINT history_version_limit",
             BootstrapError::IncompatibleNamespace,
         ),
