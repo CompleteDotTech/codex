@@ -95,6 +95,7 @@ members = [
     "postgres-goal-store",
     "postgres-import-store",
     "postgres-log-store",
+    "postgres-memory-store",
     "postgres-queue-store",
     "postgres-runtime",
     "realtime-webrtc",
@@ -183,6 +184,7 @@ codex-agent-graph-store = { path = "agent-graph-store" }
 codex-postgres-goal-store = { path = "postgres-goal-store" }
 codex-postgres-import-store = { path = "postgres-import-store" }
 codex-postgres-log-store = { path = "postgres-log-store" }
+codex-postgres-memory-store = { path = "postgres-memory-store" }
 codex-postgres-queue-store = { path = "postgres-queue-store" }
 codex-postgres-runtime = { path = "postgres-runtime" }
 codex-storage-candidate-preflight = { path = "storage-candidate-preflight" }

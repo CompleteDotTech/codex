@@ -4287,6 +4287,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-postgres-memory-store"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-postgres-runtime",
+ "codex-protocol",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "codex-postgres-queue-store"
 version = "0.0.0"
 dependencies = [

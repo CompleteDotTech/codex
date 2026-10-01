@@ -173,6 +173,9 @@ jobs:
       - name: Compare log persistence across SQLite and PostgreSQL
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_LOG_STORE_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-log-store real_postgres_logs
+      - name: Compare memory persistence across SQLite and PostgreSQL
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_MEMORY_STORE_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-memory-store real_postgres_memory
       - name: Test two-namespace role isolation against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_postgres_roles_isolate_two_schemas

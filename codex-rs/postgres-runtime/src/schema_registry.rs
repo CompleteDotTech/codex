@@ -98,6 +98,27 @@ pub(crate) const PROTECTED_TABLES: &[ProtectedTable] = &[
         runtime_privileges: "SELECT, UPDATE",
         indexes: &["log_id_counter_pkey"],
     },
+    ProtectedTable {
+        name: "memory_stage1_outputs",
+        runtime_privileges: "SELECT, INSERT, UPDATE, DELETE",
+        indexes: &[
+            "memory_stage1_outputs_pkey",
+            "memory_stage1_outputs_source_updated_idx",
+        ],
+    },
+    ProtectedTable {
+        name: "memory_jobs",
+        runtime_privileges: "SELECT, INSERT, UPDATE, DELETE",
+        indexes: &[
+            "memory_jobs_pkey",
+            "memory_jobs_kind_status_retry_lease_idx",
+        ],
+    },
+    ProtectedTable {
+        name: "memory_consolidation_progress",
+        runtime_privileges: "SELECT, UPDATE",
+        indexes: &["memory_consolidation_progress_pkey"],
+    },
 ];
 
 /// What a migration must look like before its schema qualifier is rewritten for a named
@@ -235,6 +256,35 @@ INSERT INTO codex_storage.log_id_counter (singleton, last_id) VALUES (TRUE, 0);
             META_UPDATE,
         ],
         qualified_identifiers: 7,
+    },
+    MigrationShape {
+        version: 10,
+        starts_with: Some("-- Inactive generated-memory persistence"),
+        contains: &[
+            "
+ALTER TABLE codex_storage.threads
+",
+            "
+CREATE TABLE codex_storage.memory_stage1_outputs (
+",
+            "
+CREATE INDEX memory_stage1_outputs_source_updated_idx
+",
+            "
+CREATE TABLE codex_storage.memory_jobs (
+",
+            "
+CREATE INDEX memory_jobs_kind_status_retry_lease_idx
+",
+            "
+CREATE TABLE codex_storage.memory_consolidation_progress (
+",
+            "
+INSERT INTO codex_storage.memory_consolidation_progress (singleton) VALUES (TRUE);
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 8,
     },
 ];
 

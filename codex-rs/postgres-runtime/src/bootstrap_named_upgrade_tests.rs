@@ -92,16 +92,16 @@ async fn real_named_v4_upgrade_to_section_catalog_is_atomic() {
     );
     assert_eq!((a, b), (Ok(()), Ok(())));
     let current = ClientCapabilities {
-        min_schema_format: 9,
-        max_schema_format: 9,
-        reader_version: 9,
-        writer_version: 9,
+        min_schema_format: 10,
+        max_schema_format: 10,
+        reader_version: 10,
+        writer_version: 10,
     };
     assert_eq!(
         check_named_namespace_compatibility(&first, &namespace, current, RequiredAccess::ReadWrite)
             .await,
         Ok(CompatibilityResult {
-            schema_format: 9,
+            schema_format: 10,
             activation_permitted: false,
         })
     );
