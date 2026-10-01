@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::io;
+use std::path::Path;
 
 use chrono::DateTime;
 use chrono::Utc;
+use codex_protocol::ThreadId;
 use codex_rollout::RolloutConfig;
 use codex_rollout::RolloutRecorder;
 use codex_rollout::parse_cursor;
@@ -25,6 +28,14 @@ pub(super) async fn list_threads(
     store: &LocalThreadStore,
     params: ListThreadsParams,
 ) -> ThreadStoreResult<ThreadPage> {
+    if params.use_state_db_only
+        || params.sort_key == ThreadSortKey::SectionPosition
+        || params.relation_filter.is_some()
+        || params.section.is_some()
+        || params.project_id.is_some()
+    {
+        reconcile_pending_moves_for_listing(store).await?;
+    }
     if params.sort_key == ThreadSortKey::SectionPosition {
         return list_section_threads(store, params).await;
     }
@@ -116,6 +127,66 @@ pub(super) async fn list_threads(
     }
 
     Ok(ThreadPage { items, next_cursor })
+}
+
+async fn reconcile_pending_moves_for_listing(store: &LocalThreadStore) -> ThreadStoreResult<()> {
+    let home = store.config.codex_home.clone();
+    let ids = tokio::task::spawn_blocking(move || pending_move_ids(&home))
+        .await
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to scan pending rollout moves: {err}"),
+        })?
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to scan pending rollout moves: {err}"),
+        })?;
+    if !ids.is_empty() && store.state_db().await.is_none() {
+        return Err(ThreadStoreError::Internal {
+            message: "state DB unavailable while rollout moves are pending".to_string(),
+        });
+    }
+    for thread_id in ids {
+        drop(store.prepare_thread_read(thread_id).await?);
+    }
+    Ok(())
+}
+
+fn pending_move_ids(codex_home: &Path) -> io::Result<Vec<ThreadId>> {
+    let directory = codex_home.join("rollout_move_transactions");
+    match std::fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) => {
+            return Err(io::Error::other(
+                "rollout move journal path is not a directory",
+            ));
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err),
+    }
+    let mut ids = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            return Err(io::Error::other("rollout move journal entry is not a file"));
+        }
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| io::Error::other("rollout move journal name is not UTF-8"))?;
+        if name.starts_with(".codex-move-transaction-") {
+            continue;
+        }
+        let stem = name
+            .strip_suffix(".json")
+            .ok_or_else(|| io::Error::other("invalid rollout move journal name"))?;
+        let id = ThreadId::from_string(stem)
+            .map_err(|_| io::Error::other("invalid rollout move journal thread ID"))?;
+        if name != format!("{id}.json") {
+            return Err(io::Error::other("noncanonical rollout move journal name"));
+        }
+        ids.push(id);
+    }
+    ids.sort_by_key(ToString::to_string);
+    Ok(ids)
 }
 
 async fn list_section_threads(
@@ -370,10 +441,171 @@ mod tests {
     use crate::MoveThreadToSectionParams;
     use crate::ThreadStore;
     use crate::local::LocalThreadStore;
+    use crate::local::rollout_move_file::tests::move_rollout_noclobber_retained;
+    use crate::local::rollout_move_transaction::MoveDirection;
+    use crate::local::rollout_move_transaction::begin_move;
     use crate::local::test_support::test_config;
     use crate::local::test_support::write_archived_session_file;
     use crate::local::test_support::write_session_file;
     use crate::local::test_support::write_session_file_with;
+
+    #[tokio::test]
+    async fn state_db_only_lists_replay_pending_archive_before_querying()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let home = TempDir::new()?;
+        let config = test_config(home.path());
+        let uuid = Uuid::from_u128(602);
+        let thread_id = ThreadId::from_string(&uuid.to_string())?;
+        let source = write_session_file(home.path(), "2025-01-03T16-00-00", uuid)?;
+        let runtime = codex_state::StateRuntime::init(
+            config.sqlite.clone(),
+            config.default_model_provider_id.clone(),
+        )
+        .await?;
+        let metadata = codex_state::ThreadMetadataBuilder::new(
+            thread_id,
+            source.clone(),
+            Utc::now(),
+            SessionSource::Cli,
+        )
+        .build(config.default_model_provider_id.as_str());
+        runtime.upsert_thread(&metadata).await?;
+        let store = LocalThreadStore::new(config, Some(runtime.clone()));
+        let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+        fs::create_dir(&archive)?;
+        let destination = archive.join(source.file_name().expect("rollout filename"));
+        let pending = begin_move(
+            home.path(),
+            thread_id,
+            MoveDirection::Archive,
+            &destination,
+            &[(source.clone(), destination.clone())],
+        )?;
+        move_rollout_noclobber_retained(&source, &destination, home.path())?;
+        drop(pending); // Simulate a crash before updating SQLite.
+
+        let params = ListThreadsParams {
+            page_size: 10,
+            cursor: None,
+            sort_key: ThreadSortKey::CreatedAt,
+            sort_direction: SortDirection::Desc,
+            allowed_sources: Vec::new(),
+            model_providers: None,
+            cwd_filters: None,
+            section: None,
+            project_id: None,
+            archived: true,
+            search_term: None,
+            relation_filter: None,
+            use_state_db_only: true,
+        };
+        let (first, second) = tokio::join!(
+            store.list_threads(params.clone()),
+            store.list_threads(params.clone())
+        );
+        for page in [first?, second?] {
+            assert_eq!(
+                page.items
+                    .iter()
+                    .map(|item| item.thread_id)
+                    .collect::<Vec<_>>(),
+                vec![thread_id]
+            );
+            assert_eq!(page.items[0].rollout_path, Some(destination.clone()));
+        }
+        let active = store
+            .list_threads(ListThreadsParams {
+                archived: false,
+                ..params
+            })
+            .await?;
+        assert!(active.items.is_empty());
+        let updated = runtime.get_thread(thread_id).await?.expect("SQLite row");
+        assert_eq!(updated.rollout_path, destination);
+        assert!(updated.archived_at.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn state_db_only_list_rejects_malformed_journal_name() -> io::Result<()> {
+        let home = TempDir::new()?;
+        let directory = home.path().join("rollout_move_transactions");
+        fs::create_dir(&directory)?;
+        let malformed = directory.join("not-a-thread.json");
+        fs::write(&malformed, b"incomplete")?;
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+        let error = store
+            .list_threads(ListThreadsParams {
+                page_size: 10,
+                cursor: None,
+                sort_key: ThreadSortKey::CreatedAt,
+                sort_direction: SortDirection::Desc,
+                allowed_sources: Vec::new(),
+                model_providers: None,
+                cwd_filters: None,
+                section: None,
+                project_id: None,
+                archived: false,
+                search_term: None,
+                relation_filter: None,
+                use_state_db_only: true,
+            })
+            .await
+            .expect_err("malformed journal must fail closed");
+        assert!(matches!(error, ThreadStoreError::Internal { .. }));
+        assert!(malformed.exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn state_db_only_list_keeps_pending_move_when_state_db_is_unavailable()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let home = TempDir::new()?;
+        let uuid = Uuid::from_u128(603);
+        let thread_id = ThreadId::from_string(&uuid.to_string())?;
+        let source = write_session_file(home.path(), "2025-01-03T17-00-00", uuid)?;
+        let archive = home.path().join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR);
+        fs::create_dir(&archive)?;
+        let destination = archive.join(source.file_name().expect("rollout filename"));
+        let pending = begin_move(
+            home.path(),
+            thread_id,
+            MoveDirection::Archive,
+            &destination,
+            &[(source.clone(), destination.clone())],
+        )?;
+        drop(pending);
+        let store = LocalThreadStore::new(test_config(home.path()), /*state_db*/ None);
+
+        let error = store
+            .list_threads(ListThreadsParams {
+                page_size: 10,
+                cursor: None,
+                sort_key: ThreadSortKey::CreatedAt,
+                sort_direction: SortDirection::Desc,
+                allowed_sources: Vec::new(),
+                model_providers: None,
+                cwd_filters: None,
+                section: None,
+                project_id: None,
+                archived: false,
+                search_term: None,
+                relation_filter: None,
+                use_state_db_only: true,
+            })
+            .await
+            .expect_err("cannot replay a move without its SQLite metadata handle");
+        assert!(matches!(error, ThreadStoreError::Internal { .. }));
+        assert!(source.exists());
+        assert!(!destination.exists());
+        assert!(
+            home.path()
+                .join("rollout_move_transactions")
+                .join(format!("{thread_id}.json"))
+                .exists()
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn list_threads_uses_default_provider_when_rollout_omits_provider() {

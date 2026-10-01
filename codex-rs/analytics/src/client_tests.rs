@@ -659,6 +659,7 @@ fn sample_thread(thread_id: &str) -> Thread {
 fn sample_thread_start_response() -> ClientResponsePayload {
     ClientResponsePayload::ThreadStart(ThreadStartResponse {
         disabled_plugin_ids: Vec::new(),
+        persisted_on_start: false,
         thread: sample_thread("thread-1"),
         model: "gpt-5".to_string(),
         model_provider: "openai".to_string(),

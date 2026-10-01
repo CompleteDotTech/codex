@@ -13,6 +13,7 @@ use pretty_assertions::assert_eq;
 use tempfile::TempDir;
 
 use super::super::LocalThreadStore;
+use super::super::helpers::owned_rollout_paths;
 use super::super::test_support::test_config;
 use crate::AppendThreadItemsParams;
 use crate::ArchiveThreadParams;
@@ -24,6 +25,7 @@ use crate::SortDirection;
 use crate::StoredTurnItemsView;
 use crate::ThreadPersistenceMetadata;
 use crate::ThreadStore;
+use crate::ThreadStoreError;
 
 #[tokio::test]
 async fn revert_keeps_thread_id_and_hides_suffix_across_repeated_reverts() {
@@ -181,6 +183,83 @@ async fn revert_keeps_thread_id_and_hides_suffix_across_repeated_reverts() {
     for rollout_path in owned_rollout_paths {
         assert!(!rollout_path.exists());
     }
+}
+
+#[tokio::test]
+async fn duplicate_active_archive_rollout_blocks_owned_path_scan_and_delete() {
+    let home = TempDir::new().expect("temp dir");
+    let config = test_config(home.path());
+    let state_db = codex_state::StateRuntime::init(
+        config.sqlite.clone(),
+        config.default_model_provider_id.clone(),
+    )
+    .await
+    .expect("initialize state database");
+    let store = LocalThreadStore::new(config, Some(state_db.clone()));
+    let thread_id = ThreadId::new();
+    create_paginated_thread(&store, thread_id).await;
+    store
+        .append_items(AppendThreadItemsParams {
+            thread_id,
+            items: vec![turn_started("turn-1"), turn_completed("turn-1")],
+        })
+        .await
+        .expect("persist rollout");
+    let logical_path = store
+        .live_rollout_path(thread_id)
+        .await
+        .expect("active rollout path");
+    store
+        .shutdown_thread(thread_id)
+        .await
+        .expect("close writer");
+    let active_path = codex_rollout::existing_rollout_path(&logical_path)
+        .await
+        .expect("physical rollout path");
+    codex_rollout::state_db::reconcile_rollout(
+        Some(state_db.as_ref()),
+        active_path.as_path(),
+        "test-provider",
+        /*builder*/ None,
+        &[],
+        /*archived_only*/ Some(false),
+        /*new_thread_memory_mode*/ None,
+    )
+    .await;
+    let before = state_db.get_thread(thread_id).await.expect("read metadata");
+    assert!(before.is_some());
+    let archive_path = home
+        .path()
+        .join("archived_sessions")
+        .join(active_path.file_name().expect("rollout filename"));
+    tokio::fs::create_dir_all(archive_path.parent().expect("archive parent"))
+        .await
+        .expect("create archive directory");
+    let original = tokio::fs::read(&active_path).await.expect("read rollout");
+    tokio::fs::write(&archive_path, &original)
+        .await
+        .expect("copy rollout");
+
+    assert!(matches!(
+        owned_rollout_paths(&store, thread_id).await,
+        Err(ThreadStoreError::Conflict { .. })
+    ));
+    assert!(matches!(
+        store.delete_thread(DeleteThreadParams { thread_id }).await,
+        Err(ThreadStoreError::Conflict { .. })
+    ));
+    assert_eq!(
+        tokio::fs::read(&active_path).await.expect("active bytes"),
+        original
+    );
+    assert_eq!(
+        tokio::fs::read(&archive_path).await.expect("archive bytes"),
+        original
+    );
+    assert_eq!(
+        state_db.get_thread(thread_id).await.expect("read metadata"),
+        before
+    );
 }
 
 #[tokio::test]
