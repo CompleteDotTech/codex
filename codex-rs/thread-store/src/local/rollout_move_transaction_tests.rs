@@ -683,6 +683,7 @@ async fn resume_replays_move_before_rejecting_old_explicit_path()
                 thread_id,
                 rollout_path: Some(source.clone()),
                 history: Some(Arc::new(Vec::new())),
+                history_revision: None,
                 include_archived: false,
                 metadata: ThreadPersistenceMetadata {
                     cwd: Some(home.path().to_path_buf()),

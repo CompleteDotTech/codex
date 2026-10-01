@@ -336,6 +336,14 @@
         }
       ]
     },
+    "AsyncClassifierMode": {
+      "description": "Async classifier experiment, resolved once for each parent task.",
+      "enum": [
+        "snapshot",
+        "conversation"
+      ],
+      "type": "string"
+    },
     "AuthCredentialsStoreMode": {
       "description": "Determine where Codex should store CLI auth credentials.",
       "oneOf": [
@@ -713,6 +721,9 @@
             "analytics_plan_history": {
               "type": "boolean"
             },
+            "api_key_cyber_access_programs": {
+              "type": "boolean"
+            },
             "api_key_model_discovery": {
               "type": "boolean"
             },
@@ -754,6 +765,9 @@
               "type": "boolean"
             },
             "bedrock_setup_wizard": {
+              "type": "boolean"
+            },
+            "browser_annotation_api": {
               "type": "boolean"
             },
             "browser_use": {
@@ -936,6 +950,9 @@
             "in_app_updates": {
               "type": "boolean"
             },
+            "in_app_voice": {
+              "type": "boolean"
+            },
             "instant_interrupt": {
               "type": "boolean"
             },
@@ -954,6 +971,9 @@
             "local_thread_store_shared_compression": {
               "type": "boolean"
             },
+            "login_shell_package_path": {
+              "type": "boolean"
+            },
             "mcp_2026_07_28": {
               "type": "boolean"
             },
@@ -967,6 +987,9 @@
               "type": "boolean"
             },
             "mentions_v2": {
+              "type": "boolean"
+            },
+            "model_catalog_in_context": {
               "type": "boolean"
             },
             "multi_agent": {
@@ -1881,6 +1904,20 @@
       "additionalProperties": false,
       "description": "User-configurable prompt, approval, and context settings for Guardian v2.",
       "properties": {
+        "async_classifier_conversation_token_limit": {
+          "description": "Reset retained async history when the next request exceeds this token estimate. Defaults to 100,000. Fresh requests remain subject to the model's input limit.",
+          "format": "uint",
+          "minimum": 1.0,
+          "type": "integer"
+        },
+        "async_classifier_mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AsyncClassifierMode"
+            }
+          ],
+          "description": "Classifier experiment override. Otherwise use the model default, then snapshots."
+        },
         "classifier_instructions": {
           "type": "string"
         },
@@ -4587,6 +4624,7 @@
             "agents": {
               "archive": null,
               "delete": null,
+              "fork": null,
               "hide": null,
               "new_task": null,
               "new_worktree": null,
@@ -4945,6 +4983,14 @@
             }
           ],
           "description": "Permanently delete the selected task and its child agents after confirmation."
+        },
+        "fork": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/KeybindingsSpec"
+            }
+          ],
+          "description": "Fork the selected conversation and open the new session."
         },
         "hide": {
           "allOf": [
@@ -5530,6 +5576,7 @@
           "default": {
             "archive": null,
             "delete": null,
+            "fork": null,
             "hide": null,
             "new_task": null,
             "new_worktree": null,
@@ -6900,6 +6947,9 @@
         "analytics_plan_history": {
           "type": "boolean"
         },
+        "api_key_cyber_access_programs": {
+          "type": "boolean"
+        },
         "api_key_model_discovery": {
           "type": "boolean"
         },
@@ -6941,6 +6991,9 @@
           "type": "boolean"
         },
         "bedrock_setup_wizard": {
+          "type": "boolean"
+        },
+        "browser_annotation_api": {
           "type": "boolean"
         },
         "browser_use": {
@@ -7123,6 +7176,9 @@
         "in_app_updates": {
           "type": "boolean"
         },
+        "in_app_voice": {
+          "type": "boolean"
+        },
         "instant_interrupt": {
           "type": "boolean"
         },
@@ -7141,6 +7197,9 @@
         "local_thread_store_shared_compression": {
           "type": "boolean"
         },
+        "login_shell_package_path": {
+          "type": "boolean"
+        },
         "mcp_2026_07_28": {
           "type": "boolean"
         },
@@ -7154,6 +7213,9 @@
           "type": "boolean"
         },
         "mentions_v2": {
+          "type": "boolean"
+        },
+        "model_catalog_in_context": {
           "type": "boolean"
         },
         "multi_agent": {
