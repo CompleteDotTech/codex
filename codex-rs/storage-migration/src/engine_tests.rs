@@ -77,6 +77,10 @@ async fn reset_target(pool: &PostgresPool) {
         "DELETE FROM codex_storage.agent_board_channels",
         "DELETE FROM codex_storage.agent_board_subscriptions",
         "DELETE FROM codex_storage.agent_board_opt_outs",
+        "UPDATE codex_storage.log_id_counter SET last_id = 0",
+        "UPDATE codex_storage.queue_change_counter SET version = 0",
+        "UPDATE codex_storage.agent_board_post_counter SET last_seq = 0",
+        "UPDATE codex_storage.thread_timestamp_marks SET updated_at_ms = 0, recency_at_ms = 0",
     ] {
         sqlx::query(statement)
             .execute(&mut *connection)
