@@ -104,9 +104,27 @@ impl StorageService {
         plan_id: Uuid,
         confirmation: Confirmation,
     ) -> Result<OperationRecord, StorageError> {
+        let (record, created) = self
+            .prepare_migration(operation_id, plan_id, confirmation)
+            .await?;
+        if created {
+            self.run_migration(record).await
+        } else {
+            Ok(record)
+        }
+    }
+
+    /// Validate a migration request and record it, without copying anything. Returns the
+    /// record and whether this call created it; a repeated request gets the existing record.
+    pub async fn prepare_migration(
+        &self,
+        operation_id: Uuid,
+        plan_id: Uuid,
+        confirmation: Confirmation,
+    ) -> Result<(OperationRecord, bool), StorageError> {
         if let Some(existing) = self.journal.read(operation_id).map_err(internal)? {
             // A repeated request answers with what is already there.
-            return Ok(existing);
+            return Ok((existing, false));
         }
         if !confirmation.writers_stopped {
             return Err(StorageError(BlockerCode::NotConfirmed));
@@ -118,7 +136,7 @@ impl StorageService {
         if let Some(blocker) = plan.blockers.first() {
             return Err(StorageError(*blocker));
         }
-        let mut record = OperationRecord {
+        let record = OperationRecord {
             operation_id,
             action: PlanAction::Migrate,
             plan_digest: plan.digest,
@@ -136,6 +154,17 @@ impl StorageService {
                 internal(error)
             }
         })?;
+        Ok((record, true))
+    }
+
+    /// Copy and verify a prepared migration. Does nothing if this process already drives it.
+    pub async fn run_migration(
+        &self,
+        mut record: OperationRecord,
+    ) -> Result<OperationRecord, StorageError> {
+        let Some(_claim) = self.claim(record.operation_id) else {
+            return Ok(record);
+        };
         self.copy_and_verify(&mut record).await?;
         Ok(record)
     }

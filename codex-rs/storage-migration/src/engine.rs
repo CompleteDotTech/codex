@@ -312,6 +312,27 @@ impl Migrator {
         Ok(VerificationReport { run_id, domains })
     }
 
+    /// Rows copied so far in a run, by domain, as the run's checkpoints record them.
+    pub async fn progress(&self, run_id: Uuid) -> Result<Vec<(String, u64)>, MigrationError> {
+        let mut connection = self.connection().await?;
+        let rows = sqlx::query(
+            "SELECT domain, row_count FROM storage_migration_domains \
+             WHERE run_id = $1 ORDER BY domain",
+        )
+        .bind(run_id)
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(target)?;
+        rows.iter()
+            .map(|row| {
+                Ok((
+                    row.try_get::<String, _>("domain").map_err(target)?,
+                    row.try_get::<i64, _>("row_count").map_err(target)? as u64,
+                ))
+            })
+            .collect()
+    }
+
     /// The activation row as the store reports it right now.
     pub async fn activation_state(&self) -> Result<ActivationState, MigrationError> {
         let mut connection = self.connection().await?;

@@ -18269,6 +18269,481 @@
       ],
       "type": "object"
     },
+    "StorageAuthority": {
+      "description": "What the home's authority records say.",
+      "enum": [
+        "unmanaged",
+        "local",
+        "remote",
+        "cutoverInProgress",
+        "invalid"
+      ],
+      "type": "string"
+    },
+    "StorageBackend": {
+      "description": "Which backend holds the authoritative history.",
+      "enum": [
+        "localSqlite",
+        "remotePostgres"
+      ],
+      "type": "string"
+    },
+    "StorageBlocker": {
+      "description": "Why a storage operation cannot proceed. The set is stable; clients may switch on it.",
+      "enum": [
+        "noCandidateProfile",
+        "migratorCredentialMissing",
+        "credentialUnavailable",
+        "caCertificateRequired",
+        "unsupportedNamespace",
+        "connectionFailed",
+        "connectionTimedOut",
+        "schemaNeedsUpgrade",
+        "schemaTooNew",
+        "schemaInvalid",
+        "targetNotEmpty",
+        "datasetNotActivated",
+        "datasetMismatch",
+        "datasetMigrating",
+        "datasetRetired",
+        "cutoverInProgress",
+        "authorityInvalid",
+        "alreadyRemote",
+        "notRemote",
+        "sqliteHomeDiffersFromCodexHome",
+        "stalePlan",
+        "notConfirmed",
+        "operationConflict",
+        "operationNotFound",
+        "sourceUnreadable",
+        "stagingFailed",
+        "verificationFailed",
+        "storageAdminRequired",
+        "internal"
+      ],
+      "type": "string"
+    },
+    "StorageCheckStage": {
+      "description": "Where the connection test stopped.",
+      "enum": [
+        "profile",
+        "credential",
+        "connect",
+        "schema",
+        "dataset",
+        "ready"
+      ],
+      "type": "string"
+    },
+    "StorageConnectionReport": {
+      "properties": {
+        "blocker": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StorageBlocker"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "datasetId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "datasetState": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "empty": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "generation": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "schemaFormat": {
+          "format": "int32",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stage": {
+          "$ref": "#/definitions/StorageCheckStage"
+        }
+      },
+      "required": [
+        "stage"
+      ],
+      "type": "object"
+    },
+    "StorageCopiedDomain": {
+      "properties": {
+        "domain": {
+          "type": "string"
+        },
+        "rows": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "domain",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "StorageOperation": {
+      "description": "One durable operation as it is stored and reported.",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/StoragePlanAction"
+        },
+        "blocker": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StorageBlocker"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "copied": {
+          "items": {
+            "$ref": "#/definitions/StorageCopiedDomain"
+          },
+          "type": "array"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "planDigest": {
+          "type": "string"
+        },
+        "runId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/StorageOperationState"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "action",
+        "copied",
+        "createdAt",
+        "operationId",
+        "planDigest",
+        "state",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "StorageOperationState": {
+      "oneOf": [
+        {
+          "enum": [
+            "planned",
+            "copying",
+            "verifying",
+            "committing",
+            "active",
+            "failed",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Verified and waiting for the explicit step that makes it authoritative.",
+          "enum": [
+            "ready"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "StoragePlan": {
+      "description": "A preview that is either startable or lists exactly what blocks it.",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/StoragePlanAction"
+        },
+        "blockers": {
+          "items": {
+            "$ref": "#/definitions/StorageBlocker"
+          },
+          "type": "array"
+        },
+        "connection": {
+          "$ref": "#/definitions/StorageConnectionReport"
+        },
+        "destination": {
+          "description": "`endpoint:port/database/namespace`; never a credential.",
+          "type": "string"
+        },
+        "digest": {
+          "description": "Changes whenever any fact behind the plan changes.",
+          "type": "string"
+        },
+        "estimate": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StorageSourceEstimate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host": {
+          "type": "string"
+        },
+        "localGeneration": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "planId": {
+          "type": "string"
+        },
+        "requiresPause": {
+          "description": "Local writers must be stopped before the operation starts.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "action",
+        "blockers",
+        "connection",
+        "destination",
+        "digest",
+        "host",
+        "planId",
+        "requiresPause"
+      ],
+      "type": "object"
+    },
+    "StoragePlanAction": {
+      "description": "What a plan or operation moves.",
+      "oneOf": [
+        {
+          "description": "Copy this host's history into the remote dataset and make it authoritative.",
+          "enum": [
+            "migrate"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Copy the remote dataset back into this host and make local files authoritative.",
+          "enum": [
+            "return"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "StorageRecoveryOutcome": {
+      "enum": [
+        "idle",
+        "rolledForward",
+        "rolledBack"
+      ],
+      "type": "string"
+    },
+    "StorageRemoteSummary": {
+      "description": "What the remote dataset reported when it was reachable.",
+      "properties": {
+        "blocker": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StorageBlocker"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "datasetId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "datasetMatches": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "generation": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reachable": {
+          "type": "boolean"
+        },
+        "state": {
+          "description": "`open`, `migrating` or `retired`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "reachable"
+      ],
+      "type": "object"
+    },
+    "StorageSourceEstimate": {
+      "description": "Row and file counts of a home, read without copying anything.",
+      "properties": {
+        "attachments": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "boardPosts": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "goals": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "logs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "memoryOutputs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "projects": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "queuedItems": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "rolloutBytes": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "rolloutFiles": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "sections": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "threads": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "attachments",
+        "boardPosts",
+        "goals",
+        "logs",
+        "memoryOutputs",
+        "projects",
+        "queuedItems",
+        "rolloutBytes",
+        "rolloutFiles",
+        "sections",
+        "threads"
+      ],
+      "type": "object"
+    },
+    "StorageStatus": {
+      "description": "The active backend of the machine that runs this app-server.",
+      "properties": {
+        "activeBackend": {
+          "$ref": "#/definitions/StorageBackend"
+        },
+        "authority": {
+          "$ref": "#/definitions/StorageAuthority"
+        },
+        "blockers": {
+          "items": {
+            "$ref": "#/definitions/StorageBlocker"
+          },
+          "type": "array"
+        },
+        "candidateConfigured": {
+          "type": "boolean"
+        },
+        "datasetId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host": {
+          "description": "Names the machine whose storage this describes, so a client never mistakes its own host for the server's.",
+          "type": "string"
+        },
+        "localGeneration": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "remote": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StorageRemoteSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "remoteEverActivated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "activeBackend",
+        "authority",
+        "blockers",
+        "candidateConfigured",
+        "host",
+        "remoteEverActivated"
+      ],
+      "type": "object"
+    },
     "StrictReviewRequiredNotification": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {

@@ -59,8 +59,25 @@ impl StorageService {
         plan_id: Uuid,
         confirmation: Confirmation,
     ) -> Result<OperationRecord, StorageError> {
+        let (record, created) = self
+            .prepare_return(operation_id, plan_id, confirmation)
+            .await?;
+        if created {
+            self.run_return(record).await
+        } else {
+            Ok(record)
+        }
+    }
+
+    /// Validate a return request and record it, without exporting anything.
+    pub async fn prepare_return(
+        &self,
+        operation_id: Uuid,
+        plan_id: Uuid,
+        confirmation: Confirmation,
+    ) -> Result<(OperationRecord, bool), StorageError> {
         if let Some(existing) = self.journal.read(operation_id).map_err(internal)? {
-            return Ok(existing);
+            return Ok((existing, false));
         }
         if !confirmation.writers_stopped {
             return Err(StorageError(BlockerCode::NotConfirmed));
@@ -72,7 +89,7 @@ impl StorageService {
         if let Some(blocker) = plan.blockers.first() {
             return Err(StorageError(*blocker));
         }
-        let mut record = OperationRecord {
+        let record = OperationRecord {
             operation_id,
             action: PlanAction::Return,
             plan_digest: plan.digest,
@@ -90,6 +107,17 @@ impl StorageService {
                 internal(error)
             }
         })?;
+        Ok((record, true))
+    }
+
+    /// Export and verify a prepared return. Does nothing if this process already drives it.
+    pub async fn run_return(
+        &self,
+        mut record: OperationRecord,
+    ) -> Result<OperationRecord, StorageError> {
+        let Some(_claim) = self.claim(record.operation_id) else {
+            return Ok(record);
+        };
         self.export_and_verify(&mut record).await?;
         Ok(record)
     }

@@ -46,12 +46,46 @@ pub struct StorageServiceInputs {
 pub struct StorageService {
     pub(crate) inputs: StorageServiceInputs,
     pub(crate) journal: Journal,
+    running: std::sync::Mutex<std::collections::HashSet<Uuid>>,
+}
+
+/// Held while this process drives an operation, so a repeated request cannot drive it twice.
+pub(crate) struct RunGuard<'a> {
+    service: &'a StorageService,
+    operation_id: Uuid,
+}
+
+impl Drop for RunGuard<'_> {
+    fn drop(&mut self) {
+        self.service
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.operation_id);
+    }
 }
 
 impl StorageService {
     pub fn new(inputs: StorageServiceInputs) -> Self {
         let journal = Journal::new(&inputs.codex_home);
-        Self { inputs, journal }
+        Self {
+            inputs,
+            journal,
+            running: std::sync::Mutex::default(),
+        }
+    }
+
+    /// Claim the right to drive an operation; `None` means this process already is.
+    pub(crate) fn claim(&self, operation_id: Uuid) -> Option<RunGuard<'_>> {
+        let inserted = self
+            .running
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(operation_id);
+        inserted.then_some(RunGuard {
+            service: self,
+            operation_id,
+        })
     }
 
     /// The machine whose storage this service controls.
@@ -260,6 +294,34 @@ impl StorageService {
             .read(operation_id)
             .map_err(|_| StorageError(BlockerCode::Internal))?
             .ok_or(StorageError(BlockerCode::OperationNotFound))
+    }
+
+    /// One operation with the copy progress the destination records while it is running. A
+    /// reconnecting client sees where the work is, not only where it last saved.
+    pub async fn operation_progress(
+        &self,
+        operation_id: Uuid,
+    ) -> Result<OperationRecord, StorageError> {
+        let mut record = self.operation(operation_id)?;
+        let copying = matches!(
+            record.state,
+            crate::journal::OperationState::Copying | crate::journal::OperationState::Verifying
+        );
+        if !copying {
+            return Ok(record);
+        }
+        let Ok(storage) = self.connect().await else {
+            return Ok(record);
+        };
+        let migrator = self.migrator(&storage);
+        if let Ok(state) = migrator.activation_state().await
+            && let Some(run_id) = record.run_id.or(state.run_id)
+            && let Ok(rows) = migrator.progress(run_id).await
+        {
+            record.copied = rows;
+        }
+        storage.close().await;
+        Ok(record)
     }
 
     /// Every recorded operation, oldest first.

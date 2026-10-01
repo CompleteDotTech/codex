@@ -4145,6 +4145,25 @@
       ],
       "type": "string"
     },
+    "StoragePlanAction": {
+      "description": "What a plan or operation moves.",
+      "oneOf": [
+        {
+          "description": "Copy this host's history into the remote dataset and make it authoritative.",
+          "enum": [
+            "migrate"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Copy the remote dataset back into this host and make local files authoritative.",
+          "enum": [
+            "return"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "SubagentMigration": {
       "properties": {
         "name": {

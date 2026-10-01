@@ -120,6 +120,48 @@ errors. After connecting, the live metadata request has a 30-second timeout. A
 timeout closes the probed connection and starts normal session recovery without
 retrying the failed request.
 
+## Storage (experimental)
+
+The `storage/*` methods control where this machine keeps Codex history: local SQLite and
+rollout files, or a remote PostgreSQL dataset. They act on the machine that runs the
+app-server, using its files and its credentials, never on the client's machine. Every
+result names that machine in `host`, so a client can show whose storage it controls.
+
+- `storage/status` reports `activeBackend` (`localSqlite` or `remotePostgres`), the authority
+  records (`unmanaged`, `local`, `remote`, `cutoverInProgress`, `invalid`), the local generation
+  and dataset id, and the `blockers` that stop a change. `probeRemote: true` also connects to
+  the saved profile and reports the dataset.
+- `storage/check` tests the saved profile with the runtime login and reports where it stopped
+  (`profile`, `credential`, `connect`, `schema`, `dataset`, `ready`). Nothing is changed.
+- `storage/initialize` creates or upgrades the remote tables with the schema-owner credential.
+- `storage/plan` previews a `migrate` (this host into the empty remote dataset) or a `return`
+  (the remote dataset back into this host). A plan lists row and file counts, the destination
+  as `endpoint:port/database/namespace`, and every blocker. Its `planId` and `digest` change
+  whenever any fact behind it changes.
+- `storage/start` starts a durable operation for a previewed plan. The server answers at once
+  with the recorded operation and keeps copying in the background; `activate: true` also makes
+  the verified copy authoritative when it is ready. A repeated request with the same
+  `operationId` returns the existing operation and never starts a second copy. A stale plan, a
+  plan with blockers, or `writersStopped: false` is refused.
+- `storage/activate` makes a verified operation (`state: ready`) authoritative; repeating it
+  returns the same result.
+- `storage/operation/read` and `storage/operation/list` replay recorded operations. While an
+  operation is copying, `copied` carries the rows written so far, so a client that reconnects
+  sees where the work is.
+- `storage/cancel` cancels an operation that has not been activated. The local home stays
+  authoritative.
+- `storage/recover` settles an interrupted cutover from the evidence on both sides, rolling it
+  forward when the destination already published and back when it did not.
+
+Refusals are request errors whose `data` carries `{"blocker": "<code>", "retryable": <bool>}`.
+The codes are stable (`stalePlan`, `targetNotEmpty`, `alreadyRemote`, `notConfirmed`,
+`storageAdminRequired`, and the rest of `StorageBlocker`). Results never contain credentials
+or row contents. Methods that change storage (`storage/initialize`, `storage/start`,
+`storage/activate`, `storage/cancel`, `storage/recover`) are refused for clients that reach the
+server over WebSocket, because only the host's own clients may change its storage; the reads
+are open to every client. Credentials are referenced by id in the saved profile and entered with
+`codex storage credential set`, never sent through this API.
+
 ## User verification (experimental)
 
 Codex app-server advertises `openai/elicitation.userVerification` to the

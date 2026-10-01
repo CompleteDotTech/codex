@@ -43,6 +43,7 @@ use crate::request_processors::ProcessExecRequestProcessor;
 use crate::request_processors::ProjectRequestProcessor;
 use crate::request_processors::RemoteControlRequestProcessor;
 use crate::request_processors::SearchRequestProcessor;
+use crate::request_processors::StorageRequestProcessor;
 use crate::request_processors::ThreadGoalRequestProcessor;
 use crate::request_processors::ThreadQueueRequestProcessor;
 use crate::request_processors::ThreadRequestProcessor;
@@ -153,6 +154,7 @@ pub(crate) struct MessageProcessor {
     process_exec_processor: ProcessExecRequestProcessor,
     config_processor: ConfigRequestProcessor,
     environment_processor: EnvironmentRequestProcessor,
+    storage_processor: StorageRequestProcessor,
     external_agent_config_processor: ExternalAgentConfigRequestProcessor,
     feedback_processor: FeedbackRequestProcessor,
     fs_processor: FsRequestProcessor,
@@ -304,18 +306,17 @@ impl MessageProcessor {
         let thread_store = codex_core::thread_store_from_config(config.as_ref(), state_db.clone());
         // Queue persistence requires SQLite, so in-memory thread stores and
         // app servers without a state database do not have a queue backend.
-        let queue_store: Option<Arc<dyn QueueStore>> = if let Some(remote) =
-            codex_core::remote_backend()
-        {
-            Some(Arc::clone(&remote.queue_store))
-        } else {
-            match &config.experimental_thread_store {
-                ThreadStoreConfig::Local => state_db.as_ref().map(|state_db| {
-                    Arc::new(LocalQueueStore::new(Arc::clone(state_db))) as Arc<dyn QueueStore>
-                }),
-                ThreadStoreConfig::InMemory { .. } => None,
-            }
-        };
+        let queue_store: Option<Arc<dyn QueueStore>> =
+            if let Some(remote) = codex_core::remote_backend() {
+                Some(Arc::clone(&remote.queue_store))
+            } else {
+                match &config.experimental_thread_store {
+                    ThreadStoreConfig::Local => state_db.as_ref().map(|state_db| {
+                        Arc::new(LocalQueueStore::new(Arc::clone(state_db))) as Arc<dyn QueueStore>
+                    }),
+                    ThreadStoreConfig::InMemory { .. } => None,
+                }
+            };
         let environment_manager_for_requests = Arc::clone(&environment_manager);
         let environment_manager_for_extensions = Arc::clone(&environment_manager);
         let restriction_product = session_source.restriction_product();
@@ -581,6 +582,7 @@ impl MessageProcessor {
             });
         let environment_processor =
             EnvironmentRequestProcessor::new(thread_manager.environment_manager());
+        let storage_processor = StorageRequestProcessor::new(config_manager.clone(), rpc_transport);
         let fs_processor = FsRequestProcessor::new(
             Arc::clone(&environment_manager_for_requests),
             FsWatchManager::new(outgoing.clone()),
@@ -605,6 +607,7 @@ impl MessageProcessor {
             process_exec_processor,
             config_processor,
             environment_processor,
+            storage_processor,
             external_agent_config_processor,
             feedback_processor,
             fs_processor,
@@ -1238,6 +1241,56 @@ impl MessageProcessor {
             ClientRequest::EnvironmentStatus { params, .. } => {
                 self.environment_processor.environment_status(params).await
             }
+            ClientRequest::StorageStatus { params, .. } => self
+                .storage_processor
+                .status(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::StorageCheck { params, .. } => self
+                .storage_processor
+                .check(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::StorageInitialize { params, .. } => self
+                .storage_processor
+                .initialize(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::StoragePlan { params, .. } => self
+                .storage_processor
+                .plan(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::StorageStart { params, .. } => self
+                .storage_processor
+                .start(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::StorageActivate { params, .. } => self
+                .storage_processor
+                .activate(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::StorageRecover { params, .. } => self
+                .storage_processor
+                .recover(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::StorageCancel { params, .. } => self
+                .storage_processor
+                .cancel(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::StorageOperationRead { params, .. } => self
+                .storage_processor
+                .operation_read(params)
+                .await
+                .map(|response| Some(response.into())),
+            ClientRequest::StorageOperationList { params, .. } => self
+                .storage_processor
+                .operation_list(params)
+                .await
+                .map(|response| Some(response.into())),
             ClientRequest::FsReadFile { params, .. } => self
                 .fs_processor
                 .read_file(params)

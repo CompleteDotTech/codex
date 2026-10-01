@@ -128,6 +128,7 @@ mod session_end;
 mod skills_list;
 mod sleep;
 mod sqlite_recovery;
+mod storage;
 #[path = "storage_candidate_config_tests.rs"]
 mod storage_candidate_config_tests;
 mod thread_archive;

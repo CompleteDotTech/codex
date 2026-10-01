@@ -1223,6 +1223,76 @@ client_request_definitions! {
         serialization: global_shared_read("environment"),
         response: v2::EnvironmentStatusResponse,
     },
+    #[experimental("storage/status")]
+    /// Reports the active storage backend of the machine running this app-server and what blocks changing it.
+    StorageStatus => "storage/status" {
+        params: v2::StorageStatusParams,
+        serialization: global_shared_read("storage"),
+        response: v2::StorageStatusResponse,
+    },
+    #[experimental("storage/check")]
+    /// Tests the saved remote storage profile without changing anything.
+    StorageCheck => "storage/check" {
+        params: v2::StorageCheckParams,
+        serialization: global_shared_read("storage"),
+        response: v2::StorageCheckResponse,
+    },
+    #[experimental("storage/initialize")]
+    /// Creates or upgrades the remote tables with the schema-owner credential.
+    StorageInitialize => "storage/initialize" {
+        params: v2::StorageInitializeParams,
+        serialization: global("storage"),
+        response: v2::StorageInitializeResponse,
+    },
+    #[experimental("storage/plan")]
+    /// Previews a migration to or from remote storage and lists what blocks it.
+    StoragePlan => "storage/plan" {
+        params: v2::StoragePlanParams,
+        serialization: global_shared_read("storage"),
+        response: v2::StoragePlanResponse,
+    },
+    #[experimental("storage/start")]
+    /// Starts a durable, idempotent migration operation; copying continues on the server.
+    StorageStart => "storage/start" {
+        params: v2::StorageStartParams,
+        serialization: global("storage"),
+        response: v2::StorageStartResponse,
+    },
+    #[experimental("storage/activate")]
+    /// Makes a verified copy authoritative.
+    StorageActivate => "storage/activate" {
+        params: v2::StorageActivateParams,
+        serialization: global("storage"),
+        response: v2::StorageActivateResponse,
+    },
+    #[experimental("storage/recover")]
+    /// Settles an interrupted cutover from the evidence on both sides.
+    StorageRecover => "storage/recover" {
+        params: v2::StorageRecoverParams,
+        serialization: global("storage"),
+        response: v2::StorageRecoverResponse,
+    },
+    #[experimental("storage/cancel")]
+    /// Cancels an operation that has not been activated.
+    StorageCancel => "storage/cancel" {
+        params: v2::StorageCancelParams,
+        serialization: global("storage"),
+        response: v2::StorageCancelResponse,
+    },
+    #[experimental("storage/operation/read")]
+    /// Reads one storage operation, including live copy progress.
+    StorageOperationRead => "storage/operation/read" {
+        params: v2::StorageOperationReadParams,
+        serialization: global_shared_read("storage"),
+        response: v2::StorageOperationReadResponse,
+    },
+    #[experimental("storage/operation/list")]
+    /// Lists recorded storage operations.
+    StorageOperationList => "storage/operation/list" {
+        params: v2::StorageOperationListParams,
+        serialization: global_shared_read("storage"),
+        response: v2::StorageOperationListResponse,
+    },
 
     McpServerOauthLogin => "mcpServer/oauth/login" {
         params: v2::McpServerOauthLoginParams,
