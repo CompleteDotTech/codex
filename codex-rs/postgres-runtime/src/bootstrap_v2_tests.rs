@@ -186,7 +186,7 @@ async fn real_v1_upgrade_through_graph_and_import_schemas_is_atomic() {
     .fetch_all(&mut *transaction)
     .await
     .expect("read v3 history");
-    assert_eq!(versions, (6, 6, 6));
+    assert_eq!(versions, (7, 7, 7));
     assert!(history_matches(
         &rows,
         BASE_MIGRATOR.migrations.as_ref(),
@@ -352,7 +352,7 @@ async fn real_v2_upgrade_to_import_schema_is_atomic_and_role_scoped() {
     .fetch_all(&mut *inspection)
     .await
     .expect("read v3 history");
-    assert_eq!(versions, (6, 6, 6));
+    assert_eq!(versions, (7, 7, 7));
     assert!(history_matches(
         &history,
         BASE_MIGRATOR.migrations.as_ref(),
@@ -732,7 +732,7 @@ async fn real_v4_upgrade_to_section_catalog_rejects_orphans_and_preserves_join()
         check_verified_target_compatibility(&first, &old_target, RequiredAccess::ReadWrite).await,
         Err(CompatibilityError::UnsupportedSchema)
     );
-    let current_fixture = SignedFixture::new(6);
+    let current_fixture = SignedFixture::new(7);
     let current_target = current_fixture.verify();
     assert_eq!(
         check_verified_target_compatibility(&first, &current_target, RequiredAccess::ReadWrite)
