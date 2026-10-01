@@ -2,6 +2,7 @@
 
 mod catalog;
 mod list;
+mod projects;
 mod timestamps;
 
 pub use catalog::PostgresThreadCatalog;

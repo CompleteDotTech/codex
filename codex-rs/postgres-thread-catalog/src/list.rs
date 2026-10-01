@@ -203,7 +203,7 @@ impl PostgresThreadCatalog {
             .transpose()
     }
 
-    async fn fetch_rows(
+    pub(crate) async fn fetch_rows(
         &self,
         mut builder: QueryBuilder<Postgres>,
     ) -> Result<Vec<sqlx::postgres::PgRow>> {

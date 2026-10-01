@@ -43,6 +43,7 @@ pub(crate) const PROTECTED_TABLES: &[ProtectedTable] = &[
             "idx_threads_recency_id",
             "idx_threads_section_recency",
             "idx_threads_section_position",
+            "idx_threads_project_id",
         ],
     },
     ProtectedTable {
@@ -163,6 +164,21 @@ pub(crate) const PROTECTED_TABLES: &[ProtectedTable] = &[
         name: "thread_timestamp_marks",
         runtime_privileges: "SELECT, UPDATE",
         indexes: &["thread_timestamp_marks_pkey"],
+    },
+    ProtectedTable {
+        name: "projects",
+        runtime_privileges: "SELECT, INSERT, UPDATE, DELETE",
+        indexes: &["projects_pkey", "idx_projects_position"],
+    },
+    ProtectedTable {
+        name: "project_roots",
+        runtime_privileges: "SELECT, INSERT, UPDATE, DELETE",
+        indexes: &["project_roots_pkey"],
+    },
+    ProtectedTable {
+        name: "project_idempotency_keys",
+        runtime_privileges: "SELECT, INSERT",
+        indexes: &["project_idempotency_keys_pkey"],
     },
 ];
 
@@ -405,6 +421,32 @@ ALTER TABLE codex_storage.queued_thread_revisions
             META_UPDATE,
         ],
         qualified_identifiers: 2,
+    },
+    MigrationShape {
+        version: 14,
+        starts_with: Some("-- Inactive project persistence"),
+        contains: &[
+            "
+CREATE TABLE codex_storage.projects (
+",
+            "
+CREATE TABLE codex_storage.project_roots (
+",
+            "
+CREATE TABLE codex_storage.project_idempotency_keys (
+",
+            "
+ALTER TABLE codex_storage.threads
+",
+            "
+CREATE INDEX idx_projects_position
+",
+            "
+CREATE INDEX idx_threads_project_id
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 9,
     },
 ];
 

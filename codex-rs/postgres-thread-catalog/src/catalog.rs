@@ -33,7 +33,7 @@ use tokio::time::timeout;
 
 const QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
-type BoxOperation<'c, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'c>>;
+pub(crate) type BoxOperation<'c, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'c>>;
 
 /// Fixed-namespace thread catalog adapter. Construction does not activate PostgreSQL.
 #[derive(Clone)]
@@ -69,7 +69,7 @@ impl PostgresThreadCatalog {
     }
 
     /// Run one catalog write in a transaction, bounded by the query timeout.
-    async fn write<T, F>(&self, operation: F) -> Result<T>
+    pub(crate) async fn write<T, F>(&self, operation: F) -> Result<T>
     where
         F: for<'c> FnOnce(&'c mut PgConnection) -> BoxOperation<'c, T>,
     {
@@ -86,6 +86,29 @@ impl PostgresThreadCatalog {
         })
         .await
         .map_err(|_| anyhow!("PostgreSQL thread operation timed out"))?
+    }
+
+    /// Run reads against one snapshot, like a deferred SQLite transaction.
+    pub(crate) async fn read<T, F>(&self, operation: F) -> Result<T>
+    where
+        F: for<'c> FnOnce(&'c mut PgConnection) -> BoxOperation<'c, T>,
+    {
+        let mut connection = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|error| anyhow!("PostgreSQL thread storage is unavailable: {error:?}"))?;
+        timeout(QUERY_TIMEOUT, async {
+            let mut tx = connection.begin().await?;
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+                .execute(&mut *tx)
+                .await?;
+            let value = operation(&mut tx).await?;
+            tx.commit().await?;
+            anyhow::Ok(value)
+        })
+        .await
+        .map_err(|_| anyhow!("PostgreSQL thread query timed out"))?
     }
 
     pub async fn get_thread(&self, id: ThreadId) -> Result<Option<ThreadMetadata>> {

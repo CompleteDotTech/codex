@@ -5,6 +5,9 @@ use codex_postgres_runtime::bootstrap_codex_storage;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
 use codex_state::Anchor;
+use codex_state::Project;
+use codex_state::ProjectRoot;
+use codex_state::ProjectSortKey;
 use codex_state::SortDirection;
 use codex_state::SortKey;
 use codex_state::SqliteConfig;
@@ -16,6 +19,7 @@ use codex_utils_absolute_path::test_support::PathExt;
 use pretty_assertions::assert_eq;
 use serde_json::Value;
 use sqlx::Row;
+use std::collections::BTreeMap;
 
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
     let receipt: Value = serde_json::from_slice(
@@ -899,10 +903,367 @@ async fn real_postgres_listing_matches_sqlite() {
     }
 }
 
+/// Replaces generated project ids with labels, so backends that mint their own ids compare.
+struct ProjectLabels(Vec<String>);
+
+impl ProjectLabels {
+    fn text(&self, text: String) -> String {
+        let mut text = text;
+        for (index, id) in self.0.iter().enumerate() {
+            text = text.replace(id, &format!("project-{index}"));
+        }
+        text
+    }
+
+    fn show(&self, project: &Project) -> String {
+        self.text(format!(
+            "{} {:?} {:?} {:?} position {} recency {:?}",
+            project.id,
+            project.name,
+            project
+                .roots
+                .iter()
+                .map(|root| root.path.as_str())
+                .collect::<Vec<_>>(),
+            project.metadata,
+            project.position,
+            project.recency_at_ms,
+        ))
+    }
+}
+
+fn roots(paths: &[&str]) -> Vec<ProjectRoot> {
+    paths
+        .iter()
+        .map(|path| ProjectRoot {
+            path: (*path).to_string(),
+        })
+        .collect()
+}
+
+fn attributes(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+    pairs
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+        .collect()
+}
+
+async fn project_scenario(
+    backend: &Backend,
+    token: &str,
+    base: DateTime<Utc>,
+    ids: &[ThreadId],
+) -> Vec<String> {
+    let mut log = Vec::new();
+    let mut labels = ProjectLabels(Vec::new());
+
+    // Start from an empty project table: leftovers from earlier runs would share the positions.
+    loop {
+        let page = both!(
+            backend,
+            list_projects(None, 50, ProjectSortKey::Position, SortDirection::Asc)
+        )
+        .expect("list leftovers");
+        if page.projects.is_empty() {
+            break;
+        }
+        for project in page.projects {
+            both!(backend, delete_project(&project.id)).expect("delete leftover");
+        }
+    }
+
+    for (index, id) in ids.iter().enumerate() {
+        let mut thread = metadata(*id, index as i64, base, SessionSource::Cli);
+        thread.model_provider = format!("{token}-projects");
+        thread.title = format!("member {index}");
+        both!(backend, upsert_thread(&thread)).expect("upsert member");
+    }
+    // The last member is archived, so it never counts toward project recency.
+    both!(
+        backend,
+        mark_archived(ids[5], Path::new("/rollouts/archived-member.jsonl"), base)
+    )
+    .expect("archive member");
+    let strings: Vec<String> = ids.iter().map(ToString::to_string).collect();
+
+    let created = both!(
+        backend,
+        create_project(
+            "alpha".to_string(),
+            roots(&["/a", "/b"]),
+            attributes(&[("kind", "one")]),
+            &strings[0..2],
+            "key-alpha"
+        )
+    )
+    .expect("create alpha");
+    labels.0.push(created.project.id.clone());
+    log.push(format!(
+        "created alpha: {} {}",
+        created.created,
+        labels.show(&created.project)
+    ));
+    let repeated = both!(
+        backend,
+        create_project(
+            "ignored".to_string(),
+            Vec::new(),
+            BTreeMap::new(),
+            &[],
+            "key-alpha"
+        )
+    )
+    .expect("repeat alpha");
+    log.push(format!(
+        "repeated alpha: {} {}",
+        repeated.created,
+        labels.show(&repeated.project)
+    ));
+    log.push(format!(
+        "unknown member: {}",
+        both!(
+            backend,
+            create_project(
+                "ghost".to_string(),
+                Vec::new(),
+                BTreeMap::new(),
+                &[ThreadId::new().to_string()],
+                "key-ghost"
+            )
+        )
+        .map(|created| created.created.to_string())
+        .unwrap_or_else(|error| error.to_string())
+    ));
+    log.push(format!(
+        "invalid member: {}",
+        both!(
+            backend,
+            create_project(
+                "ghost".to_string(),
+                Vec::new(),
+                BTreeMap::new(),
+                &["not-a-thread".to_string()],
+                "key-invalid"
+            )
+        )
+        .map(|created| created.created.to_string())
+        .unwrap_or_else(|error| error.to_string())
+    ));
+    for (name, paths, member_range, key) in [
+        ("beta", &["/c"][..], 2..3, "key-beta"),
+        ("gamma", &[][..], 3..6, "key-gamma"),
+        ("delta", &["/d", "/e", "/f"][..], 0..0, "key-delta"),
+    ] {
+        let created = both!(
+            backend,
+            create_project(
+                name.to_string(),
+                roots(paths),
+                BTreeMap::new(),
+                &strings[member_range],
+                key
+            )
+        )
+        .expect("create project");
+        labels.0.push(created.project.id.clone());
+        log.push(format!("created {name}: {}", labels.show(&created.project)));
+    }
+    let alpha = labels.0[0].clone();
+    let beta = labels.0[1].clone();
+    let gamma = labels.0[2].clone();
+
+    log.push(format!(
+        "get: {:?} {:?}",
+        both!(backend, get_project(&alpha))
+            .expect("get")
+            .map(|p| labels.show(&p)),
+        both!(backend, get_project("missing"))
+            .expect("get missing")
+            .map(|p| labels.show(&p)),
+    ));
+    log.push(format!(
+        "by key: {:?} {:?}",
+        both!(backend, get_project_by_idempotency_key("key-beta"))
+            .expect("by key")
+            .map(|p| labels.show(&p)),
+        both!(backend, get_project_by_idempotency_key("key-none"))
+            .expect("by missing key")
+            .map(|p| labels.show(&p)),
+    ));
+
+    for (label, name, new_roots, new_metadata) in [
+        ("rename", Some("alpha renamed".to_string()), None, None),
+        ("same", Some("alpha renamed".to_string()), None, None),
+        ("roots", None, Some(roots(&["/z"])), None),
+        (
+            "metadata",
+            None,
+            None,
+            Some(attributes(&[("kind", "two"), ("extra", "yes")])),
+        ),
+        ("clear roots", None, Some(Vec::new()), None),
+    ] {
+        let updated = both!(
+            backend,
+            update_project(&alpha, name, new_roots, new_metadata)
+        )
+        .expect("update");
+        log.push(format!(
+            "update {label}: {:?}",
+            updated.map(|(project, changed)| (labels.show(&project), changed))
+        ));
+    }
+    log.push(format!(
+        "update missing: {:?}",
+        both!(
+            backend,
+            update_project("missing", Some("x".to_string()), None, None)
+        )
+        .expect("update missing")
+        .map(|(project, changed)| (project.id, changed))
+    ));
+
+    for (label, moved, before) in [
+        ("to front", &gamma, Some(&alpha)),
+        ("to end", &gamma, None),
+        ("no-op", &gamma, None),
+        ("before beta", &alpha, Some(&beta)),
+        ("missing", &"missing".to_string(), None),
+        ("before itself", &alpha, Some(&alpha)),
+        ("before unknown", &alpha, Some(&"unknown".to_string())),
+    ] {
+        log.push(format!(
+            "move {label}: {}",
+            labels.text(format!(
+                "{:?}",
+                both!(backend, move_project(moved, before.map(String::as_str)))
+                    .map_err(|error| error.to_string())
+            ))
+        ));
+    }
+
+    for (sort_key, sort_direction) in [
+        (ProjectSortKey::Position, SortDirection::Asc),
+        (ProjectSortKey::Position, SortDirection::Desc),
+        (ProjectSortKey::RecencyAt, SortDirection::Asc),
+        (ProjectSortKey::RecencyAt, SortDirection::Desc),
+    ] {
+        let mut cursor: Option<String> = None;
+        for page_number in 0..6 {
+            let page = both!(
+                backend,
+                list_projects(cursor.as_deref(), 2, sort_key, sort_direction)
+            )
+            .expect("list projects");
+            log.push(format!(
+                "list {sort_key:?} {sort_direction:?} page {page_number}: {:?} next {:?}",
+                page.projects
+                    .iter()
+                    .map(|p| labels.show(p))
+                    .collect::<Vec<_>>(),
+                page.next_cursor.clone().map(|cursor| labels.text(cursor)),
+            ));
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+    }
+    for cursor in [
+        "garbage",
+        "v1|position|asc|1|x",
+        "5|not-a-uuid",
+        "v1|recencyAt|desc|7",
+    ] {
+        log.push(format!(
+            "cursor {cursor}: {}",
+            both!(
+                backend,
+                list_projects(
+                    Some(cursor),
+                    2,
+                    ProjectSortKey::Position,
+                    SortDirection::Asc
+                )
+            )
+            .map(|_| "accepted".to_string())
+            .unwrap_or_else(|error| error.to_string())
+        ));
+    }
+
+    // Assignments report the previous project and reject unknown projects.
+    log.push(
+        format!(
+            "assign: {:?} {:?} {:?} {:?} {:?}",
+            both!(backend, set_thread_project(&strings[5], Some(&beta))).expect("assign"),
+            both!(backend, set_thread_project(&strings[5], Some(&gamma))).expect("reassign"),
+            both!(backend, set_thread_project(&strings[5], None)).expect("clear"),
+            both!(backend, set_thread_project("not-a-thread", None)).expect("invalid thread"),
+            both!(backend, set_thread_project(&strings[5], Some("missing")))
+                .map_err(|error| error.to_string()),
+        )
+        .replace(&beta, "beta")
+        .replace(&gamma, "gamma"),
+    );
+
+    // Deleting a project unassigns its threads and reports which were active or archived.
+    log.push(format!(
+        "delete: {:?} {:?}",
+        both!(backend, delete_project(&gamma)).expect("delete"),
+        both!(backend, delete_project(&gamma)).expect("delete again"),
+    ));
+    log.push(format!(
+        "after delete: {:?} {:?}",
+        both!(backend, get_thread(ids[3]))
+            .expect("get member")
+            .map(|thread| thread.project_id),
+        both!(backend, get_project_by_idempotency_key("key-gamma"))
+            .map(|project| project.map(|p| labels.show(&p)))
+            .map_err(|error| error.to_string()),
+    ));
+    log
+}
+
+async fn real_postgres_projects_match_sqlite() {
+    let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_THREAD_CATALOG_STATE") else {
+        return;
+    };
+    let pool = setup(Path::new(&state)).await;
+    let home = tempfile::tempdir().expect("sqlite fixture home");
+    let sqlite = StateRuntime::init(
+        SqliteConfig::new_for_testing(home.path().abs()),
+        "provider".to_string(),
+    )
+    .await
+    .expect("sqlite runtime");
+    let token = format!(
+        "proj{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    );
+    let base = run_base(&pool).await + chrono::Duration::seconds(40_000);
+    let ids: Vec<ThreadId> = (0..6).map(|_| ThreadId::new()).collect();
+    let expected = project_scenario(&Backend::Sqlite(sqlite), &token, base, &ids).await;
+    let actual = project_scenario(
+        &Backend::Postgres(PostgresThreadCatalog::new(pool)),
+        &token,
+        base,
+        &ids,
+    )
+    .await;
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(&expected) {
+        assert_eq!(actual, expected);
+    }
+}
+
 /// The checks share the namespace-wide timestamp marks, so they run one after another.
 #[tokio::test]
 async fn real_postgres_thread_catalog() {
     real_postgres_threads_match_sqlite().await;
     real_postgres_listing_matches_sqlite().await;
+    real_postgres_projects_match_sqlite().await;
     real_postgres_delete_removes_thread_state_and_keeps_queue_changes_visible().await;
 }
