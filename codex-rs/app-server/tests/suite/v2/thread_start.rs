@@ -71,6 +71,46 @@ const DEFAULT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 const INVALID_REQUEST_ERROR_CODE: i64 = -32600;
 const EXEC_POLICY_PARSE_WARNING_SUMMARY: &str = "Error parsing rules; custom rules not applied.";
 
+#[tokio::test]
+async fn thread_start_persistence_is_opt_in_and_rejects_ephemeral_threads() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build_initialized()
+        .await?;
+
+    let response = mcp.start_thread(ThreadStartParams::default()).await?;
+    assert!(!response.persisted_on_start);
+    let thread = response.thread;
+    let rollout_path = thread.path.expect("persistent thread path");
+    assert!(
+        !rollout_path.exists(),
+        "default start must defer persistence"
+    );
+
+    let request_id = mcp
+        .send_thread_start_request(ThreadStartParams {
+            ephemeral: Some(true),
+            persist_on_start: true,
+            ..Default::default()
+        })
+        .await?;
+    let error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    assert!(
+        error
+            .error
+            .message
+            .contains("persistOnStart is not supported")
+    );
+    Ok(())
+}
+
 fn is_exec_policy_config_warning(notification: &JSONRPCNotification) -> bool {
     notification.method == "configWarning"
         && notification
@@ -115,7 +155,7 @@ model = "gpt-5.4-mini"
         })
         .await?;
 
-    assert_eq!(response.model, "openai.gpt-6-sol");
+    assert_eq!(response.model, "openai.gpt-6.1-sol");
     Ok(())
 }
 
@@ -245,6 +285,7 @@ async fn thread_start_provider_model_fallback_uses_bedrock_static_catalog() -> R
     )
     .await?;
     for model in [
+        "openai.gpt-6.1-sol",
         "openai.gpt-6-sol",
         "openai.gpt-6-luna",
         "openai.gpt-5.6-sol",
@@ -273,7 +314,7 @@ async fn thread_start_provider_model_fallback_uses_bedrock_static_catalog() -> R
             supported_with_fallback.model,
             unsupported_without_fallback.model,
         ],
-        vec!["openai.gpt-6-sol", "openai.gpt-5.5", "gpt-5.4-mini"]
+        vec!["openai.gpt-6.1-sol", "openai.gpt-5.5", "gpt-5.4-mini"]
     );
     Ok(())
 }
@@ -292,6 +333,8 @@ async fn thread_start_bedrock_runtime_prefers_global_cross_region_models() -> Re
         .await?;
 
     for model in [
+        "global.openai.gpt-6.1-sol",
+        "us.openai.gpt-6.1-sol",
         "global.openai.gpt-6-sol",
         "us.openai.gpt-6-sol",
         "global.openai.gpt-6-luna",
@@ -311,7 +354,7 @@ async fn thread_start_bedrock_runtime_prefers_global_cross_region_models() -> Re
         /*allow_provider_model_fallback*/ true,
     )
     .await?;
-    assert_eq!(response.model, "global.openai.gpt-6-sol");
+    assert_eq!(response.model, "global.openai.gpt-6.1-sol");
 
     Ok(())
 }
