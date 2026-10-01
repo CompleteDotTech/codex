@@ -1434,10 +1434,16 @@ async fn section_scenario(
     // Repeatedly moving the last thread to the front halves the gap until a renumber is needed.
     for round in 0..24 {
         let order = both!(backend, get_thread_section_ordering(&[a, b, c, d])).expect("order");
-        let members: Vec<ThreadId> = [a, b, c, d]
-            .into_iter()
-            .filter(|id| order[id].0.is_some())
-            .collect();
+        let mut members: Vec<ThreadId> = Vec::new();
+        for id in [a, b, c, d] {
+            let in_first = both!(backend, get_thread(id))
+                .expect("get")
+                .and_then(|thread| thread.section)
+                .is_some_and(|section| section.id == first.id);
+            if in_first && order[&id].0.is_some() {
+                members.push(id);
+            }
+        }
         let mut sorted = members.clone();
         sorted.sort_by_key(|id| (order[id].0, id.to_string()));
         let (Some(front), Some(last)) = (sorted.first().copied(), sorted.last().copied()) else {
