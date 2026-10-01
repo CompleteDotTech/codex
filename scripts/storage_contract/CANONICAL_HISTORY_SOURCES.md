@@ -109,6 +109,18 @@ Existing tests include `rollout/src/compression_tests.rs`,
 host, a PostgreSQL backend, or source/destination equivalence of outbound model
 input. No new test was added for statically defined file names or enum variants.
 
+The `codex-thread-store` fixture
+`replays_nested_archived_lineage_from_detached_home` now copies only three
+canonical rollout files to a second disposable Codex home: an archived root,
+an archived compressed middle, and an active compressed reference-backed child.
+It removes the source home before loading the child's model context from the
+second home, compares ordered items against the original frozen-prefix replay,
+then removes the referenced ancestor and requires a read error. This qualifies
+that specific native file-closure fixture without a source SQLite projection.
+Embedded source cwd/path values remain unchanged, and the test does not qualify
+path relocation, complete capture enumeration, foreign-host execution, live
+writer fencing, PostgreSQL, or outbound inference equivalence.
+
 The remaining #2/#11 inventory must trace every app-server/TUI/exec/daemon read
 entry point, file-backed attachment implementation, ephemeral sessions (which
 have no durable rollout to capture), caller-supplied history, memory files,

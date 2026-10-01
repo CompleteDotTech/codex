@@ -104,8 +104,31 @@ impl App {
                 }
                 if switching_threads
                     && self.current_displayed_thread_id() == Some(thread_id)
-                    && let Some(input_state) = self.agents_overview.input_states.remove(&thread_id)
+                    && let Some(mut input_state) =
+                        self.agents_overview.input_states.remove(&thread_id)
                 {
+                    // The resumed server session is newer than the cached draft and notification.
+                    if let Some(current) = self.chat_widget.capture_thread_input_state() {
+                        input_state.current_collaboration_mode = current.current_collaboration_mode;
+                        if self
+                            .primary_session_configured
+                            .as_ref()
+                            .is_some_and(|session| {
+                                session.thread_id == thread_id
+                                    && session.collaboration_mode.is_some()
+                            })
+                        {
+                            input_state.active_collaboration_mask =
+                                current.active_collaboration_mask;
+                            input_state.plan_mode_reasoning_effort =
+                                current.plan_mode_reasoning_effort;
+                        } else if let Some(mask) = input_state.active_collaboration_mask.as_mut() {
+                            // Older servers return model and effort without a mode selection.
+                            mask.model = Some(self.chat_widget.current_model().to_string());
+                            mask.reasoning_effort =
+                                Some(self.chat_widget.current_reasoning_effort());
+                        }
+                    }
                     let preserve_in_flight_turn =
                         self.active_turn_id_for_thread(thread_id).await.is_some();
                     self.chat_widget.restore_thread_input_state(
