@@ -218,7 +218,7 @@ pub use permissions::resolve_permission_profile;
 pub(crate) use resolved_permission_profile::PermissionProfileState;
 pub use token_budget_startup::TokenBudgetStartupConfig;
 pub use windows_sandbox_config::PreparedWindowsSandboxConfig;
-use windows_sandbox_config::network_config_allows_mxc;
+use windows_sandbox_config::config_allows_mxc;
 pub use windows_sandbox_config::prepare_windows_sandbox_config;
 use windows_sandbox_config::resolve_windows_sandbox_type;
 
@@ -1848,6 +1848,7 @@ impl Config {
             config_layer_stack: self.config_layer_stack.clone(),
             approvals_reviewer: self.approvals_reviewer,
             environment_cwds: HashMap::new(),
+            environment_use_mxc: HashMap::new(),
             server_permission_profiles: HashMap::new(),
             codex_linux_sandbox_exe: self.codex_linux_sandbox_exe.clone(),
             use_legacy_landlock: self.features.use_legacy_landlock(),
@@ -3518,7 +3519,8 @@ impl Config {
             permission_config_syntax,
         );
         let prefer_mxc = features.enabled(Feature::PreferMxc)
-            && network_config_allows_mxc(
+            && config_allows_mxc(
+                &constrained_windows_sandbox_mode,
                 &effective_permission_selection,
                 profiles_are_active,
                 permission_profile.as_ref(),

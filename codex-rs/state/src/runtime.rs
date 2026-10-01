@@ -45,6 +45,7 @@ mod goal_store;
 mod goals;
 mod log_store;
 mod logs;
+mod logs_maintenance;
 mod memories;
 mod memory_store;
 mod memory_versions;
@@ -79,9 +80,9 @@ pub use memory_store::MemoryStoreFuture;
 pub use memory_store::RuntimeMemoryStore;
 pub use queued_items::SqliteQueueStore;
 pub use recovery::backup_runtime_db_for_fresh_start;
+pub use recovery::collect_runtime_db_backups;
 pub use recovery::is_sqlite_corruption_error;
 pub use recovery::runtime_db_path_for_corruption_error;
-pub use recovery::sqlite_error_detail_is_corruption;
 pub use recovery::sqlite_error_detail_is_lock;
 pub use remote_control::RemoteControlEnrollmentRecord;
 pub use threads::ThreadFilterOptions;
@@ -369,12 +370,7 @@ impl StateRuntime {
             runtime.close().await;
             return Err(err);
         }
-        if let Err(err) = runtime.run_logs_startup_maintenance().await {
-            warn!(
-                "failed to run startup maintenance for logs db at {}: {err}",
-                logs_path.display(),
-            );
-        }
+        runtime.start_periodic_logs_maintenance(std::time::Duration::from_secs(30 * 60));
         Ok(runtime)
     }
 

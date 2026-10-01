@@ -27,7 +27,8 @@ fn settings(state: &Path) -> ConnectionSettings {
         password: std::fs::read_to_string(state.join("secrets/runtime.password"))
             .expect("read private runtime credential")
             .trim()
-            .to_string(),
+            .to_string()
+            .into(),
         ca_certificate: state.join("secrets/ca.crt"),
         limits: PoolLimits {
             connect_timeout: Duration::from_secs(5),
@@ -48,6 +49,13 @@ async fn real_postgres_pool_bounds_waits_and_rejects_bad_credentials() {
             .await
             .expect("connect with verified TLS"),
     );
+    let mut checked_connection = pool.acquire().await.expect("inspect qualified server");
+    let server_version: String = sqlx::query_scalar("SHOW server_version_num")
+        .fetch_one(&mut *checked_connection)
+        .await
+        .expect("read server version");
+    assert_eq!(server_version, "170011");
+    drop(checked_connection);
     pool.health().await.expect("healthy PostgreSQL connection");
     let held = pool.acquire().await.expect("hold sole connection");
     let waiting = tokio::spawn({
@@ -64,7 +72,7 @@ async fn real_postgres_pool_bounds_waits_and_rejects_bad_credentials() {
     assert_eq!(pool.health().await, Err(PoolError::Closed));
 
     let mut invalid = settings(state);
-    invalid.password = "wrong-password".to_string();
+    invalid.password = "wrong-password".to_string().into();
     assert_eq!(
         PostgresPool::connect(invalid).await.err(),
         Some(PoolError::Authentication)

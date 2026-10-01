@@ -1,0 +1,26 @@
+[package]
+name = "codex-postgres-import-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono = { workspace = true }
+codex-postgres-runtime = { workspace = true }
+codex-state = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true, features = ["macros"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+codex-utils-absolute-path = { workspace = true }
+pretty_assertions = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

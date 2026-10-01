@@ -200,6 +200,34 @@ impl<'de> Deserialize<'de> for RemotePostgresProfile {
 }
 
 impl RemotePostgresProfile {
+    pub fn endpoint(&self) -> &str {
+        &self.endpoint
+    }
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+    pub fn database(&self) -> &str {
+        &self.database
+    }
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+    pub fn credential(&self) -> &CredentialSource {
+        &self.credential
+    }
+    pub fn ca_certificate(&self) -> Option<&std::path::Path> {
+        self.tls.ca_certificate.as_deref()
+    }
+    pub fn connect_timeout_seconds(&self) -> u16 {
+        self.connect_timeout_seconds
+    }
+    pub fn pool_acquire_timeout_seconds(&self) -> u16 {
+        self.pool_acquire_timeout_seconds
+    }
+    pub fn max_connections(&self) -> u16 {
+        self.max_connections
+    }
+
     /// Rejects malformed proposals without connecting or reading a credential.
     pub fn validate(&self) -> Result<(), ProfileError> {
         if !valid_endpoint(&self.endpoint) {

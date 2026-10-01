@@ -17,6 +17,7 @@ from docker_ops import (
     validate_restore_archive,
 )
 from certificates import check_expiry, renew
+from qualification_checks import verify_endpoint
 from state import ServiceError, initialize, load, operation_lock, state_path
 
 
@@ -136,6 +137,8 @@ def main(argv=None):
                             ],
                         }
                         output = compose(path, receipt, commands[args.action])
+                        if args.action == "up":
+                            verify_endpoint(path)
                         result = (
                             output
                             if args.action in ("status", "backup", "smoke")
