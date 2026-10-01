@@ -119,6 +119,46 @@ pub(crate) const PROTECTED_TABLES: &[ProtectedTable] = &[
         runtime_privileges: "SELECT, UPDATE",
         indexes: &["memory_consolidation_progress_pkey"],
     },
+    ProtectedTable {
+        name: "agent_board_deleted",
+        runtime_privileges: "SELECT, INSERT",
+        indexes: &["agent_board_deleted_pkey"],
+    },
+    ProtectedTable {
+        name: "agent_board_channels",
+        runtime_privileges: "SELECT, INSERT, DELETE",
+        indexes: &["agent_board_channels_pkey"],
+    },
+    ProtectedTable {
+        name: "agent_board_posts",
+        runtime_privileges: "SELECT, INSERT, DELETE",
+        indexes: &[
+            "agent_board_posts_pkey",
+            "agent_board_posts_id_key",
+            "agent_board_posts_request_key",
+            "agent_board_posts_channel_idx",
+            "agent_board_posts_channel_ts_idx",
+            "agent_board_posts_roots_idx",
+            "agent_board_posts_root_idx",
+            "agent_board_posts_root_ts_idx",
+            "agent_board_posts_board_ts_idx",
+        ],
+    },
+    ProtectedTable {
+        name: "agent_board_subscriptions",
+        runtime_privileges: "SELECT, INSERT, DELETE",
+        indexes: &["agent_board_subscriptions_pkey"],
+    },
+    ProtectedTable {
+        name: "agent_board_opt_outs",
+        runtime_privileges: "SELECT, INSERT, DELETE",
+        indexes: &["agent_board_opt_outs_pkey"],
+    },
+    ProtectedTable {
+        name: "agent_board_post_counter",
+        runtime_privileges: "SELECT, UPDATE",
+        indexes: &["agent_board_post_counter_pkey"],
+    },
 ];
 
 /// What a migration must look like before its schema qualifier is rewritten for a named
@@ -285,6 +325,53 @@ INSERT INTO codex_storage.memory_consolidation_progress (singleton) VALUES (TRUE
             META_UPDATE,
         ],
         qualified_identifiers: 8,
+    },
+    MigrationShape {
+        version: 11,
+        starts_with: Some("-- Inactive agent message board persistence"),
+        contains: &[
+            "
+CREATE TABLE codex_storage.agent_board_deleted (
+",
+            "
+CREATE TABLE codex_storage.agent_board_channels (
+",
+            "
+CREATE TABLE codex_storage.agent_board_posts (
+",
+            "
+CREATE INDEX agent_board_posts_channel_idx
+",
+            "
+CREATE INDEX agent_board_posts_channel_ts_idx
+",
+            "
+CREATE INDEX agent_board_posts_roots_idx
+",
+            "
+CREATE INDEX agent_board_posts_root_idx
+",
+            "
+CREATE INDEX agent_board_posts_root_ts_idx
+",
+            "
+CREATE INDEX agent_board_posts_board_ts_idx
+",
+            "
+CREATE TABLE codex_storage.agent_board_subscriptions (
+",
+            "
+CREATE TABLE codex_storage.agent_board_opt_outs (
+",
+            "
+CREATE TABLE codex_storage.agent_board_post_counter (
+",
+            "
+INSERT INTO codex_storage.agent_board_post_counter (singleton, last_seq) VALUES (TRUE, 0);
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 14,
     },
 ];
 

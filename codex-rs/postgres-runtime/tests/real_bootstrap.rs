@@ -450,12 +450,12 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
 
     for (raise_minimum, reset_minimum) in [
         (
+            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 12",
             "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 11",
-            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 10",
         ),
         (
+            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 12",
             "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 11",
-            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 10",
         ),
     ] {
         owner_query(&migrator_a, raise_minimum).await;
@@ -567,7 +567,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
 
     owner_query(
         &migrator_a,
-        "CREATE SCHEMA codex_typed_fixture AUTHORIZATION codex_owner; CREATE TYPE codex_typed_fixture.codex_meta_type AS (singleton BOOLEAN, format_version INTEGER, min_reader_version INTEGER, min_writer_version INTEGER); DROP TABLE codex_storage.codex_schema_meta; CREATE TABLE codex_storage.codex_schema_meta OF codex_typed_fixture.codex_meta_type (CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (singleton), CONSTRAINT codex_schema_meta_singleton_check CHECK (singleton), CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0), CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0), CONSTRAINT codex_schema_meta_min_writer_version_check CHECK (min_writer_version > 0)); INSERT INTO codex_storage.codex_schema_meta VALUES (TRUE, 10, 10, 10)",
+        "CREATE SCHEMA codex_typed_fixture AUTHORIZATION codex_owner; CREATE TYPE codex_typed_fixture.codex_meta_type AS (singleton BOOLEAN, format_version INTEGER, min_reader_version INTEGER, min_writer_version INTEGER); DROP TABLE codex_storage.codex_schema_meta; CREATE TABLE codex_storage.codex_schema_meta OF codex_typed_fixture.codex_meta_type (CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (singleton), CONSTRAINT codex_schema_meta_singleton_check CHECK (singleton), CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0), CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0), CONSTRAINT codex_schema_meta_min_writer_version_check CHECK (min_writer_version > 0)); INSERT INTO codex_storage.codex_schema_meta VALUES (TRUE, 11, 11, 11)",
     )
     .await;
     assert_eq!(
@@ -576,7 +576,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
     owner_query(
         &migrator_a,
-        "DROP TABLE codex_storage.codex_schema_meta; DROP SCHEMA codex_typed_fixture CASCADE; CREATE TABLE codex_storage.codex_schema_meta (singleton BOOLEAN DEFAULT TRUE, format_version INTEGER NOT NULL, min_reader_version INTEGER NOT NULL, min_writer_version INTEGER NOT NULL, CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (singleton), CONSTRAINT codex_schema_meta_singleton_check CHECK (singleton), CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0), CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0), CONSTRAINT codex_schema_meta_min_writer_version_check CHECK (min_writer_version > 0)); INSERT INTO codex_storage.codex_schema_meta VALUES (TRUE, 10, 10, 10); REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime, codex_backup; GRANT SELECT ON codex_storage.codex_schema_meta TO codex_runtime, codex_backup",
+        "DROP TABLE codex_storage.codex_schema_meta; DROP SCHEMA codex_typed_fixture CASCADE; CREATE TABLE codex_storage.codex_schema_meta (singleton BOOLEAN DEFAULT TRUE, format_version INTEGER NOT NULL, min_reader_version INTEGER NOT NULL, min_writer_version INTEGER NOT NULL, CONSTRAINT codex_schema_meta_pkey PRIMARY KEY (singleton), CONSTRAINT codex_schema_meta_singleton_check CHECK (singleton), CONSTRAINT codex_schema_meta_format_version_check CHECK (format_version > 0), CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0), CONSTRAINT codex_schema_meta_min_writer_version_check CHECK (min_writer_version > 0)); INSERT INTO codex_storage.codex_schema_meta VALUES (TRUE, 11, 11, 11); REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime, codex_backup; GRANT SELECT ON codex_storage.codex_schema_meta TO codex_runtime, codex_backup",
     )
     .await;
     assert_eq!(bootstrap_codex_storage(&migrator_a).await, Ok(()));
@@ -651,7 +651,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
             BootstrapError::IncompatibleNamespace,
         ),
         (
-            "ALTER TABLE codex_storage._codex_pg_migrations ADD CONSTRAINT history_version_limit CHECK (version <= 10)",
+            "ALTER TABLE codex_storage._codex_pg_migrations ADD CONSTRAINT history_version_limit CHECK (version <= 11)",
             "ALTER TABLE codex_storage._codex_pg_migrations DROP CONSTRAINT history_version_limit",
             BootstrapError::IncompatibleNamespace,
         ),
@@ -731,13 +731,13 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
 
     let capabilities = ClientCapabilities {
-        min_schema_format: 10,
-        max_schema_format: 10,
-        reader_version: 10,
-        writer_version: 10,
+        min_schema_format: 11,
+        max_schema_format: 11,
+        reader_version: 11,
+        writer_version: 11,
     };
     let compatible = Ok(CompatibilityResult {
-        schema_format: 10,
+        schema_format: 11,
         activation_permitted: false,
     });
     assert_eq!(
@@ -752,7 +752,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
 
     owner_query(
         &migrator_a,
-        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 11",
+        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 12",
     )
     .await;
     assert_eq!(
@@ -767,7 +767,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
     owner_query(
         &migrator_a,
-        "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 11",
+        "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 12",
     )
     .await;
     assert_eq!(
@@ -777,7 +777,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
     owner_query(
         &migrator_a,
-        "UPDATE codex_storage.codex_schema_meta SET format_version = 11, min_reader_version = 10, min_writer_version = 10",
+        "UPDATE codex_storage.codex_schema_meta SET format_version = 12, min_reader_version = 11, min_writer_version = 11",
     )
     .await;
     assert_eq!(
@@ -787,7 +787,7 @@ async fn real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent() {
     );
     owner_query(
         &migrator_a,
-        "UPDATE codex_storage.codex_schema_meta SET format_version = 10",
+        "UPDATE codex_storage.codex_schema_meta SET format_version = 11",
     )
     .await;
 
