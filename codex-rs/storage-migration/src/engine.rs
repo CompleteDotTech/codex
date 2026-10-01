@@ -7,11 +7,20 @@
 
 use crate::attachments::Attachments;
 use crate::attachments::SpawnEdges;
+use crate::board::Channels;
+use crate::board::DeletedBoards;
+use crate::board::OptOuts;
+use crate::board::Posts;
+use crate::board::Subscriptions;
 use crate::digest::DigestBuilder;
 use crate::digest::DomainDigest;
 use crate::domain::Domain;
 use crate::domain::DomainOps;
 use crate::goals::Goals;
+use crate::logs::Logs;
+use crate::memory::MemoryJobs;
+use crate::memory::MemoryProgress;
+use crate::memory::Stage1Outputs;
 use crate::projects::ProjectKeys;
 use crate::projects::Projects;
 use crate::queue::QueueRevisions;
@@ -67,6 +76,42 @@ macro_rules! with_domain {
             }
             Domain::QueueRevisions => {
                 type $ops = QueueRevisions;
+                $body
+            }
+            Domain::Logs => {
+                type $ops = Logs;
+                $body
+            }
+            Domain::MemoryOutputs => {
+                type $ops = Stage1Outputs;
+                $body
+            }
+            Domain::MemoryJobs => {
+                type $ops = MemoryJobs;
+                $body
+            }
+            Domain::MemoryProgress => {
+                type $ops = MemoryProgress;
+                $body
+            }
+            Domain::BoardDeleted => {
+                type $ops = DeletedBoards;
+                $body
+            }
+            Domain::BoardChannels => {
+                type $ops = Channels;
+                $body
+            }
+            Domain::BoardPosts => {
+                type $ops = Posts;
+                $body
+            }
+            Domain::BoardSubscriptions => {
+                type $ops = Subscriptions;
+                $body
+            }
+            Domain::BoardOptOuts => {
+                type $ops = OptOuts;
                 $body
             }
         }

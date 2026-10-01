@@ -8,6 +8,7 @@ use codex_postgres_thread_catalog::PostgresThreadCatalog;
 use codex_protocol::ThreadId;
 use codex_protocol::protocol::SessionSource;
 use codex_protocol::protocol::SubAgentSource;
+use codex_state::LogEntry;
 use codex_state::ProjectRoot;
 use codex_state::SqliteConfig;
 use codex_state::StateRuntime;
@@ -21,6 +22,7 @@ use pretty_assertions::assert_eq;
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
+use uuid::Uuid;
 
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
     let receipt: serde_json::Value = serde_json::from_slice(
@@ -66,6 +68,14 @@ async fn reset_target(pool: &PostgresPool) {
         "DELETE FROM codex_storage.threads",
         "DELETE FROM codex_storage.projects",
         "DELETE FROM codex_storage.thread_sections",
+        "DELETE FROM codex_storage.logs",
+        "DELETE FROM codex_storage.memory_stage1_outputs",
+        "DELETE FROM codex_storage.memory_jobs",
+        "UPDATE codex_storage.memory_consolidation_progress SET max_thread_count = 0",
+        "DELETE FROM codex_storage.agent_board_posts",
+        "DELETE FROM codex_storage.agent_board_channels",
+        "DELETE FROM codex_storage.agent_board_subscriptions",
+        "DELETE FROM codex_storage.agent_board_opt_outs",
     ] {
         sqlx::query(statement)
             .execute(&mut *connection)
@@ -94,14 +104,44 @@ fn metadata(index: i64, base: DateTime<Utc>, source: SessionSource) -> ThreadMet
     metadata
 }
 
+/// Run statements against a SQLite file, creating it when the feature never ran on this home.
+async fn sqlite_exec(path: &Path, statements: &[String]) {
+    let pool = SqliteConfig::new_for_testing(path.parent().expect("parent").abs())
+        .open_read_write_pool(path)
+        .await
+        .expect("open sqlite file");
+    for statement in statements {
+        sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
+            .execute(&pool)
+            .await
+            .unwrap_or_else(|error| panic!("{statement}: {error}"));
+    }
+    pool.close().await;
+}
+
+/// The message board creates its own file on first use; these statements mirror its schema.
+const BOARD_SCHEMA: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS deleted_boards (board TEXT PRIMARY KEY NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS channels (board TEXT NOT NULL, name TEXT NOT NULL, \
+     name_search TEXT NOT NULL, created_at TEXT NOT NULL, timestamp INTEGER NOT NULL, \
+     author TEXT NOT NULL, PRIMARY KEY(board,name))",
+    "CREATE TABLE IF NOT EXISTS posts (seq INTEGER PRIMARY KEY AUTOINCREMENT, \
+     board TEXT NOT NULL, id TEXT NOT NULL, channel TEXT NOT NULL, root TEXT NOT NULL, \
+     author TEXT NOT NULL, timestamp INTEGER NOT NULL, body_search TEXT NOT NULL, \
+     payload TEXT NOT NULL, request_id TEXT NOT NULL, request TEXT NOT NULL, \
+     UNIQUE(board,id), UNIQUE(board,request_id))",
+    "CREATE TABLE IF NOT EXISTS subscriptions (board TEXT NOT NULL, target TEXT NOT NULL, \
+     agent TEXT NOT NULL, PRIMARY KEY(board,target,agent))",
+    "CREATE TABLE IF NOT EXISTS subscription_opt_outs (board TEXT NOT NULL, target TEXT NOT NULL, \
+     agent TEXT NOT NULL, PRIMARY KEY(board,target,agent))",
+];
+
 /// A SQLite home with every catalog feature in use, built through the real runtime.
 async fn populate(home: &Path) -> Vec<ThreadMetadata> {
-    let runtime = StateRuntime::init(
-        SqliteConfig::new_for_testing(home.abs()),
-        "migration-provider".to_string(),
-    )
-    .await
-    .expect("sqlite runtime");
+    let config = SqliteConfig::new_for_testing(home.abs());
+    let runtime = StateRuntime::init(config.clone(), "migration-provider".to_string())
+        .await
+        .expect("sqlite runtime");
     let base = Utc::now() - chrono::Duration::days(3);
     let mut threads: Vec<ThreadMetadata> = Vec::new();
     for index in 0..9 {
@@ -228,6 +268,65 @@ async fn populate(home: &Path) -> Vec<ThreadMetadata> {
         )
         .await
         .expect("archive");
+    let run = Uuid::new_v4();
+    let entries: Vec<LogEntry> = (0..5)
+        .map(|index| LogEntry {
+            ts: base.timestamp() + index,
+            ts_nanos: 7 + index,
+            level: "INFO".to_string(),
+            target: "migration".to_string(),
+            message: Some(format!("message {index}")),
+            feedback_log_body: Some(format!("body {index} 🦀")),
+            thread_id: (index % 2 == 0).then(|| format!("thread-{run}")),
+            process_uuid: Some(format!("process-{run}")),
+            module_path: Some("module".to_string()),
+            file: Some("file.rs".to_string()),
+            line: Some(index),
+        })
+        .collect();
+    runtime.insert_logs(&entries).await.expect("logs");
+    let (first, second) = (threads[0].id, threads[1].id);
+    sqlite_exec(
+        &config.memories_db_path(),
+        &[
+            format!(
+                "INSERT INTO stage1_outputs (thread_id, source_updated_at, raw_memory, \
+                 rollout_summary, rollout_slug, generated_at, usage_count, last_usage, \
+                 selected_for_phase2, selected_for_phase2_source_updated_at) VALUES \
+                 ('{first}', 100, 'raw one', 'summary one', 'slug-one', 110, 3, 120, 1, 100), \
+                 ('{second}', 200, 'raw two', 'summary two', NULL, 210, NULL, NULL, 0, NULL)"
+            ),
+            format!(
+                "INSERT INTO jobs (kind, job_key, status, worker_id, ownership_token, started_at, \
+                 finished_at, lease_until, retry_at, retry_remaining, last_error, input_watermark, \
+                 last_success_watermark) VALUES \
+                 ('memory_stage1', '{first}', 'done', 'w1', 'tok', 1, 2, 3, NULL, 3, NULL, 100, 100), \
+                 ('memory_consolidate_global', 'global', 'error', NULL, NULL, NULL, NULL, NULL, \
+                 999, 1, 'boom', 5, NULL)"
+            ),
+            "UPDATE consolidation_progress SET max_thread_count = 7".to_string(),
+        ],
+    )
+    .await;
+    let mut board = BOARD_SCHEMA
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    board.extend([
+        "INSERT INTO deleted_boards (board) VALUES ('retired-board')".to_string(),
+        "INSERT INTO channels VALUES ('main', 'general', 'general', '2026-09-18T12:00:00Z', 1, 'a'), \
+         ('main', 'Ünï', 'ünï', '2026-09-18T12:00:01Z', 2, 'b')"
+            .to_string(),
+        "INSERT INTO posts (board, id, channel, root, author, timestamp, body_search, payload, \
+         request_id, request) VALUES \
+         ('main', 'p1', 'general', 'p1', 'a', 3, 'hello', '{\"text\":\"hello\"}', 'r1', '{}'), \
+         ('main', 'p2', 'general', 'p1', 'b', 4, 'reply', '{\"text\":\"reply\"}', 'r2', '{}'), \
+         ('main', 'p3', 'Ünï', 'p3', 'b', 5, 'third', '{\"text\":\"third\"}', 'r3', '{}')"
+            .to_string(),
+        "INSERT INTO subscriptions VALUES ('main', 'general', 'a'), ('main', 'Ünï', 'b')".to_string(),
+        "INSERT INTO subscription_opt_outs VALUES ('main', 'general', 'b')".to_string(),
+    ]);
+    sqlite_exec(&home.join("agent_message_board_1.sqlite"), &board).await;
     // The source owns the checkpointed state, so the runtime must be done writing.
     drop(runtime);
     threads
@@ -298,6 +397,15 @@ async fn real_postgres_catalog_migration() {
             ("goals", 2),
             ("queued_items", 4),
             ("queue_revisions", 2),
+            ("logs", 5),
+            ("memory_outputs", 2),
+            ("memory_jobs", 2),
+            ("memory_progress", 1),
+            ("board_deleted", 1),
+            ("board_channels", 2),
+            ("board_posts", 3),
+            ("board_subscriptions", 2),
+            ("board_opt_outs", 1),
         ]
     );
 

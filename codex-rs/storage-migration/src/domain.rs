@@ -19,6 +19,15 @@ pub enum Domain {
     Goals,
     QueuedItems,
     QueueRevisions,
+    Logs,
+    MemoryOutputs,
+    MemoryJobs,
+    MemoryProgress,
+    BoardDeleted,
+    BoardChannels,
+    BoardPosts,
+    BoardSubscriptions,
+    BoardOptOuts,
 }
 
 impl Domain {
@@ -33,6 +42,15 @@ impl Domain {
         Domain::Goals,
         Domain::QueuedItems,
         Domain::QueueRevisions,
+        Domain::Logs,
+        Domain::MemoryOutputs,
+        Domain::MemoryJobs,
+        Domain::MemoryProgress,
+        Domain::BoardDeleted,
+        Domain::BoardChannels,
+        Domain::BoardPosts,
+        Domain::BoardSubscriptions,
+        Domain::BoardOptOuts,
     ];
 
     pub fn name(self) -> &'static str {
@@ -46,6 +64,15 @@ impl Domain {
             Domain::Goals => "goals",
             Domain::QueuedItems => "queued_items",
             Domain::QueueRevisions => "queue_revisions",
+            Domain::Logs => "logs",
+            Domain::MemoryOutputs => "memory_outputs",
+            Domain::MemoryJobs => "memory_jobs",
+            Domain::MemoryProgress => "memory_progress",
+            Domain::BoardDeleted => "board_deleted",
+            Domain::BoardChannels => "board_channels",
+            Domain::BoardPosts => "board_posts",
+            Domain::BoardSubscriptions => "board_subscriptions",
+            Domain::BoardOptOuts => "board_opt_outs",
         }
     }
 }

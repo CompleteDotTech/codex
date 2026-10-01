@@ -5,10 +5,13 @@
 //! switches the active backend; activation is a separate, explicit step.
 
 mod attachments;
+mod board;
 mod digest;
 mod domain;
 mod engine;
 mod goals;
+mod logs;
+mod memory;
 mod projects;
 mod queue;
 mod sections;

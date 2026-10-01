@@ -18,6 +18,9 @@ pub(crate) enum SourceDatabase {
     State,
     Goals,
     Queue,
+    Logs,
+    Memories,
+    Board,
 }
 
 impl SqliteSource {
@@ -49,6 +52,9 @@ impl SqliteSource {
             SourceDatabase::State => self.config.state_db_path(),
             SourceDatabase::Goals => self.config.goals_db_path(),
             SourceDatabase::Queue => self.config.queue_db_path(),
+            SourceDatabase::Logs => self.config.logs_db_path(),
+            SourceDatabase::Memories => self.config.memories_db_path(),
+            SourceDatabase::Board => self.config.home().join("agent_message_board_1.sqlite"),
         };
         if !path.exists() {
             return Ok(None);
