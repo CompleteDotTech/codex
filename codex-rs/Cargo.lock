@@ -4553,6 +4553,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-remote-storage"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "codex-agent-graph-store",
+ "codex-agent-message-board-extension",
+ "codex-keyring-store",
+ "codex-postgres-goal-store",
+ "codex-postgres-import-store",
+ "codex-postgres-log-store",
+ "codex-postgres-memory-store",
+ "codex-postgres-message-board",
+ "codex-postgres-queue-store",
+ "codex-postgres-runtime",
+ "codex-postgres-thread-catalog",
+ "codex-postgres-thread-store",
+ "codex-protocol",
+ "codex-state",
+ "codex-storage-authority",
+ "codex-thread-store",
+ "pretty_assertions",
+ "serde_json",
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "codex-response-debug-context"
 version = "0.0.0"
 dependencies = [

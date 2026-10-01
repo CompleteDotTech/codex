@@ -97,6 +97,7 @@ pub struct PostgresThreadStore {
     pending_metadata: Mutex<HashMap<ThreadId, ThreadMetadataPatch>>,
     writer_lease: Duration,
     renew_every: Duration,
+    namespace: ThreadOwnershipNamespace,
 }
 
 fn internal(error: impl std::fmt::Display) -> ThreadStoreError {
@@ -116,7 +117,14 @@ impl PostgresThreadStore {
             pending_metadata: Mutex::default(),
             writer_lease: Duration::from_secs(30),
             renew_every: Duration::from_secs(10),
+            namespace: ThreadOwnershipNamespace::Default,
         }
+    }
+
+    /// Claim writer leases in the same namespace as the store's data.
+    pub fn with_namespace(mut self, namespace: ThreadOwnershipNamespace) -> Self {
+        self.namespace = namespace;
+        self
     }
 
     /// Tune the writer lease. The lease must outlast several renewals so a brief stall does not
@@ -133,7 +141,7 @@ impl PostgresThreadStore {
             message: format!("thread {thread_id} already has a live writer"),
         };
         let owner_id = uuid::Uuid::new_v4().to_string();
-        let namespace = ThreadOwnershipNamespace::Default;
+        let namespace = self.namespace.clone();
         let id = thread_id.to_string();
         let claim = match self
             .pool
