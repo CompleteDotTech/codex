@@ -83,12 +83,11 @@ fn move_rollout_with_hooks(
     before_quarantine: impl FnOnce() -> io::Result<()>,
     sync_intent_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    let canonical_sessions =
-        std::fs::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
+    let canonical_sessions = dunce::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
     let canonical_archived =
-        std::fs::canonicalize(codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR))?;
-    let canonical_source = std::fs::canonicalize(source)?;
-    let canonical_destination_parent = std::fs::canonicalize(
+        dunce::canonicalize(codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR))?;
+    let canonical_source = dunce::canonicalize(source)?;
+    let canonical_destination_parent = dunce::canonicalize(
         destination
             .parent()
             .ok_or_else(|| std::io::Error::other("rollout destination has no parent"))?,
@@ -230,6 +229,13 @@ fn move_rollout_with_hooks(
         }
         Err(err) => return Err(err),
     }
+    // Windows publishes by hard link and clears the read-only attribute while deleting the stage
+    // name. Hard links share attributes, so restore the source's permissions on the destination.
+    #[cfg(windows)]
+    std::fs::set_permissions(
+        &canonical_destination,
+        std::fs::metadata(source)?.permissions(),
+    )?;
     sync_parent_directory(&canonical_destination)?;
     if rollout_file_identity(source)? != intent.source_id
         || rollout_file_digest(source)? != intent.source_digest
@@ -436,6 +442,8 @@ fn finish_quarantined_source(intent: &RolloutMoveIntent) -> io::Result<()> {
             #[cfg(windows)]
             if metadata.permissions().readonly() {
                 let mut permissions = metadata.permissions();
+                // Windows needs the attribute cleared to delete the quarantined file.
+                #[allow(clippy::permissions_set_readonly_false)]
                 permissions.set_readonly(false);
                 std::fs::set_permissions(&intent.quarantine_path, permissions)?;
             }
@@ -494,7 +502,7 @@ fn read_rollout_move_intent(path: &Path) -> io::Result<RolloutMoveIntent> {
 }
 
 pub(super) fn clear_rollout_move_intent(destination: &Path) -> io::Result<()> {
-    let parent = std::fs::canonicalize(
+    let parent = dunce::canonicalize(
         destination
             .parent()
             .ok_or_else(|| io::Error::other("rollout destination has no parent"))?,
@@ -579,16 +587,15 @@ pub(super) fn verify_published_rollout_move(
     destination: &Path,
     codex_home: &Path,
 ) -> io::Result<()> {
-    let canonical_sessions =
-        std::fs::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
+    let canonical_sessions = dunce::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
     let canonical_archived =
-        std::fs::canonicalize(codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR))?;
-    let source_parent = std::fs::canonicalize(
+        dunce::canonicalize(codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR))?;
+    let source_parent = dunce::canonicalize(
         source
             .parent()
             .ok_or_else(|| io::Error::other("rollout source has no parent"))?,
     )?;
-    let destination_parent = std::fs::canonicalize(
+    let destination_parent = dunce::canonicalize(
         destination
             .parent()
             .ok_or_else(|| io::Error::other("rollout destination has no parent"))?,
@@ -632,12 +639,12 @@ pub(super) fn published_rollout_move_owned(
     expected_source_id: RolloutFileIdentity,
     expected_source_digest: [u8; 32],
 ) -> io::Result<bool> {
-    let source_parent = std::fs::canonicalize(
+    let source_parent = dunce::canonicalize(
         source
             .parent()
             .ok_or_else(|| io::Error::other("rollout source has no parent"))?,
     )?;
-    let destination_parent = std::fs::canonicalize(
+    let destination_parent = dunce::canonicalize(
         destination
             .parent()
             .ok_or_else(|| io::Error::other("rollout destination has no parent"))?,

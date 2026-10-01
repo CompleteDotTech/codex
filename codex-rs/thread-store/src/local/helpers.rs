@@ -131,7 +131,10 @@ pub(super) fn validated_rollout_file_name(
 #[allow(dead_code)]
 pub(super) fn touch_modified_time(path: &Path) -> std::io::Result<()> {
     let times = std::fs::FileTimes::new().set_modified(std::time::SystemTime::now());
-    std::fs::OpenOptions::new().append(true).open(path)?.set_times(times)
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)?
+        .set_times(times)
 }
 
 #[allow(dead_code)]

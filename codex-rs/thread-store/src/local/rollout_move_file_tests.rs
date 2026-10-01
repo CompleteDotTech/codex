@@ -116,8 +116,24 @@ fn bound_move_rejects_same_inode_digest_change_during_staging() -> io::Result<()
     Ok(())
 }
 
+/// Intent receipts record canonical destinations, which carry a verbatim prefix on Windows.
+fn canonical_intent_path(destination: &Path) -> io::Result<PathBuf> {
+    let parent = dunce::canonicalize(
+        destination
+            .parent()
+            .ok_or_else(|| io::Error::other("no parent"))?,
+    )?;
+    Ok(rollout_move_intent_path(
+        &parent.join(
+            destination
+                .file_name()
+                .ok_or_else(|| io::Error::other("no file name"))?,
+        ),
+    ))
+}
+
 fn prepare_move_intent(source: &Path, destination: &Path) -> io::Result<RolloutMoveIntent> {
-    let parent = std::fs::canonicalize(
+    let parent = dunce::canonicalize(
         destination
             .parent()
             .ok_or_else(|| io::Error::other("no parent"))?,
@@ -133,14 +149,14 @@ fn prepare_move_intent(source: &Path, destination: &Path) -> io::Result<RolloutM
     let source_metadata = std::fs::metadata(source)?;
     let quarantine_dir = tempfile::Builder::new()
         .prefix(".codex-rollout-quarantine-")
-        .tempdir_in(
+        .tempdir_in(dunce::canonicalize(
             source
                 .parent()
                 .ok_or_else(|| io::Error::other("no source parent"))?,
-        )?
+        )?)?
         .keep();
     let intent = RolloutMoveIntent {
-        source: std::fs::canonicalize(source)?,
+        source: dunce::canonicalize(source)?,
         destination: parent.join(
             destination
                 .file_name()
@@ -156,7 +172,11 @@ fn prepare_move_intent(source: &Path, destination: &Path) -> io::Result<RolloutM
         quarantine_path: quarantine_dir.join("quarantined-source"),
         receipt_publication: None,
     };
-    write_rollout_move_intent(&rollout_move_intent_path(destination), &intent, sync_parent_directory)?;
+    write_rollout_move_intent(
+        &rollout_move_intent_path(&intent.destination),
+        &intent,
+        sync_parent_directory,
+    )?;
     Ok(intent)
 }
 
@@ -179,6 +199,8 @@ fn staging_preserves_source_permissions() -> io::Result<()> {
     #[cfg(windows)]
     {
         let mut permissions = std::fs::metadata(&destination)?.permissions();
+        // Windows needs the attribute cleared so the temp directory can be removed.
+        #[allow(clippy::permissions_set_readonly_false)]
         permissions.set_readonly(false);
         std::fs::set_permissions(&destination, permissions)?;
     }
@@ -597,7 +619,7 @@ fn same_length_same_mtime_rewrite_before_quarantine_is_preserved() -> io::Result
     })
     .expect_err("source rewrite must fail after publication");
 
-    let intent = read_rollout_move_intent(&rollout_move_intent_path(&destination))?;
+    let intent = read_rollout_move_intent(&canonical_intent_path(&destination)?)?;
     assert_eq!(error.kind(), io::ErrorKind::Other);
     assert_eq!(std::fs::read(&destination)?, b"original contents");
     assert_eq!(
@@ -627,7 +649,7 @@ fn pathname_replacement_before_quarantine_is_preserved() -> io::Result<()> {
     })
     .expect_err("replacement pathname must fail after publication");
 
-    let intent = read_rollout_move_intent(&rollout_move_intent_path(&destination))?;
+    let intent = read_rollout_move_intent(&canonical_intent_path(&destination)?)?;
     assert_eq!(error.kind(), io::ErrorKind::Other);
     assert_eq!(std::fs::read(&original)?, b"original contents");
     assert_eq!(std::fs::read(&destination)?, b"original contents");
@@ -662,7 +684,7 @@ fn retry_preserves_stage_after_published_intent_sync_fails() -> io::Result<()> {
     )
     .expect_err("failed intent sync must be reported");
     assert_eq!(error.to_string(), "injected intent directory sync failure");
-    let intent = read_rollout_move_intent(&rollout_move_intent_path(&destination))?;
+    let intent = read_rollout_move_intent(&canonical_intent_path(&destination)?)?;
     assert_eq!(std::fs::read(&source)?, b"rollout contents");
     // The newer149 protocol records an empty stage before copying rollout bytes.
     assert_eq!(std::fs::read(&intent.stage_path)?, Vec::<u8>::new());
@@ -707,6 +729,12 @@ fn move_rollout_noclobber_retained_with_intent_sync(
     sync: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
     move_rollout_with_hooks(
-        source, destination, home, SourceBinding::Unbound, || Ok(()), || Ok(()), sync,
+        source,
+        destination,
+        home,
+        SourceBinding::Unbound,
+        || Ok(()),
+        || Ok(()),
+        sync,
     )
 }

@@ -43,15 +43,20 @@ pub(super) fn write_with_sync(
     intent: &RolloutMoveIntent,
     sync_parent: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
-    write_with_publication_and_sync(path, intent, |temporary, canonical| {
-        let temporary = tempfile::TempPath::try_from_path(temporary)?;
-        if let Err(error) = temporary.persist_noclobber(canonical) {
-            let kind = error.error.kind();
-            let _ = error.path.keep();
-            return Err(io::Error::from(kind));
-        }
-        Ok(())
-    }, sync_parent)
+    write_with_publication_and_sync(
+        path,
+        intent,
+        |temporary, canonical| {
+            let temporary = tempfile::TempPath::try_from_path(temporary)?;
+            if let Err(error) = temporary.persist_noclobber(canonical) {
+                let kind = error.error.kind();
+                let _ = error.path.keep();
+                return Err(io::Error::from(kind));
+            }
+            Ok(())
+        },
+        sync_parent,
+    )
 }
 
 #[cfg(test)]
@@ -87,7 +92,10 @@ fn write_with_publication_and_sync(
     bytes.push(b'\n');
     if bytes.len() as u64 > MAX_BYTES {
         // No receipt bytes were written. Keep the empty resource pending journal ownership.
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "rollout move intent is too large"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "rollout move intent is too large",
+        ));
     }
     file.write_all(&bytes)?;
     file.sync_all()?;
@@ -109,7 +117,9 @@ fn read_owned(path: &Path, identity: RolloutFileIdentity) -> io::Result<Vec<u8>>
         return Err(io::Error::other("move receipt identity or size changed"));
     }
     let mut bytes = Vec::new();
-    Read::by_ref(&mut file).take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+    Read::by_ref(&mut file)
+        .take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)?;
     let after = file.metadata()?;
     if bytes.len() as u64 > MAX_BYTES
         || bytes.len() as u64 != before.len()
@@ -128,20 +138,28 @@ pub(super) fn validate(path: &Path, intent: &RolloutMoveIntent) -> io::Result<()
     };
     if publication.path != staging_path(&intent.stage_path)
         || intent.stage_path.parent() != path.parent()
-        || !intent.stage_path.file_name().is_some_and(|name| name.to_string_lossy().starts_with(".codex-rollout-stage-"))
+        || !intent
+            .stage_path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".codex-rollout-stage-"))
         || super::rollout_move_intent_path(&intent.destination) != path
     {
         return Err(io::Error::other("move receipt publication path is invalid"));
     }
     let canonical = read_owned(path, publication.identity)?;
-    let current: RolloutMoveIntent = serde_json::from_slice(&canonical).map_err(io::Error::other)?;
+    let current: RolloutMoveIntent =
+        serde_json::from_slice(&canonical).map_err(io::Error::other)?;
     if &current != intent {
-        return Err(io::Error::other("move receipt changed after it was decoded"));
+        return Err(io::Error::other(
+            "move receipt changed after it was decoded",
+        ));
     }
     match std::fs::symlink_metadata(&publication.path) {
         Ok(_) => {
             if read_owned(&publication.path, publication.identity)? != canonical {
-                return Err(io::Error::other("move receipt publication contents changed"));
+                return Err(io::Error::other(
+                    "move receipt publication contents changed",
+                ));
             }
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}

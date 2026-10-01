@@ -997,7 +997,7 @@ async fn unarchive_collision_leaves_archived_source_readable()
         )
         .await?;
 
-    assert_eq!(thread.rollout_path, Some(source.clone()));
+    assert_eq!(thread.rollout_path, Some(std::fs::canonicalize(&source)?));
     assert!(source.exists());
     assert_eq!(fs::read(destination)?, b"unrelated destination");
     assert!(
@@ -1061,7 +1061,10 @@ async fn direct_path_read_replays_before_resolving_missing_source()
         )
         .await?;
     let updated = runtime.get_thread(thread_id).await?.expect("SQLite row");
-    assert_eq!(thread.rollout_path, Some(destination.clone()));
+    assert_eq!(
+        thread.rollout_path,
+        Some(std::fs::canonicalize(&destination)?)
+    );
     assert_eq!(updated.rollout_path, destination);
     assert!(updated.archived_at.is_some());
     assert_eq!(replay_pending_move(&store, thread_id).await?, None);
@@ -1119,7 +1122,10 @@ async fn trait_path_read_replays_reverted_rollout_thread_id()
     )
     .await?;
     let updated = runtime.get_thread(thread_id).await?.expect("SQLite row");
-    assert_eq!(thread.rollout_path, Some(destination.clone()));
+    assert_eq!(
+        thread.rollout_path,
+        Some(std::fs::canonicalize(&destination)?)
+    );
     assert_eq!(updated.rollout_path, destination);
     assert!(updated.archived_at.is_some());
     assert_eq!(replay_pending_move(&store, thread_id).await?, None);

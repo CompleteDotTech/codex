@@ -8,13 +8,18 @@ use crate::local::rollout_move_identity::rollout_file_digest;
 
 fn fixture() -> io::Result<(tempfile::TempDir, RolloutMoveIntent)> {
     let home = tempfile::tempdir()?;
-    let root = std::fs::canonicalize(home.path())?;
+    let root = dunce::canonicalize(home.path())?;
     let source = root.join("source");
     std::fs::write(&source, b"original rollout")?;
-    let stage = tempfile::Builder::new().prefix(".codex-rollout-stage-").tempfile_in(&root)?;
+    let stage = tempfile::Builder::new()
+        .prefix(".codex-rollout-stage-")
+        .tempfile_in(&root)?;
     let (file, stage_path) = stage.keep().map_err(|error| error.error)?;
     drop(file);
-    let quarantine = tempfile::Builder::new().prefix(".codex-rollout-quarantine-").tempdir_in(&root)?.keep();
+    let quarantine = tempfile::Builder::new()
+        .prefix(".codex-rollout-quarantine-")
+        .tempdir_in(&root)?
+        .keep();
     let metadata = std::fs::metadata(&source)?;
     let intent = RolloutMoveIntent {
         source_id: rollout_file_identity(&source)?,
@@ -35,7 +40,9 @@ fn fixture() -> io::Result<(tempfile::TempDir, RolloutMoveIntent)> {
 fn publish_with_alias(intent: &RolloutMoveIntent) -> io::Result<PathBuf> {
     let canonical = rollout_move_intent_path(&intent.destination);
     // This is the actual dependency fallback's interrupted link/unlink boundary.
-    write_with_publication(&canonical, intent, |alias, receipt| std::fs::hard_link(alias, receipt))?;
+    write_with_publication(&canonical, intent, |alias, receipt| {
+        std::fs::hard_link(alias, receipt)
+    })?;
     Ok(canonical)
 }
 
@@ -48,7 +55,14 @@ fn restart_cleanup_removes_recorded_alias_before_receipt_and_stage() -> io::Resu
     // Only on-disk state is used by the public cleanup entry point after publication.
     clear_rollout_move_intent(&intent.destination)?;
     assert_eq!(std::fs::read(&intent.source)?, b"original rollout");
-    assert_eq!((canonical.exists(), staging_path(&intent.stage_path).exists(), intent.stage_path.exists()), (false, false, false));
+    assert_eq!(
+        (
+            canonical.exists(),
+            staging_path(&intent.stage_path).exists(),
+            intent.stage_path.exists()
+        ),
+        (false, false, false)
+    );
     Ok(())
 }
 
@@ -61,7 +75,14 @@ fn publication_error_after_link_retains_resources_for_retry() -> io::Result<()> 
         Err(io::Error::other("interrupted after publishing receipt"))
     });
     assert!(failure.is_err());
-    assert_eq!((canonical.exists(), staging_path(&intent.stage_path).exists(), intent.stage_path.exists()), (true, true, true));
+    assert_eq!(
+        (
+            canonical.exists(),
+            staging_path(&intent.stage_path).exists(),
+            intent.stage_path.exists()
+        ),
+        (true, true, true)
+    );
     clear_rollout_move_intent(&intent.destination)?;
     assert_eq!(std::fs::read(&intent.source)?, b"original rollout");
     Ok(())
@@ -72,8 +93,20 @@ fn alias_directory_sync_failure_retains_canonical_authority_and_stage() -> io::R
     let (_home, intent) = fixture()?;
     let canonical = publish_with_alias(&intent)?;
     let recorded = read_rollout_move_intent(&canonical)?;
-    assert!(cleanup_with_sync(&canonical, &recorded, |_| Err(io::Error::other("directory sync failed"))).is_err());
-    assert_eq!((canonical.exists(), staging_path(&intent.stage_path).exists(), intent.stage_path.exists()), (true, false, true));
+    assert!(
+        cleanup_with_sync(&canonical, &recorded, |_| Err(io::Error::other(
+            "directory sync failed"
+        )))
+        .is_err()
+    );
+    assert_eq!(
+        (
+            canonical.exists(),
+            staging_path(&intent.stage_path).exists(),
+            intent.stage_path.exists()
+        ),
+        (true, false, true)
+    );
     clear_rollout_move_intent(&intent.destination)?;
     assert!(!canonical.exists());
     Ok(())
@@ -89,7 +122,14 @@ fn replaced_alias_with_equal_contents_is_preserved_without_partial_cleanup() -> 
     std::fs::write(&alias, &bytes)?;
     assert!(clear_rollout_move_intent(&intent.destination).is_err());
     assert_eq!(std::fs::read(&alias)?, bytes);
-    assert_eq!((canonical.exists(), intent.stage_path.exists(), intent.quarantine_path.parent().unwrap().exists()), (true, true, true));
+    assert_eq!(
+        (
+            canonical.exists(),
+            intent.stage_path.exists(),
+            intent.quarantine_path.parent().unwrap().exists()
+        ),
+        (true, true, true)
+    );
     Ok(())
 }
 
@@ -160,11 +200,18 @@ fn malformed_partial_publication_record_is_rejected() -> io::Result<()> {
 fn oversized_receipt_cannot_publish_or_discard_its_source() -> io::Result<()> {
     let (_home, mut intent) = fixture()?;
     let source = intent.source.clone();
-    intent.quarantine_path = intent.quarantine_path.parent().unwrap().join("x".repeat(/*n*/ 4096));
+    intent.quarantine_path = intent
+        .quarantine_path
+        .parent()
+        .unwrap()
+        .join("x".repeat(/*n*/ 4096));
     let canonical = rollout_move_intent_path(&intent.destination);
     assert!(write(&canonical, &intent).is_err());
     assert_eq!(std::fs::read(&source)?, b"original rollout");
-    assert_eq!(std::fs::read(staging_path(&intent.stage_path))?, Vec::<u8>::new());
+    assert_eq!(
+        std::fs::read(staging_path(&intent.stage_path))?,
+        Vec::<u8>::new()
+    );
     assert!(!canonical.exists());
     Ok(())
 }
@@ -183,7 +230,14 @@ fn in_place_receipt_rewrite_cannot_authorize_stale_cleanup() -> io::Result<()> {
     let alias = staging_path(&intent.stage_path);
     assert_eq!(std::fs::read(&alias)?, bytes);
     assert!(cleanup(&canonical, &original).is_err());
-    assert_eq!((canonical.exists(), alias.exists(), intent.stage_path.exists()), (true, true, true));
+    assert_eq!(
+        (
+            canonical.exists(),
+            alias.exists(),
+            intent.stage_path.exists()
+        ),
+        (true, true, true)
+    );
     assert_eq!(std::fs::read(&intent.source)?, b"original rollout");
     Ok(())
 }

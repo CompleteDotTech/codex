@@ -126,7 +126,7 @@ pub(super) fn begin_move(
     std::fs::create_dir_all(journal_parent)?;
     #[cfg(unix)]
     std::fs::File::open(codex_home)?.sync_all()?;
-    if !std::fs::canonicalize(journal_parent)?.starts_with(std::fs::canonicalize(codex_home)?) {
+    if !dunce::canonicalize(journal_parent)?.starts_with(dunce::canonicalize(codex_home)?) {
         return Err(io::Error::other("rollout move journal escapes Codex home"));
     }
     let mut file = tempfile::Builder::new()
@@ -455,14 +455,14 @@ fn validate_move_pair(
     direction: MoveDirection,
     pair: &MovePair,
 ) -> io::Result<()> {
-    let sessions = std::fs::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
-    let archived = std::fs::canonicalize(codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR))?;
-    let source_parent = std::fs::canonicalize(
+    let sessions = dunce::canonicalize(codex_home.join(codex_rollout::SESSIONS_SUBDIR))?;
+    let archived = dunce::canonicalize(codex_home.join(codex_rollout::ARCHIVED_SESSIONS_SUBDIR))?;
+    let source_parent = dunce::canonicalize(
         pair.source
             .parent()
             .ok_or_else(|| io::Error::other("rollout source has no parent"))?,
     )?;
-    let destination_parent = std::fs::canonicalize(
+    let destination_parent = dunce::canonicalize(
         pair.destination
             .parent()
             .ok_or_else(|| io::Error::other("rollout destination has no parent"))?,
@@ -513,9 +513,8 @@ fn load_move(codex_home: &Path, thread_id: ThreadId) -> io::Result<Option<(Pendi
     let Some(parent) = path.parent() else {
         return Err(io::Error::other("missing journal parent"));
     };
-    match std::fs::canonicalize(parent) {
-        Ok(canonical_parent)
-            if canonical_parent.starts_with(std::fs::canonicalize(codex_home)?) => {}
+    match dunce::canonicalize(parent) {
+        Ok(canonical_parent) if canonical_parent.starts_with(dunce::canonicalize(codex_home)?) => {}
         Ok(_) => return Err(io::Error::other("rollout move journal escapes Codex home")),
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(err),

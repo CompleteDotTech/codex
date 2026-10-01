@@ -191,6 +191,7 @@ mod tests {
     use crate::ThreadSortKey;
     use crate::ThreadStore;
     use crate::local::LocalThreadStore;
+    #[cfg(unix)]
     use crate::local::rollout_move_file::tests::move_rollout_noclobber;
     use crate::local::test_support::test_config;
     use crate::local::test_support::write_archived_session_file;
