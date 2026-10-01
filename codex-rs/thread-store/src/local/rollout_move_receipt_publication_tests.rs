@@ -175,7 +175,10 @@ fn legacy_receipt_retains_unrecorded_alias() -> io::Result<()> {
     std::fs::write(&canonical, &bytes)?;
     let unrecorded = staging_path(&intent.stage_path);
     std::fs::hard_link(&canonical, &unrecorded)?;
+    assert!(read_rollout_move_intent(&canonical)? == intent);
+    let unrecorded_id = rollout_file_identity(&unrecorded)?;
     clear_rollout_move_intent(&intent.destination)?;
+    assert_eq!(rollout_file_identity(&unrecorded)?, unrecorded_id);
     assert_eq!(std::fs::read(&unrecorded)?, bytes);
     assert!(!canonical.exists());
     Ok(())
@@ -239,5 +242,70 @@ fn in_place_receipt_rewrite_cannot_authorize_stale_cleanup() -> io::Result<()> {
         (true, true, true)
     );
     assert_eq!(std::fs::read(&intent.source)?, b"original rollout");
+    Ok(())
+}
+
+#[test]
+fn strict_alias_receipt_refusal_preserves_all_resources_and_retry() -> io::Result<()> {
+    let (_home, intent) = fixture()?;
+    let canonical = publish_with_alias(&intent)?;
+    let alias = staging_path(&intent.stage_path);
+    let original = std::fs::read(&canonical)?;
+    let paths = [&canonical, &alias, &intent.source, &intent.stage_path];
+    let identities: Vec<_> = paths
+        .iter()
+        .map(|path| rollout_file_identity(path))
+        .collect::<io::Result<_>>()?;
+    for pointer in [
+        "/futureAuthority",
+        "/receipt_publication/futureAuthority",
+        "source_id",
+        "stage_id",
+        "duplicate",
+    ] {
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&original).map_err(io::Error::other)?;
+        if pointer == "/futureAuthority" {
+            value["futureAuthority"] = serde_json::json!(true);
+        } else if pointer == "/receipt_publication/futureAuthority" {
+            value["receipt_publication"]["futureAuthority"] = serde_json::json!(true);
+        } else if pointer != "duplicate" {
+            let payload = value[pointer]
+                .as_object_mut()
+                .unwrap()
+                .values_mut()
+                .next()
+                .unwrap();
+            payload["futureAuthority"] = serde_json::json!(true);
+        }
+        let mut changed = if pointer == "duplicate" {
+            let mut bytes = original.clone();
+            while bytes.last().is_some_and(u8::is_ascii_whitespace) {
+                bytes.pop();
+            }
+            assert_eq!(bytes.pop(), Some(b'}'));
+            bytes.extend_from_slice(format!(",\"source_len\":{}}}", intent.source_len).as_bytes());
+            bytes
+        } else {
+            serde_json::to_vec(&value).map_err(io::Error::other)?
+        };
+        changed.push(b'\n');
+        std::fs::write(&canonical, &changed)?;
+        let before: Vec<_> = paths.iter().map(std::fs::read).collect::<io::Result<_>>()?;
+        assert!(clear_rollout_move_intent(&intent.destination).is_err());
+        let after: Vec<_> = paths.iter().map(std::fs::read).collect::<io::Result<_>>()?;
+        assert_eq!(after, before);
+        assert_eq!(
+            paths
+                .iter()
+                .map(|path| rollout_file_identity(path))
+                .collect::<io::Result<Vec<_>>>()?,
+            identities
+        );
+    }
+    std::fs::write(&canonical, original)?;
+    clear_rollout_move_intent(&intent.destination)?;
+    assert_eq!(std::fs::read(&intent.source)?, b"original rollout");
+    assert!(!canonical.exists() && !alias.exists() && !intent.stage_path.exists());
     Ok(())
 }
