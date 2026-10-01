@@ -205,22 +205,25 @@ pub async fn load_config_layers_state(
         overrides.ignore_user_and_project_exec_policy_rules;
     let mut bundle_requirements_layers = Vec::new();
     let mut cloud_config_layers = Vec::new();
+    let mut cloud_config_binding = None;
 
-    if !overrides.ignore_managed_requirements
-        && let Some(bundle) = cloud_config_bundle.get().await.map_err(io::Error::other)?
-    {
-        let cloud_config_base_dir = AbsolutePathBuf::from_absolute_path(codex_home)?;
-        let bundle_layers = if strict_config {
-            CloudConfigBundleLayers::from_bundle_strict_config(bundle, &cloud_config_base_dir)?
-        } else {
-            CloudConfigBundleLayers::from_bundle(bundle, &cloud_config_base_dir)?
-        };
-        let CloudConfigBundleLayers {
-            enterprise_managed_config,
-            enterprise_managed_requirements,
-        } = bundle_layers;
-        bundle_requirements_layers = enterprise_managed_requirements;
-        cloud_config_layers = enterprise_managed_config;
+    if !overrides.ignore_managed_requirements {
+        let snapshot = cloud_config_bundle.get_snapshot().await;
+        cloud_config_binding = snapshot.binding;
+        if let Some(bundle) = snapshot.bundle.map_err(io::Error::other)? {
+            let cloud_config_base_dir = AbsolutePathBuf::from_absolute_path(codex_home)?;
+            let bundle_layers = if strict_config {
+                CloudConfigBundleLayers::from_bundle_strict_config(bundle, &cloud_config_base_dir)?
+            } else {
+                CloudConfigBundleLayers::from_bundle(bundle, &cloud_config_base_dir)?
+            };
+            let CloudConfigBundleLayers {
+                enterprise_managed_config,
+                enterprise_managed_requirements,
+            } = bundle_layers;
+            bundle_requirements_layers = enterprise_managed_requirements;
+            cloud_config_layers = enterprise_managed_config;
+        }
     }
 
     let (config_requirements_toml, loaded_config_layers, requirements_layers) =
@@ -491,6 +494,7 @@ pub async fn load_config_layers_state(
         config_requirements_toml.clone().try_into()?,
         config_requirements_toml.into_toml(),
     )?
+    .with_cloud_config_binding(cloud_config_binding)
     .with_user_and_project_exec_policy_rules_ignored(ignore_user_and_project_exec_policy_rules);
     config_layer_stack.is_projectless = is_projectless;
     startup_warnings.extend(ignored_config_warning(
@@ -587,6 +591,9 @@ async fn load_config_toml_for_required_layer_raw(
     {
         Ok(contents) => {
             let config: TomlValue = toml::from_str(&contents).map_err(|err| {
+                if let Some(redacted) = crate::storage_candidate::redacted_parse_error(&contents) {
+                    return redacted;
+                }
                 let config_error =
                     config_error_from_toml(toml_file.as_path(), &contents, err.clone());
                 io_error_from_config_error(io::ErrorKind::InvalidData, config_error, Some(err))
@@ -628,6 +635,7 @@ fn validate_config_toml_strictly(
     value: &TomlValue,
     base_dir: &Path,
 ) -> io::Result<()> {
+    crate::storage_candidate::validate_storage_candidate_value(value)?;
     let _guard = AbsolutePathBufGuard::new(base_dir);
     if let Some(config_error) = config_error_from_ignored_toml_value_fields::<ConfigToml>(
         toml_file,
@@ -1156,6 +1164,13 @@ fn sanitize_project_config(
             && features.remove("shell_snapshot").is_some()
         {
             ignored_keys.push("features.shell_snapshot".to_string());
+        }
+        if let Some(multi_agent) = features
+            .get_mut("multi_agent_v2")
+            .and_then(TomlValue::as_table_mut)
+            && multi_agent.remove("message_board_remote").is_some()
+        {
+            ignored_keys.push("features.multi_agent_v2.message_board_remote".to_string());
         }
         for key in ["respect_system_proxy", "system_proxy_fallback"] {
             if features.remove(key).is_some() {
@@ -1694,6 +1709,11 @@ async fn discover_project_layers(
                 let config: TomlValue = match toml::from_str(&contents) {
                     Ok(config) => config,
                     Err(e) => {
+                        if let Some(redacted) =
+                            crate::storage_candidate::redacted_parse_error(&contents)
+                        {
+                            return Err(redacted);
+                        }
                         if decision.is_trusted() {
                             let config_file_display = config_file.as_path().display();
                             return Err(io::Error::new(

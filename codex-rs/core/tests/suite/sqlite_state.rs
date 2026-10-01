@@ -9,6 +9,7 @@ use codex_features::Feature;
 use codex_history::RolloutItem;
 use codex_history::RolloutLine;
 use codex_login::CodexAuth;
+use codex_protocol::MemoryVersion;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::CollaborationMode;
 use codex_protocol::config_types::ModeKind;
@@ -743,6 +744,44 @@ async fn web_search_marks_thread_memory_mode_polluted_when_configured() -> Resul
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 
+    assert_eq!(memory_mode.as_deref(), Some("polluted"));
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn web_search_marks_v2_thread_memory_mode_polluted_when_configured() -> Result<()> {
+    let server = start_mock_server().await;
+    let response = mount_sse_once(
+        &server,
+        responses::sse(vec![
+            ev_response_created("resp-1"),
+            ev_web_search_call_done("ws-1", "completed", "weather seattle"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+    let mut builder = test_codex().with_config(|config| {
+        config
+            .features
+            .enable(Feature::Sqlite)
+            .expect("test config should allow feature update");
+        config.memories.version = MemoryVersion::V2;
+        config.memories.disable_on_external_context = true;
+    });
+    let test = builder.build_with_auto_env(&server).await?;
+    let db = test.codex.state_db().expect("state db enabled");
+    let thread_id = test.session_configured.thread_id;
+
+    test.submit_turn("search the web with v2 memory").await?;
+    response.single_request();
+    let mut memory_mode = None;
+    for _ in 0..100 {
+        memory_mode = db.get_thread_memory_mode(thread_id).await?;
+        if memory_mode.as_deref() == Some("polluted") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     assert_eq!(memory_mode.as_deref(), Some("polluted"));
     Ok(())
 }

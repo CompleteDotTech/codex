@@ -26,7 +26,7 @@ use codex_protocol::protocol::AskForApproval;
 use codex_protocol::protocol::SandboxPolicy;
 use codex_protocol::protocol::TokenUsage;
 use codex_protocol::user_input::UserInput;
-use codex_state::MemoryStore;
+use codex_state::RuntimeMemoryStore;
 use codex_state::Stage1Output;
 use std::collections::HashMap;
 use std::path::Path;
@@ -64,7 +64,7 @@ pub async fn run(
     let max_unused_days = config.memories.max_unused_days;
 
     // 1. Claim the global Phase 2 lock before touching the memory workspace.
-    let claim = match job::claim(context.as_ref(), &db).await {
+    let claim = match job::claim(context.as_ref(), db.as_ref()).await {
         Ok(claim) => claim,
         Err(e) => {
             context.counter(MEMORY_PHASE_TWO_JOBS, /*inc*/ 1, &[("status", e)]);
@@ -75,7 +75,13 @@ pub async fn run(
     // 2. Ensure the memories root has a git baseline repository.
     if let Err(err) = prepare_memory_workspace(&root).await {
         tracing::error!("failed preparing memory workspace: {err}");
-        job::failed(context.as_ref(), &db, &claim, "failed_prepare_workspace").await;
+        job::failed(
+            context.as_ref(),
+            db.as_ref(),
+            &claim,
+            "failed_prepare_workspace",
+        )
+        .await;
         return;
     }
 
@@ -87,7 +93,13 @@ pub async fn run(
     ) else {
         // If we can't get the config, we can't consolidate.
         tracing::error!("failed to get agent config");
-        job::failed(context.as_ref(), &db, &claim, "failed_sandbox_policy").await;
+        job::failed(
+            context.as_ref(),
+            db.as_ref(),
+            &claim,
+            "failed_sandbox_policy",
+        )
+        .await;
         return;
     };
 
@@ -99,7 +111,13 @@ pub async fn run(
         Ok(raw_memories) => raw_memories,
         Err(err) => {
             tracing::error!("failed to list stage1 outputs from global: {err}");
-            job::failed(context.as_ref(), &db, &claim, "failed_load_stage1_outputs").await;
+            job::failed(
+                context.as_ref(),
+                db.as_ref(),
+                &claim,
+                "failed_load_stage1_outputs",
+            )
+            .await;
             return;
         }
     };
@@ -111,7 +129,7 @@ pub async fn run(
         tracing::error!("failed syncing phase2 workspace inputs: {err}");
         job::failed(
             context.as_ref(),
-            &db,
+            db.as_ref(),
             &claim,
             "failed_sync_workspace_inputs",
         )
@@ -124,7 +142,13 @@ pub async fn run(
         Ok(diff) => diff,
         Err(err) => {
             tracing::error!("failed checking memory workspace changes: {err}");
-            job::failed(context.as_ref(), &db, &claim, "failed_workspace_status").await;
+            job::failed(
+                context.as_ref(),
+                db.as_ref(),
+                &claim,
+                "failed_workspace_status",
+            )
+            .await;
             return;
         }
     };
@@ -137,7 +161,7 @@ pub async fn run(
         // We check only after sync of the file system.
         if job::succeed(
             context.as_ref(),
-            &db,
+            db.as_ref(),
             &claim,
             new_watermark,
             &raw_memories,
@@ -154,7 +178,13 @@ pub async fn run(
     // 7. Persist the diff for the consolidation agent to inspect.
     if let Err(err) = write_workspace_diff(&root, &workspace_diff).await {
         tracing::error!("failed writing memory workspace diff file: {err}");
-        job::failed(context.as_ref(), &db, &claim, "failed_workspace_diff_file").await;
+        job::failed(
+            context.as_ref(),
+            db.as_ref(),
+            &claim,
+            "failed_workspace_diff_file",
+        )
+        .await;
         return;
     }
 
@@ -167,7 +197,7 @@ pub async fn run(
         Ok(agent) => agent,
         Err(err) => {
             tracing::error!("failed to spawn global memory consolidation agent: {err}");
-            job::failed(context.as_ref(), &db, &claim, "failed_spawn_agent").await;
+            job::failed(context.as_ref(), db.as_ref(), &claim, "failed_spawn_agent").await;
             return;
         }
     };
@@ -213,7 +243,7 @@ mod job {
 
     pub(super) async fn claim(
         context: &MemoryStartupContext,
-        db: &MemoryStore,
+        db: &dyn RuntimeMemoryStore,
     ) -> Result<Claim, &'static str> {
         let claim = db
             .try_claim_global_phase2_job(context.thread_id(), crate::stage_two::JOB_LEASE_SECONDS)
@@ -248,7 +278,7 @@ mod job {
 
     pub(super) async fn failed(
         context: &MemoryStartupContext,
-        db: &MemoryStore,
+        db: &dyn RuntimeMemoryStore,
         claim: &Claim,
         reason: &'static str,
     ) {
@@ -274,7 +304,7 @@ mod job {
 
     pub(super) async fn succeed(
         context: &MemoryStartupContext,
-        db: &MemoryStore,
+        db: &dyn RuntimeMemoryStore,
         claim: &Claim,
         completion_watermark: i64,
         selected_outputs: &[codex_state::Stage1Output],
@@ -408,8 +438,13 @@ mod agent {
                     Ok(()) => true,
                     Err(err) => {
                         tracing::error!("memory consolidation artifacts are invalid: {err}");
-                        job::failed(context.as_ref(), &db, &claim, "failed_invalid_artifacts")
-                            .await;
+                        job::failed(
+                            context.as_ref(),
+                            db.as_ref(),
+                            &claim,
+                            "failed_invalid_artifacts",
+                        )
+                        .await;
                         false
                     }
                 }
@@ -438,7 +473,7 @@ mod agent {
                         false
                     }
                     Err(_) => {
-                        job::failed(context.as_ref(), &db, &claim, "failed_confirm_ownership")
+                        job::failed(context.as_ref(), db.as_ref(), &claim, "failed_confirm_ownership")
                             .await;
                         false
                     }
@@ -446,10 +481,16 @@ mod agent {
                 if still_owns_lock {
                     if let Err(err) = reset_memory_workspace_baseline(&memory_root).await {
                         tracing::error!("failed resetting memory workspace baseline: {err}");
-                        job::failed(context.as_ref(), &db, &claim, "failed_workspace_commit").await;
+                        job::failed(
+                            context.as_ref(),
+                            db.as_ref(),
+                            &claim,
+                            "failed_workspace_commit",
+                        )
+                        .await;
                     } else if !job::succeed(
                         context.as_ref(),
-                        &db,
+                        db.as_ref(),
                         &claim,
                         new_watermark,
                         &selected_outputs,
@@ -469,13 +510,13 @@ mod agent {
                 if let Err(err) = remove_memory_symlinks(&memory_root).await {
                     tracing::error!("failed removing memory workspace symbolic links: {err}");
                 }
-                job::failed(context.as_ref(), &db, &claim, "failed_agent").await;
+                job::failed(context.as_ref(), db.as_ref(), &claim, "failed_agent").await;
             }
         });
     }
 
     async fn loop_agent(
-        db: MemoryStore,
+        db: Arc<dyn RuntimeMemoryStore>,
         token: String,
         thread_id: ThreadId,
         thread: &codex_core::CodexThread,
