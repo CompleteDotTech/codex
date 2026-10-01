@@ -210,7 +210,6 @@ async fn scenario(
                     preview: Some("hello world".to_string()),
                     title: Some("hello".to_string()),
                     first_user_message: Some("hello world".to_string()),
-                    model: Some("test-model".to_string()),
                     source: Some(SessionSource::Exec),
                     cwd: Some(cwd.to_path_buf()),
                     ..Default::default()
@@ -420,6 +419,7 @@ async fn scenario(
                 include_archived: false,
                 patch: ThreadMetadataPatch {
                     name: Some(Some("Renamed thread".to_string())),
+                    model: Some("test-model".to_string()),
                     ..Default::default()
                 },
             })
