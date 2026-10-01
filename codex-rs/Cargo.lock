@@ -4352,6 +4352,7 @@ name = "codex-postgres-runtime"
 version = "0.0.0"
 dependencies = [
  "ed25519-dalek",
+ "libc",
  "pretty_assertions",
  "rustls",
  "serde",
