@@ -105,7 +105,7 @@ fn candidate_toml(state: &Path) -> String {
          port = {}\ndatabase = \"codex\"\nnamespace = \"codex_storage\"\n\
          connect_timeout_seconds = 5\npool_acquire_timeout_seconds = 20\nmax_connections = 4\n\n\
          [storage_candidate.credential]\nsource = \"environment\"\nvariable = \"{PASSWORD_VARIABLE}\"\n\n\
-         [storage_candidate.tls]\nca_certificate = {:?}\n",
+         [storage_candidate.tls]\nverification = \"verify_full\"\nca_certificate = {:?}\n",
         receipt(state)["port"],
         state.join("secrets/ca.crt").display().to_string()
     )
