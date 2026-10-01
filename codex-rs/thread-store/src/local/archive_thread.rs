@@ -1,11 +1,10 @@
 use super::LocalThreadStore;
 use super::helpers::ensure_unambiguous_rollout;
-use super::helpers::move_rollout_noclobber;
 use super::helpers::owned_rollout_paths_from_index;
-use super::helpers::restore_rollout_moves;
 use super::helpers::rollout_path_is_archived;
 use super::helpers::scoped_rollout_path;
 use super::helpers::validated_rollout_file_name;
+use super::rollout_move_file::move_rollout_noclobber_retained;
 use crate::ArchiveThreadsParams;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
@@ -13,6 +12,9 @@ use chrono::Utc;
 use codex_rollout::RolloutReferenceIndex;
 use tracing::warn;
 
+use super::rollout_move_transaction::MoveDirection;
+use super::rollout_move_transaction::begin_move;
+use super::rollout_move_transaction::replay_pending_move;
 use super::thread_rollout_resolver;
 pub(super) async fn archive_threads(
     store: &LocalThreadStore,
@@ -41,6 +43,12 @@ pub(super) async fn archive_threads(
         }
     }
     let _writer_guards = store.acquire_writer_locks(&lock_thread_ids).await?;
+    let mut replayed_archives = std::collections::HashSet::new();
+    for &thread_id in &thread_ids {
+        if replay_pending_move(store, thread_id).await? == Some(MoveDirection::Archive) {
+            replayed_archives.insert(thread_id);
+        }
+    }
     // Only inspect active files whose names belong to the threads being archived.
     let reference_index = RolloutReferenceIndex::scan_unarchived_threads(
         store.config.codex_home.as_path(),
@@ -59,6 +67,10 @@ pub(super) async fn archive_threads(
     let parent_thread_id = thread_ids[0];
     let mut archived_thread_ids = Vec::new();
     for thread_id in thread_ids {
+        if replayed_archives.contains(&thread_id) {
+            archived_thread_ids.push(thread_id);
+            continue;
+        }
         let rollout_paths = owned_rollout_paths_from_index(&reference_index, thread_id);
         match archive_thread_with_paths(store, thread_id, rollout_paths).await {
             Ok(()) => archived_thread_ids.push(thread_id),
@@ -127,23 +139,21 @@ async fn archive_thread_with_paths(
         message: format!("failed to archive selected rollout for thread {thread_id}"),
     })?;
 
-    for (index, (source, destination)) in rollout_moves.iter().enumerate() {
-        if let Err(err) =
-            move_rollout_noclobber(source, destination, store.config.codex_home.as_path())
-        {
-            if let Err(restore_err) =
-                restore_rollout_moves(&rollout_moves[..index], store.config.codex_home.as_path())
-            {
-                return Err(ThreadStoreError::Internal {
-                    message: format!(
-                        "failed to archive thread: {err}; failed to restore moved rollouts: {restore_err}"
-                    ),
-                });
-            }
-            return Err(ThreadStoreError::Internal {
+    let pending = begin_move(
+        store.config.codex_home.as_path(),
+        thread_id,
+        MoveDirection::Archive,
+        archived_path.as_path(),
+        &rollout_moves,
+    )
+    .map_err(|err| ThreadStoreError::Internal {
+        message: format!("failed to record archive move: {err}"),
+    })?;
+    for (source, destination) in &rollout_moves {
+        move_rollout_noclobber_retained(source, destination, store.config.codex_home.as_path())
+            .map_err(|err| ThreadStoreError::Internal {
                 message: format!("failed to archive thread: {err}"),
-            });
-        }
+            })?;
     }
 
     if let Some(ctx) = state_db_ctx
@@ -151,19 +161,15 @@ async fn archive_thread_with_paths(
             .mark_archived(thread_id, archived_path.as_path(), Utc::now())
             .await
     {
-        if let Err(restore_err) =
-            restore_rollout_moves(&rollout_moves, store.config.codex_home.as_path())
-        {
-            return Err(ThreadStoreError::Internal {
-                message: format!(
-                    "failed to update archived thread metadata: {err}; failed to restore moved rollouts: {restore_err}"
-                ),
-            });
-        }
         return Err(ThreadStoreError::Internal {
             message: format!("failed to update archived thread metadata: {err}"),
         });
     }
+    pending
+        .complete()
+        .map_err(|err| ThreadStoreError::Internal {
+            message: format!("failed to finish archive move: {err}"),
+        })?;
     Ok(())
 }
 
@@ -187,6 +193,7 @@ mod tests {
     use crate::ThreadSortKey;
     use crate::ThreadStore;
     use crate::local::LocalThreadStore;
+    use crate::local::rollout_move_file::move_rollout_noclobber;
     use crate::local::test_support::test_config;
     use crate::local::test_support::write_archived_session_file;
     use crate::local::test_support::write_session_file;

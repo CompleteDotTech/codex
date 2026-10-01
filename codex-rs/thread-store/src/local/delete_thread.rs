@@ -70,10 +70,11 @@ pub(super) async fn delete_thread(
     let thread_id = params.thread_id;
     let _lifecycle_guard = store.live_writer_locks.lock_lifecycle(thread_id).await;
     let _live_writer_guard = store.live_writer_locks.lock(thread_id).await;
+    let mut writer_guards = store.acquire_writer_locks(&[thread_id]).await?;
+    super::rollout_move_transaction::replay_pending_move(store, thread_id).await?;
     let reference_index = scan_reference_index(store).await?;
     let thread_rollouts = ThreadRollouts::from_index(&reference_index, thread_id);
     ensure_no_external_references(&reference_index, std::slice::from_ref(&thread_rollouts))?;
-    let mut writer_guards = store.acquire_writer_locks(&[thread_id]).await?;
     if let Some(cleanup) = &store.thread_data_cleanup {
         cleanup(vec![thread_id]).await?;
     }
@@ -113,6 +114,11 @@ pub(super) async fn delete_threads(
         _live_writer_guards.push(store.live_writer_locks.lock(thread_id).await);
     }
 
+    let mut writer_guards = store.acquire_writer_locks(&lock_thread_ids).await?;
+    for &thread_id in &lock_thread_ids {
+        super::rollout_move_transaction::replay_pending_move(store, thread_id).await?;
+    }
+
     let reference_index = scan_reference_index(store).await?;
     let thread_rollouts = thread_ids
         .iter()
@@ -120,7 +126,6 @@ pub(super) async fn delete_threads(
         .collect::<Vec<_>>();
     ensure_no_external_references(&reference_index, thread_rollouts.as_slice())?;
 
-    let mut writer_guards = store.acquire_writer_locks(&lock_thread_ids).await?;
     if let Some(cleanup) = &store.thread_data_cleanup {
         cleanup(thread_ids.clone()).await?;
     }

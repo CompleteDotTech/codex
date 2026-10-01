@@ -1,11 +1,8 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::fs::FileTimes;
-use std::fs::OpenOptions;
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::SystemTime;
 
 use chrono::DateTime;
 use chrono::Utc;
@@ -131,11 +128,13 @@ pub(super) fn validated_rollout_file_name(
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn touch_modified_time(path: &Path) -> std::io::Result<()> {
-    let times = FileTimes::new().set_modified(SystemTime::now());
-    OpenOptions::new().append(true).open(path)?.set_times(times)
+    let times = std::fs::FileTimes::new().set_modified(std::time::SystemTime::now());
+    std::fs::OpenOptions::new().append(true).open(path)?.set_times(times)
 }
 
+#[allow(dead_code)]
 pub(super) fn move_rollout_noclobber(
     source: &Path,
     destination: &Path,
@@ -172,6 +171,7 @@ pub(super) fn move_rollout_noclobber(
     )
 }
 
+#[allow(dead_code)]
 pub(super) fn restore_rollout_moves(
     moves: &[(PathBuf, PathBuf)],
     codex_home: &Path,
