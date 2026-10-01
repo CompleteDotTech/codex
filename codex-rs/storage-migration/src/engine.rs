@@ -16,6 +16,7 @@ use crate::digest::DigestBuilder;
 use crate::digest::DomainDigest;
 use crate::domain::Domain;
 use crate::domain::DomainOps;
+use crate::external_imports::ExternalImports;
 use crate::goals::Goals;
 use crate::logs::Logs;
 use crate::memory::MemoryJobs;
@@ -112,6 +113,10 @@ macro_rules! with_domain {
             }
             Domain::BoardOptOuts => {
                 type $ops = OptOuts;
+                $body
+            }
+            Domain::ExternalImports => {
+                type $ops = ExternalImports;
                 $body
             }
         }

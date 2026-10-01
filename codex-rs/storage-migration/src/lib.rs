@@ -9,6 +9,7 @@ mod board;
 mod digest;
 mod domain;
 mod engine;
+mod external_imports;
 mod goals;
 mod logs;
 mod memory;

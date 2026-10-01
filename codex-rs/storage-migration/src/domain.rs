@@ -28,6 +28,7 @@ pub enum Domain {
     BoardPosts,
     BoardSubscriptions,
     BoardOptOuts,
+    ExternalImports,
 }
 
 impl Domain {
@@ -51,6 +52,7 @@ impl Domain {
         Domain::BoardPosts,
         Domain::BoardSubscriptions,
         Domain::BoardOptOuts,
+        Domain::ExternalImports,
     ];
 
     pub fn name(self) -> &'static str {
@@ -73,6 +75,7 @@ impl Domain {
             Domain::BoardPosts => "board_posts",
             Domain::BoardSubscriptions => "board_subscriptions",
             Domain::BoardOptOuts => "board_opt_outs",
+            Domain::ExternalImports => "external_imports",
         }
     }
 }

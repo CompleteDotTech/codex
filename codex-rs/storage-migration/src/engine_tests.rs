@@ -327,6 +327,12 @@ async fn populate(home: &Path) -> Vec<ThreadMetadata> {
         "INSERT INTO subscription_opt_outs VALUES ('main', 'general', 'b')".to_string(),
     ]);
     sqlite_exec(&home.join("agent_message_board_1.sqlite"), &board).await;
+    sqlite_exec(
+        &config.state_db_path(),
+        &["INSERT INTO external_agent_config_imports (import_id, completed_at_ms, successes,            failures, provider_id) VALUES ('import-b', 20, '[\"x\"]', '[]', 'provider'),            ('import-a', 10, '[]', '[\"y\"]', NULL)"
+            .to_string()],
+    )
+    .await;
     // The source owns the checkpointed state, so the runtime must be done writing.
     drop(runtime);
     threads
@@ -406,6 +412,7 @@ async fn real_postgres_catalog_migration() {
             ("board_posts", 3),
             ("board_subscriptions", 2),
             ("board_opt_outs", 1),
+            ("external_imports", 2),
         ]
     );
 
