@@ -160,6 +160,7 @@ members = [
     "state",
     "storage-authority",
     "storage-candidate-preflight",
+    "storage-migration",
     "terminal-detection",
     "test-binary-support",
     "thread-manager-sample",
@@ -198,6 +199,7 @@ codex-postgres-queue-store = { path = "postgres-queue-store" }
 codex-postgres-rollout-store = { path = "postgres-rollout-store" }
 codex-postgres-runtime = { path = "postgres-runtime" }
 codex-storage-candidate-preflight = { path = "storage-candidate-preflight" }
+codex-storage-migration = { path = "storage-migration" }
 codex-agent-identity = { path = "agent-identity" }
 codex-agent-roles = { path = "agent-roles" }
 codex-ansi-escape = { path = "ansi-escape" }

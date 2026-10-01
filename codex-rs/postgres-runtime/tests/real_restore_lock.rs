@@ -77,10 +77,10 @@ async fn real_restore_lock_serializes_bootstrap_and_preflight() {
         check_codex_storage_compatibility(
             &preflight_pool,
             ClientCapabilities {
-                min_schema_format: 16,
-                max_schema_format: 16,
-                reader_version: 16,
-                writer_version: 16,
+                min_schema_format: 17,
+                max_schema_format: 17,
+                reader_version: 17,
+                writer_version: 17,
             },
             RequiredAccess::ReadWrite,
         )
@@ -116,7 +116,7 @@ async fn real_restore_lock_serializes_bootstrap_and_preflight() {
             .expect("preflight unblocked")
             .expect("preflight task completed"),
         Ok(CompatibilityResult {
-            schema_format: 16,
+            schema_format: 17,
             activation_permitted: false,
         })
     );

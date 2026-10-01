@@ -197,6 +197,21 @@ pub(crate) const PROTECTED_TABLES: &[ProtectedTable] = &[
             "idx_thread_rollout_lines_ordinal",
         ],
     },
+    ProtectedTable {
+        name: "storage_migration_runs",
+        runtime_privileges: "SELECT, INSERT, UPDATE, DELETE",
+        indexes: &["storage_migration_runs_pkey"],
+    },
+    ProtectedTable {
+        name: "storage_migration_domains",
+        runtime_privileges: "SELECT, INSERT, UPDATE, DELETE",
+        indexes: &["storage_migration_domains_pkey"],
+    },
+    ProtectedTable {
+        name: "storage_activation",
+        runtime_privileges: "SELECT, UPDATE",
+        indexes: &["storage_activation_pkey"],
+    },
 ];
 
 /// What a migration must look like before its schema qualifier is rewritten for a named
@@ -492,6 +507,26 @@ CREATE INDEX idx_thread_rollout_lines_ordinal
             META_UPDATE,
         ],
         qualified_identifiers: 4,
+    },
+    MigrationShape {
+        version: 17,
+        starts_with: Some("-- Inactive migration bookkeeping"),
+        contains: &[
+            "
+CREATE TABLE codex_storage.storage_migration_runs (
+",
+            "
+CREATE TABLE codex_storage.storage_migration_domains (
+",
+            "
+CREATE TABLE codex_storage.storage_activation (
+",
+            "
+INSERT INTO codex_storage.storage_activation (singleton, state, generation, updated_at_ms)
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 6,
     },
 ];
 

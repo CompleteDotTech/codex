@@ -4894,6 +4894,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-storage-migration"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-postgres-runtime",
+ "codex-postgres-thread-catalog",
+ "codex-protocol",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "codex-tcp-tunnel"
 version = "0.0.0"
 dependencies = [
