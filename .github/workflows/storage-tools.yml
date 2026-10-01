@@ -220,6 +220,20 @@ jobs:
           sql(Path(os.environ["CODEX_TEST_POSTGRES_STATE"]), "TRUNCATE codex_storage.project_idempotency_keys, codex_storage.queued_thread_revisions, codex_storage.agent_board_deleted, codex_storage.external_agent_config_imports, codex_storage.threads, codex_storage.projects CASCADE")
           PY
           CODEX_TEST_POSTGRES_REMOTE_BACKEND_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-remote-backend real_postgres_remote_backend_selection
+      - name: Plan, migrate, activate and return through the storage service
+        working-directory: codex-rs
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "../scripts/postgres")
+          from qualification_checks import sql
+
+          sql(Path(os.environ["CODEX_TEST_POSTGRES_STATE"]), "TRUNCATE codex_storage.project_idempotency_keys, codex_storage.queued_thread_revisions, codex_storage.agent_board_deleted, codex_storage.external_agent_config_imports, codex_storage.threads, codex_storage.projects CASCADE")
+          PY
+          CODEX_TEST_POSTGRES_STORAGE_SERVICE_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-storage-service real_postgres_storage_service
       - name: Test two-namespace role isolation against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_postgres_roles_isolate_two_schemas
