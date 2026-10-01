@@ -539,6 +539,18 @@ ALTER TABLE codex_storage.storage_activation
         ],
         qualified_identifiers: 2,
     },
+    MigrationShape {
+        version: 19,
+        starts_with: Some("-- A dataset handed back to local storage"),
+        contains: &[
+            "
+ALTER TABLE codex_storage.storage_activation
+    DROP CONSTRAINT storage_activation_state_check;
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 3,
+    },
 ];
 
 /// Relations always present once the metadata migration has run.

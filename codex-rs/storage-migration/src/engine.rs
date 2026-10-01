@@ -166,6 +166,8 @@ pub struct ActivationTarget {
 pub struct ActivationState {
     /// True while a run holds the store and ordinary writers are refused.
     pub migrating: bool,
+    /// True once the store was handed back to local storage.
+    pub retired: bool,
     /// The run that holds the store, while one does.
     pub run_id: Option<Uuid>,
     pub generation: i64,
@@ -301,6 +303,7 @@ impl Migrator {
         let dataset: Option<String> = row.try_get("dataset_id").map_err(target)?;
         Ok(ActivationState {
             migrating: state == "migrating",
+            retired: state == "retired",
             run_id: row.try_get("run_id").map_err(target)?,
             generation: row.try_get("generation").map_err(target)?,
             dataset_id: dataset.and_then(|value| Uuid::parse_str(&value).ok()),
@@ -320,17 +323,103 @@ impl Migrator {
         if held != Some(run_id) {
             return Err(MigrationError::TargetBusy);
         }
+        let now = chrono::Utc::now().timestamp_millis();
         sqlx::query(
             "UPDATE storage_migration_runs SET state = 'abandoned', updated_at_ms = $2 \
              WHERE run_id = $1 AND state IN ('running', 'verified')",
         )
         .bind(run_id)
-        .bind(chrono::Utc::now().timestamp_millis())
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(target)?;
+        // An export only read the dataset while it was closed, so cancelling it hands the
+        // dataset back unchanged. An abandoned import leaves a partial copy, which stays closed.
+        sqlx::query(
+            "UPDATE storage_activation SET state = 'open', updated_at_ms = $2 \
+             WHERE singleton AND state = 'migrating' AND EXISTS ( \
+                 SELECT 1 FROM storage_migration_runs WHERE run_id = $1 AND direction = 'export')",
+        )
+        .bind(run_id)
+        .bind(now)
         .execute(&mut *tx)
         .await
         .map_err(target)?;
         tx.commit().await.map_err(target)?;
         Ok(())
+    }
+
+    /// Hand the store back to local storage: after a verified export, close it to every writer for
+    /// good. Repeating a call that already succeeded returns the same generation.
+    pub async fn retire(
+        &self,
+        run_id: Uuid,
+        publish: ActivationTarget,
+    ) -> Result<i64, MigrationError> {
+        let mut connection = self.connection().await?;
+        let mut tx = connection.begin().await.map_err(target)?;
+        let row = sqlx::query(
+            "SELECT state, run_id, generation, dataset_id FROM storage_activation \
+             WHERE singleton FOR UPDATE",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(target)?;
+        let state: String = row.try_get("state").map_err(target)?;
+        let held: Option<Uuid> = row.try_get("run_id").map_err(target)?;
+        let generation: i64 = row.try_get("generation").map_err(target)?;
+        let dataset: Option<String> = row.try_get("dataset_id").map_err(target)?;
+        if state == "retired"
+            && generation == publish.generation
+            && held == Some(run_id)
+            && dataset.as_deref() == Some(publish.dataset_id.to_string().as_str())
+        {
+            return Ok(generation);
+        }
+        if state != "migrating" || held != Some(run_id) {
+            return Err(MigrationError::TargetBusy);
+        }
+        let run =
+            sqlx::query("SELECT state, direction FROM storage_migration_runs WHERE run_id = $1")
+                .bind(run_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(target)?;
+        let Some(run) = run else {
+            return Err(MigrationError::NotVerified);
+        };
+        let run_state: String = run.try_get("state").map_err(target)?;
+        let direction: String = run.try_get("direction").map_err(target)?;
+        if run_state != "verified" || direction != "export" {
+            return Err(MigrationError::NotVerified);
+        }
+        if dataset.as_deref() != Some(publish.dataset_id.to_string().as_str()) {
+            return Err(MigrationError::TargetBusy);
+        }
+        if publish.generation <= generation {
+            return Err(MigrationError::GenerationNotAdvancing);
+        }
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "UPDATE storage_migration_runs SET state = 'activated', updated_at_ms = $2 \
+             WHERE run_id = $1",
+        )
+        .bind(run_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(target)?;
+        sqlx::query(
+            "UPDATE storage_activation SET state = 'retired', generation = $1, \
+             activated_at_ms = $2, updated_at_ms = $2 WHERE singleton",
+        )
+        .bind(publish.generation)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(target)?;
+        tx.commit().await.map_err(target)?;
+        Ok(publish.generation)
     }
 
     /// Publish a verified import as the store's content and reopen the store for writers.
@@ -774,3 +863,7 @@ mod cutover_tests;
 #[cfg(test)]
 #[path = "export_tests.rs"]
 mod export_tests;
+
+#[cfg(test)]
+#[path = "return_tests.rs"]
+mod return_tests;

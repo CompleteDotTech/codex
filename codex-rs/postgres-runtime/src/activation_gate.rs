@@ -12,6 +12,8 @@ use std::fmt;
 pub enum ActivationGateError {
     /// A migration holds the store; writes resume when it finishes or is abandoned.
     Migrating,
+    /// The dataset was handed back to local storage and no longer accepts writes.
+    Retired,
     /// The activation state could not be read, so the write cannot be proven safe.
     Unavailable,
 }
@@ -22,6 +24,8 @@ impl fmt::Display for ActivationGateError {
             Self::Migrating => {
                 formatter.write_str("storage is being migrated and cannot accept writes")
             }
+            Self::Retired => formatter
+                .write_str("storage was handed back to local storage and no longer accepts writes"),
             Self::Unavailable => {
                 formatter.write_str("the storage activation state could not be read")
             }
@@ -45,6 +49,7 @@ pub async fn require_storage_open(
     match state.as_str() {
         "open" => Ok(()),
         "migrating" => Err(ActivationGateError::Migrating),
+        "retired" => Err(ActivationGateError::Retired),
         _ => Err(ActivationGateError::Unavailable),
     }
 }

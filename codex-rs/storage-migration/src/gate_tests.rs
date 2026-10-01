@@ -120,6 +120,7 @@ pub(super) async fn gate_phase(
         migrator.activation_state().await.expect("state"),
         ActivationState {
             migrating: false,
+            retired: false,
             run_id: Some(summary.run_id),
             generation,
             dataset_id: Some(publish.dataset_id),

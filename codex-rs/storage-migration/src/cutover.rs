@@ -124,6 +124,9 @@ impl Cutover {
         let Some(intent) = read_cutover(&self.home).map_err(authority)? else {
             return Ok(RecoveryOutcome::Idle);
         };
+        if intent.target != ActiveBackend::Remote {
+            return Err(CutoverError::Conflict);
+        }
         let remote = self.migrator.activation_state().await?;
         let to_generation =
             i64::try_from(intent.to_generation).map_err(|_| CutoverError::Conflict)?;

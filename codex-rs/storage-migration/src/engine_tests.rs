@@ -648,4 +648,5 @@ async fn scenario(pool: Arc<PostgresPool>) {
     super::gate_tests::gate_phase(&pool, &source, threads[0].id).await;
     super::cutover_tests::cutover_phase(&pool, &source, home.path()).await;
     super::export_tests::export_phase(&pool, &source, &threads).await;
+    super::return_tests::return_phase(&pool, &source, home.path(), &threads).await;
 }

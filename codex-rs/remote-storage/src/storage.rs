@@ -31,6 +31,8 @@ const DEFAULT_RUNTIME_LOGIN: &str = "codex_runtime";
 pub struct StorageActivation {
     /// True while a migration holds the dataset and every store refuses writes.
     pub migrating: bool,
+    /// True once the dataset was handed back to local storage; it never accepts writes again.
+    pub retired: bool,
     /// Increases each time a verified migration is activated.
     pub generation: i64,
     /// The dataset the last activation published; `None` before the first one.
@@ -132,7 +134,8 @@ impl RemoteStorage {
             RemoteStorageError::Schema(codex_postgres_runtime::RuntimeSchemaError::Invalid)
         })?;
         Ok(StorageActivation {
-            migrating: state != "open",
+            migrating: state == "migrating",
+            retired: state == "retired",
             generation,
             dataset_id: dataset.and_then(|value| uuid::Uuid::parse_str(&value).ok()),
         })
@@ -148,6 +151,9 @@ impl RemoteStorage {
     /// dataset that was re-activated underneath it.
     pub async fn require_current_generation(&self) -> Result<(), RemoteStorageError> {
         let activation = self.activation().await?;
+        if activation.retired {
+            return Err(RemoteStorageError::Retired);
+        }
         if activation.migrating {
             return Err(RemoteStorageError::Migrating);
         }

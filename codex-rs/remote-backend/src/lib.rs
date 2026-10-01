@@ -95,6 +95,10 @@ async fn connect(
         .activation()
         .await
         .map_err(RemoteBackendError::Storage)?;
+    if activation.retired {
+        storage.close().await;
+        return Err(RemoteBackendError::Storage(RemoteStorageError::Retired));
+    }
     if activation.migrating {
         return Err(RemoteBackendError::Storage(RemoteStorageError::Migrating));
     }

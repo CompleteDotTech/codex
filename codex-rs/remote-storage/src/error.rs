@@ -19,6 +19,8 @@ pub enum RemoteStorageError {
     Schema(RuntimeSchemaError),
     /// A migration holds the store, so writes are refused until it finishes.
     Migrating,
+    /// The dataset was handed back to local storage; this client must not use it.
+    Retired,
     /// The dataset was activated again after this handle connected. The handle is stale and the
     /// host must reconnect before it resumes any work.
     GenerationChanged,
@@ -39,7 +41,8 @@ impl RemoteStorageError {
             | Self::Credential(_)
             | Self::Connection(_)
             | Self::Schema(_)
-            | Self::GenerationChanged => false,
+            | Self::GenerationChanged
+            | Self::Retired => false,
         }
     }
 }

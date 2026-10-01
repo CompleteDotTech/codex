@@ -16,13 +16,13 @@ use tokio::time::Instant;
 // isolated namespace, then restore it before testing the next case.
 pub async fn run(migrator: &PostgresPool, state: &Path) {
     let capabilities = ClientCapabilities {
-        min_schema_format: 18,
-        max_schema_format: 18,
-        reader_version: 18,
-        writer_version: 18,
+        min_schema_format: 19,
+        max_schema_format: 19,
+        reader_version: 19,
+        writer_version: 19,
     };
     let compatible = Ok(CompatibilityResult {
-        schema_format: 18,
+        schema_format: 19,
         activation_permitted: false,
     });
     assert_eq!(
@@ -52,7 +52,7 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
     );
     owner_query(
         migrator,
-        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 19",
+        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 20",
     )
     .await;
     assert_eq!(
@@ -65,7 +65,7 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
     );
     owner_query(
         migrator,
-        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 18",
+        "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 19",
     )
     .await;
     for (damage, repair, error) in [
@@ -76,7 +76,7 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
         ),
         (
             "ALTER TABLE codex_storage.codex_schema_meta ALTER COLUMN min_writer_version DROP NOT NULL; UPDATE codex_storage.codex_schema_meta SET min_writer_version = NULL",
-            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 18; ALTER TABLE codex_storage.codex_schema_meta ALTER COLUMN min_writer_version SET NOT NULL",
+            "UPDATE codex_storage.codex_schema_meta SET min_writer_version = 19; ALTER TABLE codex_storage.codex_schema_meta ALTER COLUMN min_writer_version SET NOT NULL",
             CompatibilityError::MissingMetadata,
         ),
         (
@@ -111,7 +111,7 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
         ),
         (
             "ALTER TABLE codex_storage.codex_schema_meta DROP CONSTRAINT codex_schema_meta_min_reader_version_check; UPDATE codex_storage.codex_schema_meta SET min_reader_version = 0",
-            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 18; ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0)",
+            "UPDATE codex_storage.codex_schema_meta SET min_reader_version = 19; ALTER TABLE codex_storage.codex_schema_meta ADD CONSTRAINT codex_schema_meta_min_reader_version_check CHECK (min_reader_version > 0)",
             CompatibilityError::MissingMetadata,
         ),
         (
@@ -130,11 +130,11 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
             CompatibilityError::IncompatibleNamespace,
         ),
         (
-            "DROP TABLE codex_storage.codex_schema_meta; CREATE VIEW codex_storage.codex_schema_meta AS SELECT TRUE AS singleton, 18 AS format_version, 18 AS min_reader_version, 18 AS min_writer_version",
+            "DROP TABLE codex_storage.codex_schema_meta; CREATE VIEW codex_storage.codex_schema_meta AS SELECT TRUE AS singleton, 19 AS format_version, 19 AS min_reader_version, 19 AS min_writer_version",
             concat!(
                 "DROP VIEW codex_storage.codex_schema_meta;",
                 include_str!("../../migrations/0001_codex_storage_metadata.sql"),
-                "UPDATE codex_storage.codex_schema_meta SET format_version = 18, min_reader_version = 18, min_writer_version = 18;",
+                "UPDATE codex_storage.codex_schema_meta SET format_version = 19, min_reader_version = 19, min_writer_version = 19;",
                 "REVOKE ALL ON codex_storage.codex_schema_meta FROM codex_runtime; GRANT SELECT ON codex_storage.codex_schema_meta TO codex_runtime;"
             ),
             CompatibilityError::MissingMetadata,
@@ -168,7 +168,7 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
 
     owner_query(
         migrator,
-        "INSERT INTO codex_storage._codex_pg_migrations (version, description, success, checksum, execution_time) SELECT extra, description, TRUE, checksum, execution_time FROM codex_storage._codex_pg_migrations CROSS JOIN generate_series(19, 20018) extra WHERE version = 1",
+        "INSERT INTO codex_storage._codex_pg_migrations (version, description, success, checksum, execution_time) SELECT extra, description, TRUE, checksum, execution_time FROM codex_storage._codex_pg_migrations CROSS JOIN generate_series(20, 20019) extra WHERE version = 1",
     )
     .await;
     let mut bounded_settings = settings(state, "migrator");
@@ -199,7 +199,7 @@ pub async fn run(migrator: &PostgresPool, state: &Path) {
         .expect("close bounded history pool");
     owner_query(
         migrator,
-        "DELETE FROM codex_storage._codex_pg_migrations WHERE version > 18",
+        "DELETE FROM codex_storage._codex_pg_migrations WHERE version > 19",
     )
     .await;
 
