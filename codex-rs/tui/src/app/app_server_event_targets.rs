@@ -200,6 +200,7 @@ pub(super) fn server_notification_thread_target(
             }
         }
         ServerNotification::ProjectChanged(_)
+        | ServerNotification::StorageOperationUpdated(_)
         | ServerNotification::SkillsChanged(_)
         | ServerNotification::AccountUpdated(_)
         | ServerNotification::GatewayOAuthChanged(_)

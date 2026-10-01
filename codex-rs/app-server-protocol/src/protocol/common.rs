@@ -2062,6 +2062,8 @@ server_notification_definitions! {
     McpToolCallProgress => "item/mcpToolCall/progress" (v2::McpToolCallProgressNotification),
     McpServerOauthLoginCompleted => "mcpServer/oauthLogin/completed" (v2::McpServerOauthLoginCompletedNotification),
     McpServerStatusUpdated => "mcpServer/startupStatus/updated" (v2::McpServerStatusUpdatedNotification),
+    #[experimental("storage/operation/updated")]
+    StorageOperationUpdated => "storage/operation/updated" (v2::StorageOperationUpdatedNotification),
     #[experimental("mcpServer/event/stream/notification")]
     McpServerEventStream => "mcpServer/event/stream/notification" (v2::McpServerEventStreamNotification),
     AccountUpdated => "account/updated" (v2::AccountUpdatedNotification),

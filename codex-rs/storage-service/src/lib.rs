@@ -12,6 +12,7 @@ mod plan;
 mod service;
 mod types;
 
+pub use journal::Observer;
 pub use journal::OperationRecord;
 pub use journal::OperationState;
 pub use ops::Confirmation;

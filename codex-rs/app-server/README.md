@@ -148,6 +148,8 @@ result names that machine in `host`, so a client can show whose storage it contr
 - `storage/operation/read` and `storage/operation/list` replay recorded operations. While an
   operation is copying, `copied` carries the rows written so far, so a client that reconnects
   sees where the work is.
+- `storage/operation/updated` (experimental notification, sent to every connected client) carries
+  the full operation record each time it changes, so a client can show progress without polling.
 - `storage/cancel` cancels an operation that has not been activated. The local home stays
   authoritative.
 - `storage/recover` settles an interrupted cutover from the evidence on both sides, rolling it

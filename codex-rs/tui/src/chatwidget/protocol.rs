@@ -298,6 +298,8 @@ impl ChatWidget {
             ServerNotification::McpServerStatusUpdated(notification) => {
                 self.on_mcp_server_status_updated(notification)
             }
+            // The /storage views read operations on demand; the push is for other clients.
+            ServerNotification::StorageOperationUpdated(_) => {}
             ServerNotification::ItemGuardianApprovalReviewStarted(notification) => {
                 self.on_guardian_review_notification(
                     notification.review_id,

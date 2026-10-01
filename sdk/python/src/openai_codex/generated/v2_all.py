@@ -9892,6 +9892,13 @@ class StorageOperation(BaseModel):
     updated_at: Annotated[int, Field(alias="updatedAt")]
 
 
+class StorageOperationUpdatedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    operation: StorageOperation
+
+
 class StoragePlan(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11449,6 +11456,24 @@ class ItemFileChangePatchUpdatedServerNotification(BaseModel):
         Field(title="Item/fileChange/patchUpdatedNotificationMethod"),
     ]
     params: FileChangePatchUpdatedNotification
+
+
+class StorageOperationUpdatedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["storage/operation/updated"],
+        Field(title="Storage/operation/updatedNotificationMethod"),
+    ]
+    params: StorageOperationUpdatedNotification
 
 
 class AccountRateLimitsUpdatedServerNotification(BaseModel):
@@ -13160,6 +13185,7 @@ class ServerNotification(
         | ItemMcpToolCallProgressServerNotification
         | McpServerOauthLoginCompletedServerNotification
         | McpServerStartupStatusUpdatedServerNotification
+        | StorageOperationUpdatedServerNotification
         | McpServerEventStreamNotificationServerNotification
         | AccountUpdatedServerNotification
         | AccountGatewayOAuthChangedServerNotification
@@ -13250,6 +13276,7 @@ class ServerNotification(
         | ItemMcpToolCallProgressServerNotification
         | McpServerOauthLoginCompletedServerNotification
         | McpServerStartupStatusUpdatedServerNotification
+        | StorageOperationUpdatedServerNotification
         | McpServerEventStreamNotificationServerNotification
         | AccountUpdatedServerNotification
         | AccountGatewayOAuthChangedServerNotification

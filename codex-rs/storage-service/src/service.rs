@@ -1,4 +1,5 @@
 use crate::BlockerCode;
+use crate::Observer;
 use crate::StorageError;
 use crate::journal::Journal;
 use crate::journal::OperationRecord;
@@ -73,6 +74,13 @@ impl StorageService {
             journal,
             running: std::sync::Mutex::default(),
         }
+    }
+
+    /// Report every durable change to an operation record to `observer`, so a front end can push
+    /// progress instead of being polled.
+    pub fn observed_by(mut self, observer: Observer) -> Self {
+        self.journal = self.journal.observed_by(observer);
+        self
     }
 
     /// Claim the right to drive an operation; `None` means this process already is.

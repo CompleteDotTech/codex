@@ -582,7 +582,8 @@ impl MessageProcessor {
             });
         let environment_processor =
             EnvironmentRequestProcessor::new(thread_manager.environment_manager());
-        let storage_processor = StorageRequestProcessor::new(config_manager.clone(), rpc_transport);
+        let storage_processor =
+            StorageRequestProcessor::new(config_manager.clone(), rpc_transport, outgoing.clone());
         let fs_processor = FsRequestProcessor::new(
             Arc::clone(&environment_manager_for_requests),
             FsWatchManager::new(outgoing.clone()),

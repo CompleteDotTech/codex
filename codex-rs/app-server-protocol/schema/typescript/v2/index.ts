@@ -473,6 +473,7 @@ export type { StorageConnectionReport } from "./StorageConnectionReport";
 export type { StorageCopiedDomain } from "./StorageCopiedDomain";
 export type { StorageOperation } from "./StorageOperation";
 export type { StorageOperationState } from "./StorageOperationState";
+export type { StorageOperationUpdatedNotification } from "./StorageOperationUpdatedNotification";
 export type { StoragePlan } from "./StoragePlan";
 export type { StoragePlanAction } from "./StoragePlanAction";
 export type { StorageRecoveryOutcome } from "./StorageRecoveryOutcome";

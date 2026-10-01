@@ -1,0 +1,174 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "StorageBlocker": {
+      "description": "Why a storage operation cannot proceed. The set is stable; clients may switch on it.",
+      "enum": [
+        "noCandidateProfile",
+        "migratorCredentialMissing",
+        "credentialUnavailable",
+        "caCertificateRequired",
+        "unsupportedNamespace",
+        "connectionFailed",
+        "connectionTimedOut",
+        "schemaNeedsUpgrade",
+        "schemaTooNew",
+        "schemaInvalid",
+        "targetNotEmpty",
+        "datasetNotActivated",
+        "datasetMismatch",
+        "datasetMigrating",
+        "datasetRetired",
+        "cutoverInProgress",
+        "authorityInvalid",
+        "alreadyRemote",
+        "notRemote",
+        "homeAlreadyManaged",
+        "sqliteHomeDiffersFromCodexHome",
+        "stalePlan",
+        "notConfirmed",
+        "operationConflict",
+        "operationNotFound",
+        "sourceUnreadable",
+        "stagingFailed",
+        "verificationFailed",
+        "storageAdminRequired",
+        "internal"
+      ],
+      "type": "string"
+    },
+    "StorageCopiedDomain": {
+      "properties": {
+        "domain": {
+          "type": "string"
+        },
+        "rows": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "domain",
+        "rows"
+      ],
+      "type": "object"
+    },
+    "StorageOperation": {
+      "description": "One durable operation as it is stored and reported.",
+      "properties": {
+        "action": {
+          "$ref": "#/definitions/StoragePlanAction"
+        },
+        "blocker": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StorageBlocker"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "copied": {
+          "items": {
+            "$ref": "#/definitions/StorageCopiedDomain"
+          },
+          "type": "array"
+        },
+        "createdAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "operationId": {
+          "type": "string"
+        },
+        "planDigest": {
+          "type": "string"
+        },
+        "runId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/definitions/StorageOperationState"
+        },
+        "updatedAt": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "action",
+        "copied",
+        "createdAt",
+        "operationId",
+        "planDigest",
+        "state",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "StorageOperationState": {
+      "oneOf": [
+        {
+          "enum": [
+            "planned",
+            "copying",
+            "verifying",
+            "committing",
+            "active",
+            "failed",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Verified and waiting for the explicit step that makes it authoritative.",
+          "enum": [
+            "ready"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "StoragePlanAction": {
+      "description": "What a plan or operation moves.",
+      "oneOf": [
+        {
+          "description": "Copy this host's history into the remote dataset and make it authoritative.",
+          "enum": [
+            "migrate"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Copy the remote dataset back into this host and make local files authoritative.",
+          "enum": [
+            "return"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Join a dataset that already exists. Nothing is copied or merged.",
+          "enum": [
+            "attach"
+          ],
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "Sent to every connected client whenever a storage operation record changes, so a front end can show progress without polling. The operation record is the same one `storage/operation/read` returns.",
+  "properties": {
+    "operation": {
+      "$ref": "#/definitions/StorageOperation"
+    }
+  },
+  "required": [
+    "operation"
+  ],
+  "title": "StorageOperationUpdatedNotification",
+  "type": "object"
+}

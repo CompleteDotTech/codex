@@ -387,3 +387,13 @@ pub struct StorageOperationListParams {}
 pub struct StorageOperationListResponse {
     pub operations: Vec<StorageOperation>,
 }
+
+/// Sent to every connected client whenever a storage operation record changes, so a front end can
+/// show progress without polling. The operation record is the same one `storage/operation/read`
+/// returns.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export_to = "v2/")]
+pub struct StorageOperationUpdatedNotification {
+    pub operation: StorageOperation,
+}

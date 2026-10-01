@@ -54,12 +54,28 @@ pub struct OperationRecord {
 /// The operation records of one home.
 pub(crate) struct Journal {
     directory: PathBuf,
+    observer: Option<Observer>,
 }
+
+/// Called with every record the journal durably writes.
+pub type Observer = std::sync::Arc<dyn Fn(&OperationRecord) + Send + Sync>;
 
 impl Journal {
     pub(crate) fn new(codex_home: &std::path::Path) -> Self {
         Self {
             directory: codex_home.join(DIRECTORY),
+            observer: None,
+        }
+    }
+
+    pub(crate) fn observed_by(mut self, observer: Observer) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    fn notify(&self, record: &OperationRecord) {
+        if let Some(observer) = &self.observer {
+            observer(record);
         }
     }
 
@@ -76,7 +92,9 @@ impl Journal {
             .open(self.path(record.operation_id))?;
         serde_json::to_writer(&mut file, record).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
-        file.sync_all()
+        file.sync_all()?;
+        self.notify(record);
+        Ok(())
     }
 
     /// Replace a record atomically.
@@ -87,7 +105,9 @@ impl Journal {
         serde_json::to_writer(&mut file, record).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
         file.sync_all()?;
-        std::fs::rename(temporary, path)
+        std::fs::rename(temporary, path)?;
+        self.notify(record);
+        Ok(())
     }
 
     pub(crate) fn read(&self, operation_id: Uuid) -> io::Result<Option<OperationRecord>> {
@@ -115,3 +135,7 @@ impl Journal {
         records
     }
 }
+
+#[cfg(test)]
+#[path = "journal_tests.rs"]
+mod tests;

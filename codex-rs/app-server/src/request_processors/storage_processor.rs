@@ -20,6 +20,7 @@ use codex_app_server_protocol::StorageOperationListResponse;
 use codex_app_server_protocol::StorageOperationReadParams;
 use codex_app_server_protocol::StorageOperationReadResponse;
 use codex_app_server_protocol::StorageOperationState;
+use codex_app_server_protocol::StorageOperationUpdatedNotification;
 use codex_app_server_protocol::StoragePlan;
 use codex_app_server_protocol::StoragePlanAction;
 use codex_app_server_protocol::StoragePlanParams;
@@ -50,6 +51,7 @@ use uuid::Uuid;
 pub(crate) struct StorageRequestProcessor {
     config_manager: ConfigManager,
     rpc_transport: AppServerRpcTransport,
+    outgoing: Arc<OutgoingMessageSender>,
 }
 
 fn blocker(code: service::BlockerCode) -> StorageBlocker {
@@ -244,10 +246,15 @@ fn host_label() -> String {
 }
 
 impl StorageRequestProcessor {
-    pub(crate) fn new(config_manager: ConfigManager, rpc_transport: AppServerRpcTransport) -> Self {
+    pub(crate) fn new(
+        config_manager: ConfigManager,
+        rpc_transport: AppServerRpcTransport,
+        outgoing: Arc<OutgoingMessageSender>,
+    ) -> Self {
         Self {
             config_manager,
             rpc_transport,
+            outgoing,
         }
     }
 
@@ -273,14 +280,31 @@ impl StorageRequestProcessor {
             Some(StorageCandidateProfile::RemotePostgres(profile)) => Some(profile),
             Some(StorageCandidateProfile::LocalSqlite) | None => None,
         };
-        Ok(Arc::new(StorageService::new(StorageServiceInputs {
-            codex_home: config.codex_home.to_path_buf(),
-            sqlite: config.sqlite_config().clone(),
-            candidate,
-            default_model_provider_id: config.model_provider_id.clone(),
-            host_label: host_label(),
-            keyring: Arc::new(DefaultKeyringStore),
-        })))
+        let outgoing = Arc::clone(&self.outgoing);
+        let observer: service::Observer = Arc::new(move |record| {
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return;
+            };
+            let outgoing = Arc::clone(&outgoing);
+            let notification =
+                ServerNotification::StorageOperationUpdated(StorageOperationUpdatedNotification {
+                    operation: operation(record.clone()),
+                });
+            runtime.spawn(async move {
+                outgoing.send_server_notification(notification).await;
+            });
+        });
+        Ok(Arc::new(
+            StorageService::new(StorageServiceInputs {
+                codex_home: config.codex_home.to_path_buf(),
+                sqlite: config.sqlite_config().clone(),
+                candidate,
+                default_model_provider_id: config.model_provider_id.clone(),
+                host_label: host_label(),
+                keyring: Arc::new(DefaultKeyringStore),
+            })
+            .observed_by(observer),
+        ))
     }
 
     pub(crate) async fn status(
