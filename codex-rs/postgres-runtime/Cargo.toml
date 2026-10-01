@@ -20,7 +20,7 @@ sqlx = { workspace = true, features = ["postgres"] }
 sqlx-macros = { workspace = true }
 sqlx-postgres = { workspace = true }
 sqlx-sqlite = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
 zeroize = { workspace = true }
 
 [dev-dependencies]
