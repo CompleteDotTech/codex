@@ -1,10 +1,11 @@
-use crate::threads::epoch_seconds_to_datetime;
-use crate::threads::thread_metadata_from_row;
 use anyhow::Result;
 use anyhow::anyhow;
 use chrono::Duration;
 use chrono::Utc;
 use codex_postgres_runtime::PostgresPool;
+use codex_postgres_thread_rows::epoch_seconds_to_datetime;
+use codex_postgres_thread_rows::thread_columns;
+use codex_postgres_thread_rows::thread_metadata_from_row;
 use codex_protocol::ThreadId;
 use codex_state::MemoryStoreFuture;
 use codex_state::Phase2JobClaimOutcome;
@@ -72,12 +73,7 @@ impl PostgresMemoryStore {
             .map_err(|error| anyhow!("PostgreSQL memory storage is unavailable: {error:?}"))?;
         timeout(QUERY_TIMEOUT, async {
             let mut tx = connection.begin().await?;
-            sqlx::query(
-                "SELECT 1 FROM codex_storage.memory_consolidation_progress \
-                 WHERE singleton FOR UPDATE",
-            )
-            .execute(&mut *tx)
-            .await?;
+            lock_memory_in(&mut tx).await?;
             let value = operation(&mut tx).await?;
             tx.commit().await?;
             anyhow::Ok(value)
@@ -141,6 +137,49 @@ fn stage1_output_from_row(row: &PgRow) -> Result<Stage1Output> {
     })
 }
 
+/// Take the memory lock that serializes memory work. Callers that combine memory changes with
+/// other tables lock it first, so every transaction acquires locks in the same order.
+pub async fn lock_memory_in(connection: &mut PgConnection) -> Result<()> {
+    sqlx::query(
+        "SELECT 1 FROM codex_storage.memory_consolidation_progress WHERE singleton FOR UPDATE",
+    )
+    .execute(connection)
+    .await?;
+    Ok(())
+}
+
+/// Delete one thread generated memory, queueing consolidation when it was part of the last
+/// successful baseline. The caller owns the transaction and must hold the memory lock.
+pub async fn delete_thread_memory_in(
+    connection: &mut PgConnection,
+    thread_id: ThreadId,
+) -> Result<()> {
+    let now = Utc::now().timestamp();
+    let thread_id = thread_id.to_string();
+    let was_selected = sqlx::query_scalar::<_, i64>(
+        "SELECT selected_for_phase2 FROM codex_storage.memory_stage1_outputs WHERE thread_id = $1::uuid",
+    )
+    .bind(&thread_id)
+    .fetch_optional(&mut *connection)
+    .await?
+    .is_some_and(|selected| selected != 0);
+    let deleted =
+        sqlx::query("DELETE FROM codex_storage.memory_stage1_outputs WHERE thread_id = $1::uuid")
+            .bind(&thread_id)
+            .execute(&mut *connection)
+            .await?
+            .rows_affected();
+    sqlx::query("DELETE FROM codex_storage.memory_jobs WHERE kind = $1 AND job_key = $2")
+        .bind(JOB_KIND_MEMORY_STAGE1)
+        .bind(&thread_id)
+        .execute(&mut *connection)
+        .await?;
+    if deleted > 0 && was_selected {
+        enqueue_global_consolidation_in(connection, now).await?;
+    }
+    Ok(())
+}
+
 /// Enqueue or advance the global consolidation job. The job stays running when it already is,
 /// pending and errored jobs become pending, and the watermark only moves forward.
 async fn enqueue_global_consolidation_in(
@@ -194,38 +233,9 @@ impl RuntimeMemoryStore for PostgresMemoryStore {
     }
 
     fn delete_thread_memory(&self, thread_id: ThreadId) -> MemoryStoreFuture<'_, ()> {
-        Box::pin(self.run(move |connection| {
-            Box::pin(async move {
-                let now = Utc::now().timestamp();
-                let thread_id = thread_id.to_string();
-                let was_selected = sqlx::query_scalar::<_, i64>(
-                    "SELECT selected_for_phase2 FROM codex_storage.memory_stage1_outputs \
-                     WHERE thread_id = $1::uuid",
-                )
-                .bind(&thread_id)
-                .fetch_optional(&mut *connection)
-                .await?
-                .is_some_and(|selected| selected != 0);
-                let deleted = sqlx::query(
-                    "DELETE FROM codex_storage.memory_stage1_outputs WHERE thread_id = $1::uuid",
-                )
-                .bind(&thread_id)
-                .execute(&mut *connection)
-                .await?
-                .rows_affected();
-                sqlx::query(
-                    "DELETE FROM codex_storage.memory_jobs WHERE kind = $1 AND job_key = $2",
-                )
-                .bind(JOB_KIND_MEMORY_STAGE1)
-                .bind(&thread_id)
-                .execute(&mut *connection)
-                .await?;
-                if deleted > 0 && was_selected {
-                    enqueue_global_consolidation_in(connection, now).await?;
-                }
-                Ok(())
-            })
-        }))
+        Box::pin(
+            self.run(move |connection| Box::pin(delete_thread_memory_in(connection, thread_id))),
+        )
     }
 
     fn record_stage1_output_usage<'a>(

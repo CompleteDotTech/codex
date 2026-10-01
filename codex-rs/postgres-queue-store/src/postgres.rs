@@ -37,21 +37,7 @@ impl PostgresQueueStore {
     /// Remove every queued item for a thread and record the change, for thread deletion.
     pub async fn delete_thread_queue(&self, thread_id: ThreadId) -> Result<bool, ThreadStoreError> {
         self.write(|connection| {
-            Box::pin(async move {
-                let version = next_version(connection).await?;
-                let deleted = sqlx::query(
-                    "DELETE FROM codex_storage.queued_items WHERE thread_id = $1::uuid",
-                )
-                .bind(thread_id.to_string())
-                .execute(&mut *connection)
-                .await?
-                .rows_affected()
-                    > 0;
-                if deleted {
-                    record_revision(connection, thread_id, version).await?;
-                }
-                Ok(deleted)
-            })
+            Box::pin(async move { Ok(delete_thread_queue_in(connection, thread_id).await?) })
         })
         .await
     }
@@ -84,6 +70,25 @@ impl PostgresQueueStore {
         .map_err(|_| unavailable("queue operation timed out"))?
         .map_err(|error: sqlx::Error| classify_sqlx(&error))?
     }
+}
+
+/// Remove a thread's queued items and record the change. The caller owns the transaction, which
+/// also covers deleting the thread row so a watcher still sees the queue disappear.
+pub async fn delete_thread_queue_in(
+    connection: &mut PgConnection,
+    thread_id: ThreadId,
+) -> Result<bool, sqlx::Error> {
+    let version = next_version(connection).await?;
+    let deleted = sqlx::query("DELETE FROM codex_storage.queued_items WHERE thread_id = $1::uuid")
+        .bind(thread_id.to_string())
+        .execute(&mut *connection)
+        .await?
+        .rows_affected()
+        > 0;
+    if deleted {
+        record_revision(connection, thread_id, version).await?;
+    }
+    Ok(deleted)
 }
 
 enum WriteError {

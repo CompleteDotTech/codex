@@ -97,6 +97,8 @@ members = [
     "postgres-log-store",
     "postgres-memory-store",
     "postgres-message-board",
+    "postgres-thread-catalog",
+    "postgres-thread-rows",
     "postgres-queue-store",
     "postgres-runtime",
     "realtime-webrtc",
@@ -187,6 +189,8 @@ codex-postgres-import-store = { path = "postgres-import-store" }
 codex-postgres-log-store = { path = "postgres-log-store" }
 codex-postgres-memory-store = { path = "postgres-memory-store" }
 codex-postgres-message-board = { path = "postgres-message-board" }
+codex-postgres-thread-catalog = { path = "postgres-thread-catalog" }
+codex-postgres-thread-rows = { path = "postgres-thread-rows" }
 codex-postgres-queue-store = { path = "postgres-queue-store" }
 codex-postgres-runtime = { path = "postgres-runtime" }
 codex-storage-candidate-preflight = { path = "storage-candidate-preflight" }

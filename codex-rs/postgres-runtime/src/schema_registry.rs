@@ -159,6 +159,11 @@ pub(crate) const PROTECTED_TABLES: &[ProtectedTable] = &[
         runtime_privileges: "SELECT, UPDATE",
         indexes: &["agent_board_post_counter_pkey"],
     },
+    ProtectedTable {
+        name: "thread_timestamp_marks",
+        runtime_privileges: "SELECT, UPDATE",
+        indexes: &["thread_timestamp_marks_pkey"],
+    },
 ];
 
 /// What a migration must look like before its schema qualifier is rewritten for a named
@@ -372,6 +377,34 @@ INSERT INTO codex_storage.agent_board_post_counter (singleton, last_seq) VALUES 
             META_UPDATE,
         ],
         qualified_identifiers: 14,
+    },
+    MigrationShape {
+        version: 12,
+        starts_with: Some("-- Inactive thread timestamp allocation"),
+        contains: &[
+            "
+CREATE TABLE codex_storage.thread_timestamp_marks (
+",
+            "
+INSERT INTO codex_storage.thread_timestamp_marks (singleton) VALUES (TRUE);
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 3,
+    },
+    MigrationShape {
+        version: 13,
+        starts_with: Some("-- Queue change records outlive"),
+        contains: &[
+            "
+ALTER TABLE codex_storage.queued_thread_revisions
+",
+            "
+    DROP CONSTRAINT queued_thread_revisions_thread_id_fkey;
+",
+            META_UPDATE,
+        ],
+        qualified_identifiers: 2,
     },
 ];
 

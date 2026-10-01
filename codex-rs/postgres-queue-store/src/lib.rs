@@ -3,3 +3,4 @@
 mod postgres;
 
 pub use postgres::PostgresQueueStore;
+pub use postgres::delete_thread_queue_in;

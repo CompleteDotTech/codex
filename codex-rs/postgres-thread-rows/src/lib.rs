@@ -1,7 +1,7 @@
-//! Reads of the thread catalog that the memory pipeline needs.
+//! Row mapping for the PostgreSQL thread catalog, shared by the stores that read thread rows.
 //!
-//! The PostgreSQL catalog keeps host paths as recorded origins, so a memory output or claim
-//! carries the origin rollout path and working directory verbatim.
+//! The catalog keeps host paths as recorded origins, so a mapped record carries the origin
+//! rollout path and working directory verbatim.
 
 use anyhow::Result;
 use anyhow::anyhow;
@@ -18,6 +18,7 @@ use sqlx::postgres::PgRow;
 use std::path::PathBuf;
 
 /// Columns selected for a full thread record, in the shape [`thread_metadata_from_row`] reads.
+#[macro_export]
 macro_rules! thread_columns {
     () => {
         "threads.id::text AS id, threads.originator, threads.creator_user_id,          threads.creator_account_id, threads.origin_rollout_path, threads.created_at_ms,          threads.updated_at_ms, threads.recency_at_ms, threads.source, threads.history_mode,          threads.thread_source, threads.agent_nickname, threads.agent_role, threads.agent_path,          threads.model_provider, threads.model, threads.reasoning_effort, threads.origin_cwd,          threads.cli_version, threads.title, threads.name, threads.preview,          threads.sandbox_policy, threads.approval_mode, threads.tokens_used,          threads.first_user_message, threads.archived_at_s, threads.thread_section_id,          (SELECT thread_sections.name FROM codex_storage.thread_sections            WHERE thread_sections.id = threads.thread_section_id) AS section_name,          (SELECT thread_sections.appearance FROM codex_storage.thread_sections            WHERE thread_sections.id = threads.thread_section_id) AS section_appearance,          threads.section_position, threads.section_entered_at_ms, threads.project_id,          threads.daybreak_enabled, threads.git_sha, threads.git_branch, threads.git_origin_url"
@@ -25,7 +26,7 @@ macro_rules! thread_columns {
 }
 
 /// Matches the SQLite store: values older than 2020 read as milliseconds are legacy seconds.
-fn epoch_millis_to_datetime(value: i64) -> Result<DateTime<Utc>> {
+pub fn epoch_millis_to_datetime(value: i64) -> Result<DateTime<Utc>> {
     const MIN_EPOCH_MILLIS: i64 = 1_577_836_800_000;
     let millis = if value < MIN_EPOCH_MILLIS {
         value.saturating_mul(1000)
@@ -36,12 +37,12 @@ fn epoch_millis_to_datetime(value: i64) -> Result<DateTime<Utc>> {
         .ok_or_else(|| anyhow!("invalid unix timestamp millis: {value}"))
 }
 
-pub(crate) fn epoch_seconds_to_datetime(value: i64) -> Result<DateTime<Utc>> {
+pub fn epoch_seconds_to_datetime(value: i64) -> Result<DateTime<Utc>> {
     DateTime::<Utc>::from_timestamp(value, 0)
         .ok_or_else(|| anyhow!("invalid unix timestamp seconds: {value}"))
 }
 
-pub(crate) fn thread_metadata_from_row(row: &PgRow) -> Result<ThreadMetadata> {
+pub fn thread_metadata_from_row(row: &PgRow) -> Result<ThreadMetadata> {
     let section_id: Option<String> = row.try_get("thread_section_id")?;
     let section_name: Option<String> = row.try_get("section_name")?;
     let section_appearance: Option<String> = row.try_get("section_appearance")?;

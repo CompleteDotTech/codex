@@ -4293,6 +4293,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "codex-postgres-runtime",
+ "codex-postgres-thread-rows",
  "codex-protocol",
  "codex-state",
  "codex-utils-absolute-path",
@@ -4363,6 +4364,39 @@ dependencies = [
  "tempfile",
  "tokio",
  "zeroize",
+]
+
+[[package]]
+name = "codex-postgres-thread-catalog"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-postgres-memory-store",
+ "codex-postgres-queue-store",
+ "codex-postgres-runtime",
+ "codex-postgres-thread-rows",
+ "codex-protocol",
+ "codex-state",
+ "codex-utils-absolute-path",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "codex-postgres-thread-rows"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "codex-protocol",
+ "codex-state",
+ "serde_json",
+ "sqlx",
 ]
 
 [[package]]

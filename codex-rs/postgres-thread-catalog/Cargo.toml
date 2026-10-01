@@ -1,5 +1,5 @@
 [package]
-name = "codex-postgres-memory-store"
+name = "codex-postgres-thread-catalog"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,17 +13,19 @@ workspace = true
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
+codex-postgres-memory-store = { workspace = true }
+codex-postgres-queue-store = { workspace = true }
 codex-postgres-runtime = { workspace = true }
 codex-postgres-thread-rows = { workspace = true }
 codex-protocol = { workspace = true }
 codex-state = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
-uuid = { workspace = true, features = ["v4"] }
 
 [dev-dependencies]
 codex-utils-absolute-path = { workspace = true }
 pretty_assertions = { workspace = true }
-serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
