@@ -68,7 +68,7 @@ async fn reset_target(pool: &PostgresPool) {
         "DELETE FROM codex_storage.thread_spawn_edges",
         "DELETE FROM codex_storage.threads",
         "DELETE FROM codex_storage.projects",
-        "DELETE FROM codex_storage.thread_sections",
+        "DELETE FROM codex_storage.thread_sections WHERE id <> '01984de2-8f74-7c91-a3b2-5c5e937cf318'",
         "DELETE FROM codex_storage.logs",
         "DELETE FROM codex_storage.memory_stage1_outputs",
         "DELETE FROM codex_storage.memory_jobs",
