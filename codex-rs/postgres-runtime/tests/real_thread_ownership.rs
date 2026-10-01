@@ -97,17 +97,28 @@ async fn real_two_clients_reject_stale_thread_owners() {
             .await,
         Ok(None)
     );
-    tokio::time::sleep(Duration::from_millis(3000)).await;
-    let replacement = second
-        .claim_thread_ownership(
-            namespace.clone(),
-            &thread_id,
-            replacement_owner,
-            Duration::from_secs(2),
-        )
-        .await
-        .expect("expired takeover")
-        .expect("second owner acquired");
+    // The server clock decides expiry and can step during a long test run, so poll for the
+    // takeover until a generous deadline instead of trusting one fixed sleep.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let replacement = loop {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        if let Some(claim) = second
+            .claim_thread_ownership(
+                namespace.clone(),
+                &thread_id,
+                replacement_owner,
+                Duration::from_secs(2),
+            )
+            .await
+            .expect("expired takeover")
+        {
+            break claim;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "second owner acquired after the first lease expired"
+        );
+    };
     assert_eq!(replacement.token, claim.token + 1);
     assert_eq!(first.observe_thread_ownership(&claim).await, Ok(false));
     assert_eq!(
