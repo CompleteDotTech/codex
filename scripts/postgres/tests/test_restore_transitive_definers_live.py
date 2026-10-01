@@ -131,3 +131,58 @@ class RestoreTransitiveDefinerLiveTests(unittest.TestCase):
                 "FROM codex_restore_middle_owner",
             )
             sql(destination, self.guard, expected_sqlstate="00000")
+
+    def test_foreign_table_column_insert_fires_privileged_trigger(self):
+        destination = self.destination
+        self.assertEqual(
+            sql(
+                destination,
+                "SELECT to_regnamespace('codex_restore_column_trigger') IS NULL",
+            ),
+            "t",
+        )
+        setup = (
+            "CREATE SCHEMA codex_restore_column_trigger; "
+            "GRANT USAGE ON SCHEMA codex_restore_column_trigger TO codex_runtime; "
+            "CREATE TABLE codex_restore_column_trigger.probe (id integer); "
+            "GRANT INSERT (id) ON codex_restore_column_trigger.probe TO codex_runtime; "
+            "CREATE FUNCTION codex_restore_column_trigger.fire() RETURNS trigger "
+            "LANGUAGE plpgsql SECURITY DEFINER AS $$BEGIN "
+            "UPDATE codex_storage.codex_schema_meta SET format_version=2; "
+            "RETURN NEW; END$$; "
+            "REVOKE ALL ON FUNCTION codex_restore_column_trigger.fire() "
+            "FROM PUBLIC, codex_runtime; "
+            "CREATE TRIGGER restore_probe BEFORE INSERT "
+            "ON codex_restore_column_trigger.probe FOR EACH ROW "
+            "EXECUTE FUNCTION codex_restore_column_trigger.fire()"
+        )
+        cleanup = "DROP SCHEMA IF EXISTS codex_restore_column_trigger CASCADE"
+        with temporary_sql(destination, setup, cleanup):
+            self.assertEqual(
+                sql(
+                    destination,
+                    "SELECT has_table_privilege('codex_runtime', "
+                    "'codex_restore_column_trigger.probe', 'INSERT'), "
+                    "has_column_privilege('codex_runtime', "
+                    "'codex_restore_column_trigger.probe', 'id', 'INSERT'), "
+                    "has_function_privilege('codex_runtime', "
+                    "'codex_restore_column_trigger.fire()'::regprocedure, 'EXECUTE')",
+                ),
+                "f|t|f",
+            )
+            self.assertEqual(
+                sql(
+                    destination,
+                    "BEGIN; INSERT INTO codex_restore_column_trigger.probe (id) VALUES (1); "
+                    "SELECT format_version FROM codex_storage.codex_schema_meta; ROLLBACK",
+                    role="runtime",
+                ),
+                "2",
+            )
+            sql(destination, self.guard, expected_sqlstate="42501")
+            sql(
+                destination,
+                "REVOKE INSERT (id) ON codex_restore_column_trigger.probe "
+                "FROM codex_runtime",
+            )
+            sql(destination, self.guard, expected_sqlstate="00000")

@@ -14,9 +14,12 @@ workspace = true
 
 [dependencies]
 codex-protocol = { workspace = true }
+codex-postgres-runtime = { workspace = true }
 codex-state = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+sqlx = { workspace = true, features = ["macros"] }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 codex-utils-absolute-path = { workspace = true }

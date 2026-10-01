@@ -2,12 +2,14 @@
 
 mod error;
 mod local;
+mod postgres;
 mod store;
 mod types;
 
 pub use error::AgentGraphStoreError;
 pub use error::AgentGraphStoreResult;
 pub use local::LocalAgentGraphStore;
+pub use postgres::PostgresAgentGraphStore;
 pub use store::AgentGraphStore;
 pub use store::AgentGraphStoreFuture;
 pub use types::ThreadSpawnEdgeStatus;

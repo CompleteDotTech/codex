@@ -5,6 +5,7 @@ use crate::PostgresPool;
 use crate::bootstrap::BASE_MIGRATOR;
 use crate::bootstrap::BOOTSTRAP_TIMEOUT;
 use crate::bootstrap::BootstrapError;
+use crate::bootstrap::KNOWN_RELATIONS;
 use crate::bootstrap::LOCK_CLASS;
 use crate::bootstrap::LOCK_RESOURCE;
 use crate::bootstrap::namespace_has_unexpected_objects;
@@ -209,7 +210,7 @@ pub async fn check_codex_storage_compatibility(
 
         let unexpected_objects = namespace_has_unexpected_objects(
             &mut transaction,
-            &["_codex_pg_migrations", "_codex_pg_migrations_pkey", "codex_schema_meta", "codex_schema_meta_pkey"],
+            KNOWN_RELATIONS,
         ).await.map_err(classify_bootstrap)?;
         if unexpected_objects {
             return Err(CompatibilityError::IncompatibleNamespace);
@@ -298,8 +299,14 @@ pub async fn check_codex_storage_compatibility(
                 return Err(CompatibilityError::DirtyMigration);
             }
         }
-        if history.len() != BASE_MIGRATOR.migrations.len() {
-            return Err(CompatibilityError::IncompatibleHistory);
+        // The recorded format equals the number of applied migrations.
+        match usize::try_from(schema_format) {
+            Ok(applied) if (1..=BASE_MIGRATOR.migrations.len()).contains(&applied) => {
+                if history.len() != applied {
+                    return Err(CompatibilityError::IncompatibleHistory);
+                }
+            }
+            _ => return Err(CompatibilityError::UnsupportedSchema),
         }
         for (row, migration) in history.iter().zip(BASE_MIGRATOR.migrations.iter()) {
             let version: i64 = row.try_get("version").map_err(|_| CompatibilityError::IncompatibleHistory)?;
@@ -309,9 +316,7 @@ pub async fn check_codex_storage_compatibility(
             }
         }
 
-        // This binary only embeds format 1, regardless of claimed host capability.
-        if schema_format != 1
-            || schema_format < capabilities.min_schema_format
+        if schema_format < capabilities.min_schema_format
             || schema_format > capabilities.max_schema_format
         {
             return Err(CompatibilityError::UnsupportedSchema);

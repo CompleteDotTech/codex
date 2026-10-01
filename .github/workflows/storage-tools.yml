@@ -85,6 +85,30 @@ jobs:
       - name: Test PostgreSQL connection pool against real server
         working-directory: codex-rs
         run: just test -p codex-postgres-runtime
+      - name: Reset bootstrapped metadata before seeding the restore fixture
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts/postgres")
+          from qualification_checks import sql
+
+          # The Rust bootstrap suite leaves a bootstrapped namespace; seeding needs it empty.
+          sql(
+              Path(os.environ["CODEX_TEST_POSTGRES_STATE"]),
+              """DO $reset$ DECLARE r record; BEGIN
+              FOR r IN SELECT c.relname FROM pg_class c
+                       WHERE c.relnamespace = 'codex_storage'::regnamespace AND c.relkind IN ('r', 'p') LOOP
+                EXECUTE format('DROP TABLE codex_storage.%I CASCADE', r.relname);
+              END LOOP; END $reset$""",
+          )
+          PY
+      - name: Seed owned restore metadata fixture without production bootstrap
+        shell: bash
+        run: python scripts/postgres/tests/seed_restore_metadata.py --state "$CODEX_TEST_POSTGRES_STATE" --owned-disposable
       - name: Verify archive cleanup after uncertain source mutations
         run: python -m unittest discover -s scripts/postgres/tests -p test_restore_archive_cleanup_live.py -v
       - name: Qualify transactional restore guard
@@ -114,14 +138,29 @@ jobs:
           from pathlib import Path
           import sys
           sys.path.insert(0, "scripts/postgres")
-          from qualification_checks import sql
           from restore_qualification import qualify_restore_access
           qualify_restore_access(Path(os.environ["CODEX_TEST_POSTGRES_STATE"]), Path(os.environ["RESTORE_STATE"]))
-          sql(Path(os.environ["RESTORE_STATE"]), Path("scripts/postgres/container/real-bootstrap-test-roles.sql").read_text())
           PY
-      - name: Verify restored metadata with the real Rust bootstrap
+      - name: Test serializable transaction outcomes against real server
         working-directory: codex-rs
-        run: CODEX_TEST_POSTGRES_STATE="$CODEX_TEST_POSTGRES_RESTORE_STATE" just test -p codex-postgres-runtime real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent
+        run: CODEX_TEST_POSTGRES_TRANSACTION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_serializable_conflict_deadlock_and_cancelled_write
+      - name: Provision separate namespace roles in fixture
+        run: python scripts/postgres/isolation_fixture.py --state "$CODEX_TEST_POSTGRES_STATE"
+      - name: Test named namespace bootstrap against real server
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_named_namespace_bootstrap_is_isolated_and_rejects_wrong_roles
+      - name: Test PostgreSQL graph adapter and role isolation
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_GRAPH_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-agent-graph-store real_postgres_graph_adapter_preserves_order_and_edge_semantics
+      - name: Compare external-agent import records across SQLite and PostgreSQL
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_IMPORT_STORE_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-import-store real_postgres_import_records_match_sqlite
+      - name: Test two-namespace role isolation against real server
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_ISOLATION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_postgres_roles_isolate_two_schemas
+      - name: Test bounded restart and loopback network interruption
+        working-directory: codex-rs
+        run: CODEX_TEST_POSTGRES_INTERRUPTION_STATE="$CODEX_TEST_POSTGRES_STATE" CODEX_TEST_POSTGRES_MANAGER="$GITHUB_WORKSPACE/scripts/postgres/manage.py" just test -p codex-postgres-runtime real_restart_and_loopback_network_cut_are_bounded
       - name: Stop fixture and retain receipts
         if: always()
         shell: bash
@@ -133,6 +172,63 @@ jobs:
             fi
           done
           exit "$cleanup_status"
+      - name: Start isolated v1 to v2 upgrade fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/codex-pg-upgrade-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'CODEX_TEST_POSTGRES_UPGRADE_STATE=%s\n' "$state" >> "$GITHUB_ENV"
+          python scripts/postgres/manage.py --state "$state" init --project "codex-pg-upgrade-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 56082
+          python scripts/postgres/manage.py --state "$state" pin
+          python scripts/postgres/manage.py --state "$state" up
+      - name: Test PostgreSQL v1 through v3 transactional upgrade
+        working-directory: codex-rs
+        run: just test -p codex-postgres-runtime real_v1_upgrade_through_graph_and_import_schemas_is_atomic
+      - name: Stop upgrade fixture and retain receipts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${CODEX_TEST_POSTGRES_UPGRADE_STATE:-}" && -f "$CODEX_TEST_POSTGRES_UPGRADE_STATE/receipt.json" ]]; then
+            python scripts/postgres/manage.py --state "$CODEX_TEST_POSTGRES_UPGRADE_STATE" down
+          fi
+      - name: Start isolated v2 to v3 upgrade fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/codex-pg-import-upgrade-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'CODEX_TEST_POSTGRES_IMPORT_UPGRADE_STATE=%s\n' "$state" >> "$GITHUB_ENV"
+          python scripts/postgres/manage.py --state "$state" init --project "codex-pg-import-upgrade-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 56084
+          python scripts/postgres/manage.py --state "$state" pin
+          python scripts/postgres/manage.py --state "$state" up
+      - name: Test PostgreSQL v2 to v3 transactional upgrade
+        working-directory: codex-rs
+        run: just test -p codex-postgres-runtime real_v2_upgrade_to_import_schema_is_atomic_and_role_scoped
+      - name: Stop import upgrade fixture and retain receipts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${CODEX_TEST_POSTGRES_IMPORT_UPGRADE_STATE:-}" && -f "$CODEX_TEST_POSTGRES_IMPORT_UPGRADE_STATE/receipt.json" ]]; then
+            python scripts/postgres/manage.py --state "$CODEX_TEST_POSTGRES_IMPORT_UPGRADE_STATE" down
+          fi
+      - name: Start isolated v3 to v4 thread upgrade fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/codex-pg-thread-upgrade-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          printf 'CODEX_TEST_POSTGRES_THREAD_UPGRADE_STATE=%s\n' "$state" >> "$GITHUB_ENV"
+          python scripts/postgres/manage.py --state "$state" init --project "codex-pg-thread-upgrade-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --port 56085
+          python scripts/postgres/manage.py --state "$state" pin
+          python scripts/postgres/manage.py --state "$state" up
+      - name: Test PostgreSQL v3 to v4 transactional thread upgrade
+        working-directory: codex-rs
+        run: just test -p codex-postgres-runtime real_v3_upgrade_to_thread_schema_preserves_history_and_origin_paths
+      - name: Stop thread upgrade fixture and retain receipts
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${CODEX_TEST_POSTGRES_THREAD_UPGRADE_STATE:-}" && -f "$CODEX_TEST_POSTGRES_THREAD_UPGRADE_STATE/receipt.json" ]]; then
+            python scripts/postgres/manage.py --state "$CODEX_TEST_POSTGRES_THREAD_UPGRADE_STATE" down
+          fi
 
   offline:
     name: Offline tests (${{ matrix.os }}, Python ${{ matrix.python }})

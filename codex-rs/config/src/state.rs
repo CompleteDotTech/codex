@@ -13,6 +13,7 @@ use crate::ConfigLayerMetadata;
 use crate::ConfigLayerSource;
 use crate::ProfileV2Name;
 use crate::shell_environment_policy::validate_shell_environment_policy_filter_config;
+use crate::storage_candidate::validate_storage_candidate_layer;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -243,8 +244,10 @@ impl ConfigLayerEntry {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub struct ConfigLayerStack {
+    /// Runtime-only EMA authority; it does not change the configuration's contents.
+    cloud_config_binding: Option<crate::CloudConfigBundleBinding>,
     /// Cached TOML projection derived only from `requirements_toml`.
     /// Construction validates provider definitions and reports serialization errors,
     /// so `effective_config()` can replace complete entries without a fallible conversion.
@@ -273,6 +276,29 @@ pub struct ConfigLayerStack {
     pub(crate) is_projectless: bool,
 }
 
+impl PartialEq for ConfigLayerStack {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            cloud_config_binding: _,
+            model_provider_requirements,
+            layers,
+            requirements,
+            requirements_toml,
+            ignore_user_and_project_exec_policy_rules,
+            startup_warnings,
+            is_projectless,
+        } = self;
+        model_provider_requirements == &other.model_provider_requirements
+            && layers == &other.layers
+            && requirements == &other.requirements
+            && requirements_toml == &other.requirements_toml
+            && *ignore_user_and_project_exec_policy_rules
+                == other.ignore_user_and_project_exec_policy_rules
+            && startup_warnings == &other.startup_warnings
+            && is_projectless == &other.is_projectless
+    }
+}
+
 impl ConfigLayerStack {
     pub fn new(
         layers: Vec<ConfigLayerEntry>,
@@ -285,6 +311,7 @@ impl ConfigLayerStack {
             &requirements_toml,
         )?);
         Ok(Self {
+            cloud_config_binding: None,
             model_provider_requirements,
             layers,
             requirements,
@@ -305,6 +332,33 @@ impl ConfigLayerStack {
 
     pub fn ignore_user_and_project_exec_policy_rules(&self) -> bool {
         self.ignore_user_and_project_exec_policy_rules
+    }
+
+    pub fn with_cloud_config_binding(
+        mut self,
+        binding: Option<crate::CloudConfigBundleBinding>,
+    ) -> Self {
+        self.cloud_config_binding = binding;
+        self
+    }
+
+    pub fn cloud_config_binding(&self) -> Option<&crate::CloudConfigBundleBinding> {
+        self.cloud_config_binding.as_ref()
+    }
+
+    /// Retains session layers while adopting current MCP, plugin, and feature restrictions.
+    /// Rejected refreshes must not restore an earlier policy on the next user reload.
+    pub fn with_mcp_requirements_from(&self, incoming: &Self) -> Self {
+        let mut stack = self.clone();
+        stack.requirements.mcp_servers = incoming.requirements.mcp_servers.clone();
+        stack.requirements.plugins = incoming.requirements.plugins.clone();
+        stack.requirements.feature_requirements =
+            incoming.requirements.feature_requirements.clone();
+        stack.requirements_toml.mcp_servers = incoming.requirements_toml.mcp_servers.clone();
+        stack.requirements_toml.plugins = incoming.requirements_toml.plugins.clone();
+        stack.requirements_toml.feature_requirements =
+            incoming.requirements_toml.feature_requirements.clone();
+        stack
     }
 
     pub(crate) fn with_startup_warnings(mut self, startup_warnings: Vec<String>) -> Self {
@@ -422,6 +476,7 @@ impl ConfigLayerStack {
         }
         Ok(Self {
             layers,
+            cloud_config_binding: self.cloud_config_binding.clone(),
             model_provider_requirements: self.model_provider_requirements.clone(),
             requirements: self.requirements.clone(),
             requirements_toml: self.requirements_toml.clone(),
@@ -458,6 +513,7 @@ impl ConfigLayerStack {
         }
         Self {
             layers,
+            cloud_config_binding: self.cloud_config_binding.clone(),
             model_provider_requirements: self.model_provider_requirements.clone(),
             requirements: self.requirements.clone(),
             requirements_toml: self.requirements_toml.clone(),
@@ -476,6 +532,15 @@ impl ConfigLayerStack {
         let mut merged = TomlValue::Table(toml::map::Map::new());
         for layer in self.layers_low_to_high() {
             merge_toml_values(&mut merged, &layer.config);
+        }
+        // A candidate is one complete host-owned proposal, not a merged table
+        // whose endpoint and credential can come from different layers.
+        if let Some(candidate) = self
+            .layers_high_to_low()
+            .find_map(|layer| layer.config.get(crate::STORAGE_CANDIDATE_KEY).cloned())
+            && let Some(table) = merged.as_table_mut()
+        {
+            table.insert(crate::STORAGE_CANDIDATE_KEY.to_string(), candidate);
         }
         if let Some(requirements) = &self.model_provider_requirements {
             crate::model_provider_requirements::apply(&mut merged, requirements);
@@ -577,6 +642,7 @@ impl ConfigLayerStack {
 /// Validates before merging so mixed forms and malformed filter entries cannot be normalized away.
 pub(crate) fn validate_enabled_config_layers(layers: &[ConfigLayerEntry]) -> std::io::Result<()> {
     for layer in layers.iter().filter(|layer| !layer.is_disabled()) {
+        validate_storage_candidate_layer(layer)?;
         validate_shell_environment_policy_filter_config(&layer.config).map_err(|error| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,

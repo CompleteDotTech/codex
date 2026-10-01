@@ -33,7 +33,7 @@ impl App {
             Ok(result) => result,
             Err(err) => Err(err.into()),
         };
-        let picker_app_server = match picker_app_server {
+        let mut picker_app_server = match picker_app_server {
             Ok(app_server) => app_server,
             Err(err) => {
                 self.add_session_picker_error(format!("Failed to start TUI session picker: {err}"));
@@ -41,6 +41,7 @@ impl App {
                 return Ok(AppRunControl::Continue);
             }
         };
+        picker_app_server.model_provider_override = self.harness_overrides.model_provider.clone();
         let selection =
             crate::resume_picker::run_resume_picker_from_existing_session_with_app_server(
                 crate::uses_remote_workspace_or_environment(
@@ -103,8 +104,31 @@ impl App {
                 }
                 if switching_threads
                     && self.current_displayed_thread_id() == Some(thread_id)
-                    && let Some(input_state) = self.agents_overview.input_states.remove(&thread_id)
+                    && let Some(mut input_state) =
+                        self.agents_overview.input_states.remove(&thread_id)
                 {
+                    // The resumed server session is newer than the cached draft and notification.
+                    if let Some(current) = self.chat_widget.capture_thread_input_state() {
+                        input_state.current_collaboration_mode = current.current_collaboration_mode;
+                        if self
+                            .primary_session_configured
+                            .as_ref()
+                            .is_some_and(|session| {
+                                session.thread_id == thread_id
+                                    && session.collaboration_mode.is_some()
+                            })
+                        {
+                            input_state.active_collaboration_mask =
+                                current.active_collaboration_mask;
+                            input_state.plan_mode_reasoning_effort =
+                                current.plan_mode_reasoning_effort;
+                        } else if let Some(mask) = input_state.active_collaboration_mask.as_mut() {
+                            // Older servers return model and effort without a mode selection.
+                            mask.model = Some(self.chat_widget.current_model().to_string());
+                            mask.reasoning_effort =
+                                Some(self.chat_widget.current_reasoning_effort());
+                        }
+                    }
                     let preserve_in_flight_turn =
                         self.active_turn_id_for_thread(thread_id).await.is_some();
                     self.chat_widget.restore_thread_input_state(

@@ -9,10 +9,15 @@ doctest = false
 name = "codex_rollout"
 path = "src/lib.rs"
 
+[[bin]]
+name = "codex-rollout-header-preview"
+path = "src/bin/codex_rollout_header_preview.rs"
+
 [lints]
 workspace = true
 
 [dependencies]
+codex-utils-process = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 codex-extension-items = { workspace = true }
@@ -24,6 +29,7 @@ codex-protocol = { workspace = true }
 codex-state = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-path = { workspace = true }
+memchr = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
