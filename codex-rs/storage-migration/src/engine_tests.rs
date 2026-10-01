@@ -468,6 +468,45 @@ async fn real_postgres_catalog_migration() {
         ]
     );
 
+    // Counters resume after every imported value, so new work never reuses an imported id.
+    let counters: [(&str, &str); 5] = [
+        (
+            "SELECT last_id FROM codex_storage.log_id_counter",
+            "SELECT MAX(id) FROM codex_storage.logs",
+        ),
+        (
+            "SELECT version FROM codex_storage.queue_change_counter",
+            "SELECT MAX(revision) FROM codex_storage.queued_thread_revisions",
+        ),
+        (
+            "SELECT last_seq FROM codex_storage.agent_board_post_counter",
+            "SELECT MAX(seq) FROM codex_storage.agent_board_posts",
+        ),
+        (
+            "SELECT updated_at_ms FROM codex_storage.thread_timestamp_marks",
+            "SELECT MAX(updated_at_ms) FROM codex_storage.threads",
+        ),
+        (
+            "SELECT recency_at_ms FROM codex_storage.thread_timestamp_marks",
+            "SELECT MAX(recency_at_ms) FROM codex_storage.threads",
+        ),
+    ];
+    for (counter, highest) in counters {
+        let mut connection = pool.acquire().await.expect("connection");
+        let counter_value: i64 = sqlx::query_scalar(counter)
+            .fetch_one(&mut *connection)
+            .await
+            .expect(counter);
+        let highest_value: i64 = sqlx::query_scalar(highest)
+            .fetch_one(&mut *connection)
+            .await
+            .expect(highest);
+        assert!(
+            counter_value >= highest_value,
+            "{counter}: {counter_value} < {highest_value}"
+        );
+    }
+
     // The migrated catalog answers exactly as the source does.
     let runtime = StateRuntime::init(config.clone(), "migration-provider".to_string())
         .await
