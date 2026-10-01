@@ -15,6 +15,22 @@ use crate::verified_target::tests::SignedFixture;
 use serde_json::Value;
 use std::path::Path;
 
+async fn owner_fixture_sql(pool: &PostgresPool, statements: &[&'static str]) {
+    let mut connection = pool.acquire().await.expect("acquire owner fixture");
+    let mut transaction = connection.begin().await.expect("begin owner fixture");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("assume owner for fixture");
+    for &statement in statements {
+        sqlx::query(statement)
+            .execute(&mut *transaction)
+            .await
+            .expect("apply owner fixture SQL");
+    }
+    transaction.commit().await.expect("commit owner fixture");
+}
+
 /// Applies the metadata and history grants a real bootstrap leaves behind, so hand-built older
 /// formats pass the protected-privilege check the preflight now enforces.
 async fn harden_metadata_grants(transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>) {
