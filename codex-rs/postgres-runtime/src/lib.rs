@@ -42,6 +42,7 @@ pub use compatibility::CompatibilityResult;
 pub use compatibility::RequiredAccess;
 pub use compatibility::check_codex_storage_compatibility;
 mod namespace;
+mod schema_registry;
 pub use namespace::InvalidNamespace;
 pub use namespace::NamedNamespace;
 mod named_bootstrap;

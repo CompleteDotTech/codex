@@ -5,11 +5,11 @@ use crate::PostgresPool;
 use crate::bootstrap::BASE_MIGRATOR;
 use crate::bootstrap::BOOTSTRAP_TIMEOUT;
 use crate::bootstrap::BootstrapError;
-use crate::bootstrap::KNOWN_RELATIONS;
 use crate::bootstrap::LOCK_CLASS;
 use crate::bootstrap::LOCK_RESOURCE;
 use crate::bootstrap::namespace_has_unexpected_objects;
 use crate::bootstrap::require_safe_protected_privileges;
+use crate::schema_registry::known_relations;
 use sqlx::Acquire;
 use sqlx::Postgres;
 use sqlx::Row;
@@ -210,7 +210,7 @@ pub async fn check_codex_storage_compatibility(
 
         let unexpected_objects = namespace_has_unexpected_objects(
             &mut transaction,
-            KNOWN_RELATIONS,
+            &known_relations(),
         ).await.map_err(classify_bootstrap)?;
         if unexpected_objects {
             return Err(CompatibilityError::IncompatibleNamespace);
