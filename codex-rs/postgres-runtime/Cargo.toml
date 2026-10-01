@@ -15,7 +15,7 @@ rustls = { version = "0.23.45", default-features = false, features = ["ring", "s
 sqlx = { workspace = true, features = ["postgres"] }
 sqlx-postgres = { workspace = true }
 sqlx-sqlite = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "sync"] }
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
