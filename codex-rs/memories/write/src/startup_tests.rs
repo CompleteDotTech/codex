@@ -62,6 +62,9 @@ use tokio::time::Instant;
 #[path = "startup_dual_write_tests.rs"]
 mod dual_write;
 
+#[path = "startup_injected_store_tests.rs"]
+mod injected_store;
+
 #[tokio::test]
 async fn memories_startup_creates_memory_root() -> anyhow::Result<()> {
     let server = start_mock_server().await;
