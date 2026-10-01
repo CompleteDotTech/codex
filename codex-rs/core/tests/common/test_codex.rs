@@ -398,12 +398,18 @@ pub struct TestCodexBuilder {
     history_mode: Option<ThreadHistoryMode>,
     models_manager: Option<SharedModelsManager>,
     thread_store: Option<Arc<dyn ThreadStore>>,
+    state_db: Option<codex_core::StateDbHandle>,
     image_store: Arc<dyn AttachmentStore>,
 }
 
 impl TestCodexBuilder {
     pub fn with_thread_store(mut self, thread_store: Arc<dyn ThreadStore>) -> Self {
         self.thread_store = Some(thread_store);
+        self
+    }
+
+    pub fn with_state_db(mut self, state_db: codex_core::StateDbHandle) -> Self {
+        self.state_db = Some(state_db);
         self
     }
 
@@ -781,7 +787,10 @@ impl TestCodexBuilder {
         mut test_env: TestEnv,
         environment_manager: Arc<codex_exec_server::EnvironmentManager>,
     ) -> anyhow::Result<TestCodex> {
-        let state_db = codex_core::init_state_db(&config).await;
+        let state_db = match self.state_db.clone() {
+            Some(state_db) => Some(state_db),
+            None => codex_core::init_state_db(&config).await,
+        };
         let thread_store = self
             .thread_store
             .clone()
@@ -1485,6 +1494,7 @@ pub fn test_codex() -> TestCodexBuilder {
         history_mode: Some(ThreadHistoryMode::Legacy),
         models_manager: None,
         thread_store: None,
+        state_db: None,
         image_store: codex_core::passthrough_image_store(),
     }
 }

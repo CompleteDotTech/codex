@@ -147,6 +147,7 @@ async fn same_thread_retry_keeps_subscription_and_restores_draft() -> Result<()>
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum HistoryCapabilities {
     Current,
+    ResumeWithoutCollaborationMode,
     LegacyOnly,
     LegacyOnlyUnsupportedVariant,
     LegacyDynamicToolsAndHistory,
@@ -565,7 +566,16 @@ pub(super) async fn start_recording_app_server_with_realtime_speech(
                                     &request,
                                     ClientRequest::ThreadRealtimeListVoices { .. }
                                 );
+                            let omit_resume_mode = history_capabilities
+                                == HistoryCapabilities::ResumeWithoutCollaborationMode
+                                && matches!(&request, ClientRequest::ThreadResume { .. });
                             let mut result = embedded.request(request).await?;
+                            if omit_resume_mode
+                                && let Ok(value) = &mut result
+                                && let Some(response) = value.as_object_mut()
+                            {
+                                response.remove("collaborationMode");
+                            }
                             if unknown_voice && let Ok(value) = &mut result {
                                 value["config"]["realtime"]["voice"] =
                                     serde_json::json!("future_voice");
