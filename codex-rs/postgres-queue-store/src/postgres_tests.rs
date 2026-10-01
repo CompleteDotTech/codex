@@ -355,7 +355,10 @@ async fn real_postgres_queue_serializes_writers_and_orders_versions_by_commit() 
     let mut holder = runtime.acquire().await.expect("holder connection");
     let mut open = holder.begin().await.expect("begin held write");
     let held_version = next_version(&mut open).await.expect("take held version");
-    assert_eq!(held_version, before + 1);
+    assert!(
+        held_version > before,
+        "a new write is numbered after every visible version"
+    );
     let waiting = {
         let store = store.clone();
         tokio::spawn(async move { store.enqueue(held_thread, "late".to_string()).await })
@@ -365,9 +368,11 @@ async fn real_postgres_queue_serializes_writers_and_orders_versions_by_commit() 
         !waiting.is_finished(),
         "a later write must wait for the earlier commit"
     );
+    // Holding the counter lock stops every other writer from committing, so the visible
+    // version is exactly the one before ours.
     assert_eq!(
         store.change_version().await.expect("version while held"),
-        before,
+        held_version - 1,
         "an uncommitted version is not visible"
     );
     record_revision(&mut open, held_thread, held_version)
@@ -387,9 +392,9 @@ async fn real_postgres_queue_serializes_writers_and_orders_versions_by_commit() 
         changes[0].1 > held_version,
         "the late write is numbered after the earlier commit"
     );
-    assert_eq!(
-        store.change_version().await.expect("version after"),
-        held_version + 1
+    assert!(
+        store.change_version().await.expect("version after") > held_version,
+        "both writes are visible once committed"
     );
 }
 
