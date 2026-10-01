@@ -85,6 +85,8 @@ mod resume_shutdown_tests;
 mod safety_buffering;
 #[path = "tests/session_lifecycle_requests.rs"]
 mod session_lifecycle_requests;
+#[path = "tests/session_picker_settings_tests.rs"]
+mod session_picker_settings_tests;
 mod startup;
 #[path = "tests/startup_frame_tests.rs"]
 mod startup_frame_tests;
@@ -634,6 +636,7 @@ async fn enqueue_primary_thread_session_replays_buffered_approval_after_attach()
             turns: Vec::new(),
             blocks_direct_input: false,
             task_tools_available: false,
+            persisted_on_start: false,
         },
         session_lifecycle::ThreadAttachPresentation::SessionLineage,
         /*initial_user_message*/ None,
@@ -5353,6 +5356,7 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
             turns: Vec::new(),
             blocks_direct_input: false,
             task_tools_available: false,
+            persisted_on_start: false,
         },
         &mut child_snapshot,
     )
@@ -6513,6 +6517,7 @@ async fn app_server_thread_replacement_clears_previous_transcript_before_replay(
             )],
             blocks_direct_input: false,
             task_tools_available: false,
+            persisted_on_start: false,
         },
         session_lifecycle::ThreadAttachPresentation::SessionLineage,
         /*initial_user_message*/ None,
@@ -8878,6 +8883,7 @@ async fn refreshed_snapshot_session_persists_resumed_turns() {
             turns: resumed_turns.clone(),
             blocks_direct_input: true,
             task_tools_available: false,
+            persisted_on_start: false,
         },
         &mut snapshot,
     )
@@ -9826,6 +9832,9 @@ async fn start_config_write_test_app_server(app: &App) -> Result<AppServerSessio
 
 #[path = "tests/active_reconnect_tests.rs"]
 mod active_reconnect;
+
+#[path = "tests/agents_overview_settings_tests.rs"]
+mod agents_overview_settings;
 
 #[cfg(unix)]
 #[path = "tests/navigation_reconnect_tests.rs"]

@@ -2795,6 +2795,7 @@ dependencies = [
  "codex-model-provider-info",
  "codex-network-proxy",
  "codex-protocol",
+ "codex-storage-authority",
  "codex-utils-absolute-path",
  "codex-utils-path",
  "codex-utils-path-uri",
@@ -4234,6 +4235,7 @@ dependencies = [
  "rustls",
  "serde_json",
  "sqlx",
+ "sqlx-macros",
  "sqlx-postgres",
  "sqlx-sqlite",
  "tempfile",
@@ -4655,6 +4657,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "codex-storage-authority"
+version = "0.0.0"
+dependencies = [
+ "codex-keyring-store",
+ "libc",
+ "pretty_assertions",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+ "windows-sys 0.52.0",
+ "zeroize",
+]
+
+[[package]]
 name = "codex-tcp-tunnel"
 version = "0.0.0"
 dependencies = [
@@ -4706,6 +4724,7 @@ dependencies = [
 name = "codex-thread-store"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "chrono",
  "codex-app-server-protocol",
  "codex-extension-items",
@@ -4718,7 +4737,9 @@ dependencies = [
  "codex-utils-absolute-path",
  "codex-utils-path",
  "codex-utils-path-uri",
+ "dunce",
  "futures",
+ "libc",
  "pretty_assertions",
  "pulldown-cmark",
  "serde",
@@ -4730,6 +4751,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "windows-sys 0.52.0",
  "zstd",
 ]
 
