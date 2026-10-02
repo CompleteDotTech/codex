@@ -4979,160 +4979,6 @@ class SpendControlLimitSnapshot(BaseModel):
     used: str
 
 
-class StorageAuthority(Enum):
-    unmanaged = "unmanaged"
-    local = "local"
-    remote = "remote"
-    cutover_in_progress = "cutoverInProgress"
-    invalid = "invalid"
-
-
-class StorageBackend(Enum):
-    local_sqlite = "localSqlite"
-    remote_postgres = "remotePostgres"
-
-
-class StorageBlocker(Enum):
-    no_candidate_profile = "noCandidateProfile"
-    migrator_credential_missing = "migratorCredentialMissing"
-    credential_unavailable = "credentialUnavailable"
-    ca_certificate_required = "caCertificateRequired"
-    unsupported_namespace = "unsupportedNamespace"
-    connection_failed = "connectionFailed"
-    connection_timed_out = "connectionTimedOut"
-    schema_needs_upgrade = "schemaNeedsUpgrade"
-    schema_too_new = "schemaTooNew"
-    schema_invalid = "schemaInvalid"
-    target_not_empty = "targetNotEmpty"
-    dataset_not_activated = "datasetNotActivated"
-    dataset_mismatch = "datasetMismatch"
-    dataset_migrating = "datasetMigrating"
-    dataset_retired = "datasetRetired"
-    cutover_in_progress = "cutoverInProgress"
-    authority_invalid = "authorityInvalid"
-    already_remote = "alreadyRemote"
-    not_remote = "notRemote"
-    home_already_managed = "homeAlreadyManaged"
-    sqlite_home_differs_from_codex_home = "sqliteHomeDiffersFromCodexHome"
-    stale_plan = "stalePlan"
-    not_confirmed = "notConfirmed"
-    operation_conflict = "operationConflict"
-    operation_not_found = "operationNotFound"
-    source_unreadable = "sourceUnreadable"
-    staging_failed = "stagingFailed"
-    verification_failed = "verificationFailed"
-    storage_admin_required = "storageAdminRequired"
-    internal = "internal"
-
-
-class StorageCheckStage(Enum):
-    profile = "profile"
-    credential = "credential"
-    connect = "connect"
-    schema = "schema"
-    dataset = "dataset"
-    ready = "ready"
-
-
-class StorageConnectionReport(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    blocker: StorageBlocker | None = None
-    dataset_id: Annotated[str | None, Field(alias="datasetId")] = None
-    dataset_state: Annotated[str | None, Field(alias="datasetState")] = None
-    empty: bool | None = None
-    generation: int | None = None
-    schema_format: Annotated[int | None, Field(alias="schemaFormat")] = None
-    stage: StorageCheckStage
-
-
-class StorageCopiedDomain(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    domain: str
-    rows: int
-
-
-class StorageOperationStateValue(Enum):
-    planned = "planned"
-    copying = "copying"
-    verifying = "verifying"
-    committing = "committing"
-    active = "active"
-    failed = "failed"
-    cancelled = "cancelled"
-
-
-class StorageOperationState(RootModel[StorageOperationStateValue | Literal["ready"]]):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    root: StorageOperationStateValue | Literal["ready"]
-
-
-class StoragePlanAction(Enum):
-    migrate = "migrate"
-    return_ = "return"
-    attach = "attach"
-
-
-class StorageRecoveryOutcome(Enum):
-    idle = "idle"
-    rolled_forward = "rolledForward"
-    rolled_back = "rolledBack"
-
-
-class StorageRemoteSummary(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    blocker: StorageBlocker | None = None
-    dataset_id: Annotated[str | None, Field(alias="datasetId")] = None
-    dataset_matches: Annotated[bool | None, Field(alias="datasetMatches")] = None
-    generation: int | None = None
-    reachable: bool
-    state: Annotated[str | None, Field(description="`open`, `migrating` or `retired`.")] = None
-
-
-class StorageSourceEstimate(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    attachments: int
-    board_posts: Annotated[int, Field(alias="boardPosts")]
-    goals: int
-    logs: int
-    memory_outputs: Annotated[int, Field(alias="memoryOutputs")]
-    projects: int
-    queued_items: Annotated[int, Field(alias="queuedItems")]
-    rollout_bytes: Annotated[int, Field(alias="rolloutBytes")]
-    rollout_files: Annotated[int, Field(alias="rolloutFiles")]
-    sections: int
-    threads: int
-
-
-class StorageStatus(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    active_backend: Annotated[StorageBackend, Field(alias="activeBackend")]
-    authority: StorageAuthority
-    blockers: list[StorageBlocker]
-    candidate_configured: Annotated[bool, Field(alias="candidateConfigured")]
-    dataset_id: Annotated[str | None, Field(alias="datasetId")] = None
-    host: Annotated[
-        str,
-        Field(
-            description="Names the machine whose storage this describes, so a client never mistakes its own host for the server's."
-        ),
-    ]
-    local_generation: Annotated[int | None, Field(alias="localGeneration")] = None
-    remote: StorageRemoteSummary | None = None
-    remote_ever_activated: Annotated[bool, Field(alias="remoteEverActivated")]
-
-
 class StrictReviewRequiredNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -5321,6 +5167,43 @@ class ThreadAttachmentListResponse(BaseModel):
 class ThreadAttachmentOperation(Enum):
     created = "created"
     deleted = "deleted"
+
+
+class ThreadAttachmentOwner(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    archived: Annotated[
+        bool,
+        Field(
+            description="Whether the owning thread is archived, not whether it is currently executing a turn."
+        ),
+    ]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class ThreadAttachmentOwnerListParams(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    archived: Annotated[
+        bool | None,
+        Field(
+            description="Omitted or null returns all matches; false returns non-archived threads only."
+        ),
+    ] = None
+    attachment_type: Annotated[str, Field(alias="attachmentType")]
+    cursor: str | None = None
+    identity_key: Annotated[str, Field(alias="identityKey")]
+    limit: Annotated[int | None, Field(ge=0)] = None
+
+
+class ThreadAttachmentOwnerListResponse(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    data: list[ThreadAttachmentOwner]
+    next_cursor: Annotated[str | None, Field(alias="nextCursor")] = None
 
 
 class ThreadAttachmentRemoveParams(BaseModel):
@@ -7059,6 +6942,18 @@ class ThreadAttachmentListRequest(BaseModel):
         Literal["thread/attachment/list"], Field(title="Thread/attachment/listRequestMethod")
     ]
     params: ThreadAttachmentListParams
+
+
+class ThreadAttachmentOwnerListRequest(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    id: RequestId
+    method: Annotated[
+        Literal["thread/attachmentOwner/list"],
+        Field(title="Thread/attachmentOwner/listRequestMethod"),
+    ]
+    params: ThreadAttachmentOwnerListParams
 
 
 class ThreadAttachmentRemoveRequest(BaseModel):
@@ -9877,52 +9772,6 @@ class SkillsListResponse(BaseModel):
     data: list[SkillsListEntry]
 
 
-class StorageOperation(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    action: StoragePlanAction
-    blocker: StorageBlocker | None = None
-    copied: list[StorageCopiedDomain]
-    created_at: Annotated[int, Field(alias="createdAt")]
-    operation_id: Annotated[str, Field(alias="operationId")]
-    plan_digest: Annotated[str, Field(alias="planDigest")]
-    run_id: Annotated[str | None, Field(alias="runId")] = None
-    state: StorageOperationState
-    updated_at: Annotated[int, Field(alias="updatedAt")]
-
-
-class StorageOperationUpdatedNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    operation: StorageOperation
-
-
-class StoragePlan(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    action: StoragePlanAction
-    blockers: list[StorageBlocker]
-    connection: StorageConnectionReport
-    destination: Annotated[
-        str, Field(description="`endpoint:port/database/namespace`; never a credential.")
-    ]
-    digest: Annotated[str, Field(description="Changes whenever any fact behind the plan changes.")]
-    estimate: StorageSourceEstimate | None = None
-    host: str
-    local_generation: Annotated[int | None, Field(alias="localGeneration")] = None
-    plan_id: Annotated[str, Field(alias="planId")]
-    requires_pause: Annotated[
-        bool,
-        Field(
-            alias="requiresPause",
-            description="Local writers must be stopped before the operation starts.",
-        ),
-    ]
-
-
 class ThreadSpawn(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -11458,24 +11307,6 @@ class ItemFileChangePatchUpdatedServerNotification(BaseModel):
     params: FileChangePatchUpdatedNotification
 
 
-class StorageOperationUpdatedServerNotification(BaseModel):
-    model_config = ConfigDict(
-        populate_by_name=True,
-    )
-    emitted_at_ms: Annotated[
-        int | None,
-        Field(
-            alias="emittedAtMs",
-            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
-        ),
-    ] = None
-    method: Annotated[
-        Literal["storage/operation/updated"],
-        Field(title="Storage/operation/updatedNotificationMethod"),
-    ]
-    params: StorageOperationUpdatedNotification
-
-
 class AccountRateLimitsUpdatedServerNotification(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -12763,6 +12594,7 @@ class ClientRequest(
         | ThreadMetadataUpdateRequest
         | ThreadAttachmentAddRequest
         | ThreadAttachmentListRequest
+        | ThreadAttachmentOwnerListRequest
         | ThreadAttachmentRemoveRequest
         | ThreadSectionMoveRequest
         | ThreadUnarchiveRequest
@@ -12873,6 +12705,7 @@ class ClientRequest(
         | ThreadMetadataUpdateRequest
         | ThreadAttachmentAddRequest
         | ThreadAttachmentListRequest
+        | ThreadAttachmentOwnerListRequest
         | ThreadAttachmentRemoveRequest
         | ThreadSectionMoveRequest
         | ThreadUnarchiveRequest
@@ -13185,7 +13018,6 @@ class ServerNotification(
         | ItemMcpToolCallProgressServerNotification
         | McpServerOauthLoginCompletedServerNotification
         | McpServerStartupStatusUpdatedServerNotification
-        | StorageOperationUpdatedServerNotification
         | McpServerEventStreamNotificationServerNotification
         | AccountUpdatedServerNotification
         | AccountGatewayOAuthChangedServerNotification
@@ -13276,7 +13108,6 @@ class ServerNotification(
         | ItemMcpToolCallProgressServerNotification
         | McpServerOauthLoginCompletedServerNotification
         | McpServerStartupStatusUpdatedServerNotification
-        | StorageOperationUpdatedServerNotification
         | McpServerEventStreamNotificationServerNotification
         | AccountUpdatedServerNotification
         | AccountGatewayOAuthChangedServerNotification
