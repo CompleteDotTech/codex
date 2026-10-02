@@ -13,6 +13,8 @@ doctest = false
 workspace = true
 
 [dependencies]
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
 codex-utils-absolute-path = { workspace = true }
 codex-utils-home-dir = { workspace = true }
 semver = { workspace = true, features = ["serde"] }
