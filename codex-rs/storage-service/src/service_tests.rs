@@ -568,3 +568,74 @@ async fn real_postgres_storage_service() {
     assert!(stranded.blockers.contains(&BlockerCode::DatasetRetired));
     reset_target(state).await;
 }
+
+fn dataset_report() -> ConnectionReport {
+    ConnectionReport {
+        stage: CheckStage::Dataset,
+        blocker: None,
+        schema_format: Some(codex_postgres_runtime::client_schema_format()),
+        dataset_state: Some("open".to_string()),
+        dataset_id: None,
+        generation: Some(0),
+        empty: None,
+    }
+}
+
+#[test]
+fn target_inspection_failure_is_redacted_and_never_ready() {
+    let mut report = dataset_report();
+    super::service::finish_target_inspection(
+        &mut report,
+        Err(codex_storage_migration::MigrationError::Target(
+            "driver secret=password-canary endpoint=private-host".to_string(),
+        )),
+    );
+    assert_eq!(report.stage, CheckStage::Dataset);
+    assert_eq!(report.blocker, Some(BlockerCode::ConnectionFailed));
+    assert_eq!(report.empty, None);
+    let public = serde_json::to_string(&report).expect("public report");
+    assert!(!public.contains("password-canary"));
+    assert!(!public.contains("private-host"));
+    assert!(!format!("{report:?}").contains("password-canary"));
+    let plan = StoragePlan::build(
+        PlanAction::Migrate,
+        "test-host",
+        None,
+        crate::plan::PlanInputs {
+            authority: Ok(codex_storage_authority::AuthorityState::Unmanaged),
+            connection: report,
+            estimate: None,
+            sqlite_home_matches: true,
+        },
+    );
+    assert!(!plan.is_startable());
+    assert_eq!(plan.blockers, vec![BlockerCode::ConnectionFailed]);
+}
+
+#[test]
+fn successful_target_inspection_preserves_empty_and_occupied_facts() {
+    for empty in [true, false] {
+        let mut report = dataset_report();
+        super::service::finish_target_inspection(&mut report, Ok(empty));
+        assert_eq!(report.stage, CheckStage::Ready);
+        assert_eq!(report.blocker, None);
+        assert_eq!(report.empty, Some(empty));
+    }
+}
+
+#[test]
+fn unknown_target_emptiness_still_blocks_migration() {
+    let plan = StoragePlan::build(
+        PlanAction::Migrate,
+        "test-host",
+        None,
+        crate::plan::PlanInputs {
+            authority: Ok(codex_storage_authority::AuthorityState::Unmanaged),
+            connection: dataset_report(),
+            estimate: None,
+            sqlite_home_matches: true,
+        },
+    );
+    assert!(!plan.is_startable());
+    assert_eq!(plan.blockers, vec![BlockerCode::TargetNotEmpty]);
+}

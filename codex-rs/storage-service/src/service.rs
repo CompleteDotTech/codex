@@ -249,8 +249,7 @@ impl StorageService {
                 return report;
             }
         }
-        report.empty = target_is_empty(storage.pool()).await.ok();
-        report.stage = CheckStage::Ready;
+        finish_target_inspection(&mut report, target_is_empty(storage.pool()).await);
         storage.close().await;
         report
     }
@@ -341,5 +340,22 @@ impl StorageService {
     /// Every recorded operation, oldest first.
     pub fn operations(&self) -> Vec<OperationRecord> {
         self.journal.list()
+    }
+}
+
+pub(super) fn finish_target_inspection(
+    report: &mut ConnectionReport,
+    result: Result<bool, codex_storage_migration::MigrationError>,
+) {
+    match result {
+        Ok(empty) => {
+            report.empty = Some(empty);
+            report.stage = CheckStage::Ready;
+        }
+        Err(error) => {
+            report.empty = None;
+            report.stage = CheckStage::Dataset;
+            report.blocker = Some(error.into());
+        }
     }
 }
