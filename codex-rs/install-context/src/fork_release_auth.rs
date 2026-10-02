@@ -11,6 +11,7 @@ use std::io::Seek;
 use std::io::SeekFrom;
 
 const DOMAIN: &[u8] = b"CompleteDotTech/codex fork-release v1\0";
+const DOMAIN_V2: &[u8] = b"CompleteDotTech/codex fork-release v2\0";
 const MAX_DESCRIPTOR: usize = 16 * 1024;
 const MAX_MANIFEST: usize = 4 * 1024 * 1024;
 
@@ -38,6 +39,8 @@ pub struct ForkReleaseRequirements<'a> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReleaseWire {
     protocol_version: u32,
+    #[serde(default)]
+    lifecycle_protocol: Option<LifecycleProtocolWire>,
     algorithm: String,
     key_id: String,
     owner: String,
@@ -56,6 +59,23 @@ struct ReleaseWire {
     minimum_reader_schema: u32,
     minimum_writer_schema: u32,
     release_sequence: u64,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LifecycleProtocolWire {
+    runtime_fence_version: u32,
+    registration_version: u32,
+    schema_contract_sha256: String,
+}
+
+/// Signed runtime protocol claims, not proof of legacy-process quiescence.
+/// Only a verified v2 descriptor can construct this capability.
+pub struct AuthenticatedRuntimeProtocol<'a>(&'a LifecycleProtocolWire);
+impl AuthenticatedRuntimeProtocol<'_> {
+    pub fn schema_contract_sha256(&self) -> &str {
+        &self.0.schema_contract_sha256
+    }
 }
 
 /// Authenticated descriptor claims only; payload, active receipt and ownership still need verification.
@@ -89,10 +109,18 @@ impl ConfiguredForkReleaseVerifier {
         }
         // Parse bounded original bytes once, but expose no claims before signature verification.
         let release: ReleaseWire = serde_json::from_slice(descriptor).map_err(|_| invalid())?;
-        if release.protocol_version != 1 {
-            return Err(invalid());
-        }
-        let domain = DOMAIN;
+        let domain = match release.protocol_version {
+            1 if release.lifecycle_protocol.is_none() => DOMAIN,
+            2 if release.lifecycle_protocol.as_ref().is_some_and(|protocol| {
+                protocol.runtime_fence_version == 1
+                    && protocol.registration_version == 1
+                    && sha_digest(&protocol.schema_contract_sha256)
+            }) =>
+            {
+                DOMAIN_V2
+            }
+            _ => return Err(invalid()),
+        };
         let signature = Signature::from_slice(signature).map_err(|_| invalid())?;
         let mut signed = Vec::with_capacity(domain.len() + descriptor.len());
         signed.extend_from_slice(domain);
@@ -138,6 +166,19 @@ impl ConfiguredForkReleaseVerifier {
 }
 
 impl AuthenticatedForkRelease {
+    /// Requires the authenticated modern fencing protocol before registered-runtime eligibility.
+    /// Payload inventory, schema-contract bytes, persisted identities and shutdown proof remain mandatory.
+    pub fn runtime_protocol(&self) -> io::Result<AuthenticatedRuntimeProtocol<'_>> {
+        if self.0.protocol_version != 2 {
+            return Err(invalid());
+        }
+        self.0
+            .lifecycle_protocol
+            .as_ref()
+            .map(AuthenticatedRuntimeProtocol)
+            .ok_or_else(invalid)
+    }
+
     pub fn fork_commit(&self) -> &str {
         &self.0.fork_commit
     }

@@ -917,6 +917,7 @@ mod tests {
 // Inactive signed descriptor intake; no installer or runtime activation authority.
 mod fork_release_auth;
 pub use fork_release_auth::AuthenticatedForkRelease;
+pub use fork_release_auth::AuthenticatedRuntimeProtocol;
 pub use fork_release_auth::ConfiguredForkReleaseVerifier;
 pub use fork_release_auth::ForkReleaseRequirements;
 pub use fork_release_auth::VerifiedForkArchive;

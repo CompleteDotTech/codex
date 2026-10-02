@@ -170,3 +170,113 @@ fn equal_numeric_version_different_fork_commit_is_distinct_authenticated_candida
     assert_eq!(first.package_version(), second.package_version());
     assert_ne!(first.fork_commit(), second.fork_commit());
 }
+
+fn modern_signature(key: &SigningKey, bytes: &[u8]) -> [u8; 64] {
+    let mut signed = DOMAIN_V2.to_vec();
+    signed.extend_from_slice(bytes);
+    key.sign(&signed).to_bytes()
+}
+
+#[test]
+fn signed_modern_protocol_is_domain_separated_and_legacy_intake_has_no_runtime_authority() {
+    let key = SigningKey::from_bytes(&[17; 32]);
+    let base = "a".repeat(40);
+    let capabilities = vec!["sqlite".to_owned()];
+    let requirements = ForkReleaseRequirements {
+        channel: "stable",
+        target: "fixture-linux",
+        variant: "full",
+        declared_base_commit: &base,
+        storage_capabilities: &capabilities,
+        postgres_schema_versions: &[],
+        reader_schema: 0,
+        writer_schema: 0,
+        accepted_release_sequence: 1,
+        maximum_archive_bytes: 1024,
+    };
+    let verifier =
+        ConfiguredForkReleaseVerifier::from_owner_configuration(key.verifying_key().to_bytes())
+            .unwrap();
+    let legacy = serde_json::to_vec(&payload(&key)).unwrap();
+    let release = verifier
+        .verify(&legacy, &signature(&key, &legacy), &requirements)
+        .unwrap();
+    assert!(release.runtime_protocol().is_err());
+    assert!(
+        verifier
+            .verify(&legacy, &modern_signature(&key, &legacy), &requirements)
+            .is_err(),
+        "modern signature domain cannot authenticate valid legacy protocol"
+    );
+    let mut modern = payload(&key);
+    modern["protocolVersion"] = 2.into();
+    modern["lifecycleProtocol"] = serde_json::json!({"runtimeFenceVersion":1,"registrationVersion":1,
+        "schemaContractSha256":format!("sha256:{}","e".repeat(64))});
+    let bytes = serde_json::to_vec(&modern).unwrap();
+    assert!(
+        verifier
+            .verify(&bytes, &signature(&key, &bytes), &requirements)
+            .is_err(),
+        "old signature domain cannot authenticate modern protocol"
+    );
+    let release = verifier
+        .verify(&bytes, &modern_signature(&key, &bytes), &requirements)
+        .unwrap();
+    assert_eq!(
+        release.runtime_protocol().unwrap().0,
+        &LifecycleProtocolWire {
+            runtime_fence_version: 1,
+            registration_version: 1,
+            schema_contract_sha256: format!("sha256:{}", "e".repeat(64))
+        }
+    );
+    let mut legacy_relabel = modern.clone();
+    legacy_relabel["protocolVersion"] = 1.into();
+    let bytes = serde_json::to_vec(&legacy_relabel).unwrap();
+    assert!(
+        verifier
+            .verify(&bytes, &signature(&key, &bytes), &requirements)
+            .is_err()
+    );
+    legacy_relabel
+        .as_object_mut()
+        .unwrap()
+        .remove("lifecycleProtocol");
+    let bytes = serde_json::to_vec(&legacy_relabel).unwrap();
+    assert!(
+        verifier
+            .verify(&bytes, &signature(&key, &bytes), &requirements)
+            .unwrap()
+            .runtime_protocol()
+            .is_err()
+    );
+    for (field, value) in [
+        ("runtimeFenceVersion", serde_json::json!(2)),
+        ("registrationVersion", serde_json::json!(true)),
+        ("schemaContractSha256", serde_json::json!("unbound")),
+        ("futureAuthority", serde_json::json!(1)),
+    ] {
+        let mut malformed = modern.clone();
+        malformed["lifecycleProtocol"][field] = value;
+        let bytes = serde_json::to_vec(&malformed).unwrap();
+        assert!(
+            verifier
+                .verify(&bytes, &modern_signature(&key, &bytes), &requirements)
+                .is_err()
+        );
+    }
+    let original = serde_json::to_vec(&modern).unwrap();
+    let duplicate = String::from_utf8(original).unwrap().replace(
+        "\"runtimeFenceVersion\":1",
+        "\"runtimeFenceVersion\":99,\"runtimeFenceVersion\":1",
+    );
+    assert!(
+        verifier
+            .verify(
+                duplicate.as_bytes(),
+                &modern_signature(&key, duplicate.as_bytes()),
+                &requirements
+            )
+            .is_err()
+    );
+}
