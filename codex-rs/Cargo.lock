@@ -5035,6 +5035,7 @@ dependencies = [
  "codex-storage-migration",
  "codex-utils-absolute-path",
  "pretty_assertions",
+ "libc",
  "serde",
  "serde_json",
  "sha2 0.10.9",

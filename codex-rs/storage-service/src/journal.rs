@@ -161,32 +161,39 @@ impl Journal {
     }
 
     pub(crate) fn read(&self, operation_id: Uuid) -> io::Result<Option<OperationRecord>> {
-        match std::fs::read(self.path(operation_id)) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map(Some)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "operation record")),
+        if !self.ordinary_directory()? {
+            return Ok(None);
+        }
+        match read_record(&self.path(operation_id), operation_id) {
+            Ok((record, _)) => Ok(Some(record)),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+    fn ordinary_directory(&self) -> io::Result<bool> {
+        match std::fs::symlink_metadata(&self.directory) {
+            Ok(metadata) if metadata.is_dir() && !is_redirected(&metadata) => Ok(true),
+            Ok(_) => Err(invalid_record("operation journal is not ordinary")),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
         }
     }
 
     /// Recovery must distinguish an absent journal from unreadable ownership evidence.
     pub(crate) fn list_checked(&self) -> io::Result<Vec<OperationRecord>> {
-        match std::fs::symlink_metadata(&self.directory) {
-            Ok(metadata) if metadata.file_type().is_dir() && !is_redirected(&metadata) => {}
-            Ok(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "operation journal is not a directory",
-                ));
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error),
+        if !self.ordinary_directory()? {
+            return Ok(Vec::new());
         }
         let mut records = Vec::new();
         let mut owners = std::collections::HashSet::new();
+        let mut bytes = 0_usize;
+        let mut entries = 0_usize;
         for entry in std::fs::read_dir(&self.directory)? {
             let entry = entry?;
+            entries += 1;
+            if entries > RECORD_COUNT_LIMIT {
+                return Err(invalid_record("journal entry limit"));
+            }
             let path = entry.path();
             if !path
                 .extension()
@@ -219,8 +226,12 @@ impl Journal {
                     "operation record filename",
                 ));
             }
-            let record: OperationRecord = serde_json::from_slice(&std::fs::read(&path)?)
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "operation record"))?;
+            let (record, size) =
+                read_record_bounded(&path, operation_id, JOURNAL_BYTE_LIMIT - bytes)?;
+            bytes += size;
+            if bytes > JOURNAL_BYTE_LIMIT {
+                return Err(invalid_record("journal byte limit"));
+            }
             if record.operation_id != operation_id || !owners.insert(operation_id) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -235,15 +246,31 @@ impl Journal {
 
     /// Best-effort listing for display only. Never use this to decide recovery is idle.
     pub(crate) fn list(&self) -> Vec<OperationRecord> {
+        if !matches!(self.ordinary_directory(), Ok(true)) {
+            return Vec::new();
+        }
         let Ok(entries) = std::fs::read_dir(&self.directory) else {
             return Vec::new();
         };
-        let mut records: Vec<OperationRecord> = entries
-            .flatten()
-            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
-            .filter_map(|entry| std::fs::read(entry.path()).ok())
-            .filter_map(|bytes| serde_json::from_slice(&bytes).ok())
-            .collect();
+        let mut records = Vec::new();
+        let mut bytes = 0_usize;
+        for entry in entries.take(RECORD_COUNT_LIMIT).flatten() {
+            let path = entry.path();
+            let Some(id) = path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .and_then(|name| Uuid::parse_str(name).ok())
+            else {
+                continue;
+            };
+            if let Ok((record, size)) = read_record_bounded(&path, id, JOURNAL_BYTE_LIMIT - bytes) {
+                bytes += size;
+                if bytes > JOURNAL_BYTE_LIMIT {
+                    break;
+                }
+                records.push(record);
+            }
+        }
         records.sort_by_key(|record| (record.created_at_ms, record.operation_id));
         records
     }
@@ -339,3 +366,99 @@ mod durability_tests;
 #[cfg(all(test, unix))]
 #[path = "journal_crash_tests.rs"]
 mod crash_tests;
+
+const RECORD_BYTE_LIMIT: usize = 1024 * 1024;
+const RECORD_COUNT_LIMIT: usize = 4096;
+const JOURNAL_BYTE_LIMIT: usize = 16 * 1024 * 1024;
+fn invalid_record(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message)
+}
+fn read_record(path: &std::path::Path, expected: Uuid) -> io::Result<(OperationRecord, usize)> {
+    if path.file_name().and_then(|name| name.to_str()) != Some(format!("{expected}.json").as_str())
+    {
+        return Err(invalid_record("operation record filename"));
+    }
+    let file = open_record(path)?;
+    read_open_record(path, expected, file, RECORD_BYTE_LIMIT)
+}
+fn read_record_bounded(
+    path: &std::path::Path,
+    expected: Uuid,
+    remaining: usize,
+) -> io::Result<(OperationRecord, usize)> {
+    if path.file_name().and_then(|name| name.to_str()) != Some(format!("{expected}.json").as_str())
+    {
+        return Err(invalid_record("operation record filename"));
+    }
+    let file = open_record(path)?;
+    read_open_record(path, expected, file, remaining.min(RECORD_BYTE_LIMIT))
+}
+fn open_record(path: &std::path::Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Atomic final-component refusal: neither symlink nor replaced FIFO may block/read.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(0x00200000).share_mode(1);
+    }
+    options.open(path)
+}
+fn read_open_record(
+    path: &std::path::Path,
+    expected: Uuid,
+    mut file: std::fs::File,
+    limit: usize,
+) -> io::Result<(OperationRecord, usize)> {
+    use std::io::Read;
+    let before = file.metadata()?;
+    if !before.is_file() || is_redirected(&before) || before.len() > limit as u64 {
+        return Err(invalid_record("operation record type or byte limit"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if before.nlink() != 1 {
+            return Err(invalid_record("operation record hardlink"));
+        }
+    }
+    let mut bytes = Vec::new();
+    (&mut file).take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit || bytes.len() as u64 != before.len() {
+        return Err(invalid_record("operation record byte limit or changed"));
+    }
+    let after = file.metadata()?;
+    let named = std::fs::symlink_metadata(path)?;
+    if !named.is_file()
+        || is_redirected(&named)
+        || before.len() != after.len()
+        || before.modified()? != after.modified()?
+    {
+        return Err(invalid_record("operation record changed"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if after.nlink() != 1
+            || named.nlink() != 1
+            || before.dev() != named.dev()
+            || before.ino() != named.ino()
+        {
+            return Err(invalid_record("operation record identity changed"));
+        }
+    }
+    let record: OperationRecord =
+        serde_json::from_slice(&bytes).map_err(|_| invalid_record("operation record"))?;
+    if record.operation_id != expected {
+        return Err(invalid_record("operation record identity"));
+    }
+    Ok((record, bytes.len()))
+}
+#[cfg(test)]
+#[path = "journal_read_tests.rs"]
+mod bounded_read_tests;
