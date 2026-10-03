@@ -110,9 +110,53 @@ impl ReturnCutover {
     /// Settle an interrupted return from the evidence on both sides.
     pub async fn recover(&self) -> Result<RecoveryOutcome, CutoverError> {
         let Some(intent) = read_cutover(&self.home).map_err(authority)? else {
-            // A plan without an intent belongs to a return that already completed.
-            install::discard_plan(&self.home).map_err(io_error)?;
-            return Ok(RecoveryOutcome::Idle);
+            let Some(plan) = install::read_plan(&self.home).map_err(io_error)? else {
+                return Ok(RecoveryOutcome::Idle);
+            };
+            if plan.staged_home != self.staged_home {
+                return Err(CutoverError::Conflict);
+            }
+            let local = codex_storage_authority::authority_state(&self.home).map_err(authority)?;
+            let remote = self.migrator.activation_state().await?;
+            match local {
+                codex_storage_authority::AuthorityState::Local(local) => {
+                    let generation = i64::try_from(local.identity.generation)
+                        .map_err(|_| CutoverError::Conflict)?;
+                    if !remote.retired
+                        || remote.run_id != Some(plan.run_id)
+                        || remote.dataset_id != Some(local.identity.dataset_id)
+                        || remote.generation != generation
+                    {
+                        return Err(CutoverError::Conflict);
+                    }
+                    install::discard_plan(&self.home).map_err(io_error)?;
+                    return Ok(RecoveryOutcome::RolledForward {
+                        generation: local.identity.generation,
+                    });
+                }
+                codex_storage_authority::AuthorityState::Remote(local) => {
+                    let generation = i64::try_from(local.identity.generation)
+                        .map_err(|_| CutoverError::Conflict)?;
+                    // Intent removal may have succeeded before plan removal failed.
+                    // Require the actual export row before clearing its remaining evidence.
+                    self.migrator
+                        .abandon_export_after(
+                            plan.run_id,
+                            ActivationTarget {
+                                dataset_id: local.identity.dataset_id,
+                                generation,
+                            },
+                            false,
+                            || {
+                                install::discard_plan(&self.home)
+                                    .map_err(|error| MigrationError::Staging(error.to_string()))
+                            },
+                        )
+                        .await?;
+                    return Ok(RecoveryOutcome::RolledBack);
+                }
+                _ => return Err(CutoverError::Conflict),
+            }
         };
         if intent.target != ActiveBackend::Local {
             return Err(CutoverError::Conflict);
@@ -162,15 +206,9 @@ impl ReturnCutover {
 
     /// Cancel before the dataset was retired. Afterwards the return can only finish.
     pub async fn abort(&self) -> Result<RecoveryOutcome, CutoverError> {
-        let Some(intent) = read_cutover(&self.home).map_err(authority)? else {
-            return Ok(RecoveryOutcome::Idle);
-        };
         match self.recover().await? {
             RecoveryOutcome::RolledForward { .. } => Err(CutoverError::AlreadyActivated),
-            outcome @ (RecoveryOutcome::RolledBack | RecoveryOutcome::Idle) => {
-                let _ = intent;
-                Ok(outcome)
-            }
+            outcome @ (RecoveryOutcome::RolledBack | RecoveryOutcome::Idle) => Ok(outcome),
         }
     }
 }

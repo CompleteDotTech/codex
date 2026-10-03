@@ -151,6 +151,12 @@ async fn real_postgres_storage_service() {
         return;
     };
     let state = Path::new(&state);
+    // One exclusive fixture, reset between the original and lost-cleanup boundaries.
+    run_real_postgres_storage_service(state, false).await;
+    run_real_postgres_storage_service(state, true).await;
+}
+
+async fn run_real_postgres_storage_service(state: &Path, leftover_owned_plan: bool) {
     reset_target(state).await;
     let home = populated_home().await;
 
@@ -717,6 +723,68 @@ async fn real_postgres_storage_service() {
             .as_deref(),
         Some("open")
     );
+    // Cancellation must settle an owned plan whose intent was removed before cleanup.
+    let cancel_plan = service.plan(PlanAction::Return).await.expect("cancel plan");
+    let cancel_id = Uuid::new_v4();
+    let cancel_ready = service
+        .start_return(cancel_id, cancel_plan.plan_id, confirmed)
+        .await
+        .expect("export for cancellation");
+    let staged_home = service.staged_home(cancel_id);
+    let remote = service.connect().await.expect("prepare cancellation");
+    let cutover = codex_storage_migration::ReturnCutover::new(
+        home.path().to_path_buf(),
+        staged_home.clone(),
+        codex_storage_migration::Migrator::new(
+            codex_storage_migration::SqliteSource::new(SqliteConfig::new_for_testing(
+                staged_home.abs(),
+            ))
+            .relocated_from(home.path().to_path_buf()),
+            remote.pool().clone(),
+        ),
+    );
+    let intent = cutover
+        .prepare(cancel_ready.run_id.expect("cancel owner"))
+        .expect("prepare");
+    codex_storage_authority::abandon_cutover(home.path(), &intent).expect("intent removed");
+    remote.close().await;
+    assert!(
+        codex_storage_migration::read_plan(home.path())
+            .expect("retained plan")
+            .is_some()
+    );
+    assert_eq!(
+        service
+            .cancel(cancel_id)
+            .await
+            .expect("cancel plan-only return")
+            .state,
+        OperationState::Cancelled
+    );
+    assert!(
+        codex_storage_migration::read_plan(home.path())
+            .expect("plan cleared")
+            .is_none()
+    );
+    assert_eq!(
+        service
+            .status(true)
+            .await
+            .remote
+            .expect("remote reopened")
+            .state
+            .as_deref(),
+        Some("open")
+    );
+    assert_eq!(
+        service
+            .recover()
+            .await
+            .expect("no stranded cancelled plan")
+            .outcome,
+        RecoveryKind::Idle
+    );
+
     let plan = service.plan(PlanAction::Return).await.expect("plan again");
     let second_return = Uuid::new_v4();
     let mut ready = service
@@ -724,17 +792,79 @@ async fn real_postgres_storage_service() {
         .await
         .expect("second export");
     assert_eq!(ready.state, OperationState::Ready);
-    // Process loss after the Committing journal write but before cutover preparation.
     service
         .save(&mut ready, OperationState::Committing)
         .expect("committing before intent");
+    if leftover_owned_plan {
+        // Crash after actual authority publication, before finish discards the owned plan.
+        let remote = service.connect().await.expect("remote before publication");
+        let staged_home = service.staged_home(second_return);
+        let returning = codex_storage_migration::ReturnCutover::new(
+            home.path().to_path_buf(),
+            staged_home.clone(),
+            codex_storage_migration::Migrator::new(
+                codex_storage_migration::SqliteSource::new(SqliteConfig::new_for_testing(
+                    staged_home.abs(),
+                ))
+                .relocated_from(home.path().to_path_buf()),
+                remote.pool().clone(),
+            ),
+        );
+        let owned_run = ready.run_id.expect("owned export run");
+        let intent = returning.prepare(owned_run).expect("genuine owned plan");
+        returning
+            .publish(&intent)
+            .await
+            .expect("retire exact SQL run");
+        returning.install().expect("install exported files");
+        codex_storage_authority::complete_cutover(home.path(), &intent)
+            .expect("publish local authority without discarding plan");
+        let actual_plan = codex_storage_migration::read_plan(home.path())
+            .expect("actual leftover plan")
+            .expect("plan survives authority publication");
+        assert_eq!(actual_plan.run_id, owned_run);
+        assert_eq!(actual_plan.staged_home, staged_home);
+        let published = service.status(true).await;
+        assert_eq!(published.authority, AuthorityLabel::Local);
+        assert_eq!(
+            published.remote.expect("retired SQL").state.as_deref(),
+            Some("retired")
+        );
+        remote.close().await;
+
+        // Wrong durable operation identity must never adopt or discard this genuine plan.
+        let mut wrong_owner = ready.clone();
+        wrong_owner.run_id = Some(Uuid::new_v4());
+        service
+            .save(&mut wrong_owner, OperationState::Committing)
+            .expect("wrong owner receipt");
+        assert!(service.recover().await.is_err());
+        let preserved_plan = codex_storage_migration::read_plan(home.path())
+            .expect("plan preserved after refusal")
+            .expect("wrong owner cannot discard");
+        assert_eq!(preserved_plan.run_id, actual_plan.run_id);
+        assert_eq!(preserved_plan.staged_home, actual_plan.staged_home);
+        service
+            .save(&mut ready, OperationState::Committing)
+            .expect("restore exact owner");
+    } else {
+        // Preserve the original process-loss-before-preparation regression.
+        assert!(
+            codex_storage_migration::read_plan(home.path())
+                .expect("no plan yet")
+                .is_none()
+        );
+    }
+    let recovery = service
+        .recover()
+        .await
+        .expect("recover exact committing owner");
+    assert_eq!(recovery.outcome, RecoveryKind::RolledForward);
     assert!(
         codex_storage_migration::read_plan(home.path())
-            .expect("no plan yet")
+            .expect("owned plan cleanup")
             .is_none()
     );
-    let recovery = service.recover().await.expect("resume pre-intent commit");
-    assert_eq!(recovery.outcome, RecoveryKind::RolledForward);
     let done = service
         .operation(second_return)
         .expect("returned operation");

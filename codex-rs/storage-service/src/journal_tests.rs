@@ -94,3 +94,140 @@ fn return_identity_survives_restart_and_export_cancel_exclude_each_other() {
         Some(planned)
     );
 }
+
+#[test]
+fn recovery_does_not_hide_a_corrupt_record_beside_a_valid_operation() {
+    let home = tempfile::tempdir().expect("home");
+    let journal = Journal::new(home.path());
+    let operation = record(OperationState::Committing, 3);
+    journal.create(&operation).expect("create");
+    let corrupt = journal.path(Uuid::from_u128(8));
+    std::fs::write(&corrupt, b"credential-canary: truncated journal").expect("corrupt");
+    let error = journal
+        .list_checked()
+        .expect_err("ownership evidence is incomplete");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(!error.to_string().contains("credential-canary"));
+    std::fs::remove_file(corrupt).expect("remove injected corruption");
+    assert_eq!(
+        journal.list_checked().expect("complete evidence"),
+        vec![operation]
+    );
+}
+
+#[test]
+fn recovery_refuses_a_record_under_another_operations_name() {
+    let home = tempfile::tempdir().expect("home");
+    let journal = Journal::new(home.path());
+    let operation = record(OperationState::Committing, 3);
+    journal.create(&operation).expect("create");
+    std::fs::rename(
+        journal.path(operation.operation_id),
+        journal.path(Uuid::from_u128(8)),
+    )
+    .expect("misidentify record");
+    assert_eq!(
+        journal.list_checked().expect_err("wrong owner").kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn absent_journal_and_invalid_journal_are_distinct_recovery_states() {
+    let home = tempfile::tempdir().expect("home");
+    let journal = Journal::new(home.path());
+    assert!(journal.list_checked().expect("never created").is_empty());
+    std::fs::write(&journal.directory, b"not a directory").expect("invalid namespace");
+    assert_eq!(
+        journal
+            .list_checked()
+            .expect_err("cannot infer idle")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn recovery_refuses_a_directory_in_place_of_an_operation_record() {
+    let home = tempfile::tempdir().expect("home");
+    let journal = Journal::new(home.path());
+    std::fs::create_dir_all(journal.path(Uuid::from_u128(8))).expect("invalid record");
+    assert_eq!(
+        journal.list_checked().expect_err("not a record").kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn recovery_refuses_uppercase_records_without_hiding_or_rewriting_them() {
+    let home = tempfile::tempdir().expect("home");
+    let journal = Journal::new(home.path());
+    let operation = record(OperationState::Committing, 3);
+    journal.create(&operation).expect("create");
+    std::fs::rename(
+        journal.path(operation.operation_id),
+        journal.path(operation.operation_id).with_extension("JSON"),
+    )
+    .expect("change extension spelling");
+    assert_eq!(
+        journal
+            .list_checked()
+            .expect_err("noncanonical owner is not absent")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+    let retained = std::fs::read(journal.path(operation.operation_id).with_extension("JSON"))
+        .expect("record preserved");
+    assert_eq!(
+        serde_json::from_slice::<OperationRecord>(&retained).expect("valid record"),
+        operation
+    );
+    assert_eq!(
+        std::fs::read_dir(&journal.directory)
+            .expect("journal")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn recovery_refuses_duplicate_owners_under_alternate_uuid_spellings() {
+    let home = tempfile::tempdir().expect("home");
+    let journal = Journal::new(home.path());
+    let operation = record(OperationState::Committing, 3);
+    journal.create(&operation).expect("create");
+    let duplicate = journal
+        .directory
+        .join(format!("{}.json", operation.operation_id.simple()));
+    std::fs::copy(journal.path(operation.operation_id), duplicate).expect("duplicate owner");
+    assert_eq!(
+        journal
+            .list_checked()
+            .expect_err("ambiguous ownership")
+            .kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn recovery_refuses_redirected_journal_and_record_paths() {
+    let home = tempfile::tempdir().expect("home");
+    let foreign = tempfile::tempdir().expect("foreign");
+    let journal = Journal::new(home.path());
+    std::os::unix::fs::symlink(foreign.path(), &journal.directory).expect("redirect namespace");
+    assert!(journal.list_checked().is_err());
+    std::fs::remove_file(&journal.directory).expect("remove link");
+    std::fs::create_dir(&journal.directory).expect("own namespace");
+    let operation = record(OperationState::Committing, 3);
+    let external = foreign.path().join("record");
+    std::fs::write(
+        &external,
+        serde_json::to_vec(&operation).expect("serialize"),
+    )
+    .expect("foreign record");
+    std::os::unix::fs::symlink(&external, journal.path(operation.operation_id))
+        .expect("redirect record");
+    assert!(journal.list_checked().is_err());
+    assert!(external.is_file());
+}

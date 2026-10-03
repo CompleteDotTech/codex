@@ -204,6 +204,47 @@ pub(super) async fn return_phase(
         .await
         .expect("remote writes resume after the rollback");
 
+    // Rollback lost its intent before plan cleanup failed. The remaining plan must
+    // still reopen exactly its owned export instead of falsely reporting idle.
+    remote_authority(pool, source, home).await;
+    let (returning, run_id, _) = staged_return(pool, home, "rollback-plan-only", true).await;
+    let intent = returning.prepare(run_id).expect("prepare");
+    codex_storage_authority::abandon_cutover(home, &intent).expect("intent cleanup succeeded");
+    assert!(install::read_plan(home).expect("retained plan").is_some());
+    assert!(dataset_state(pool, source).await.migrating);
+    assert!(matches!(
+        returning.recover().await,
+        Ok(RecoveryOutcome::RolledBack)
+    ));
+    assert!(install::read_plan(home).expect("settled plan").is_none());
+    assert_eq!(backend(home), ActiveBackend::Remote);
+    let reopened = dataset_state(pool, source).await;
+    assert!(!reopened.migrating && !reopened.retired);
+    PostgresQueueStore::new(pool.clone())
+        .enqueue(threads[0].id, "{}".to_string())
+        .await
+        .expect("remote writes after plan-only rollback");
+
+    // Local authority was published, but the completed return's plan remains.
+    remote_authority(pool, source, home).await;
+    let (returning, run_id, _) = staged_return(pool, home, "completed-plan-only", true).await;
+    let intent = returning.prepare(run_id).expect("prepare");
+    returning.publish(&intent).await.expect("retire");
+    returning.install().expect("install");
+    codex_storage_authority::complete_cutover(home, &intent).expect("authority published");
+    assert!(install::read_plan(home).expect("cleanup pending").is_some());
+    assert!(matches!(
+        returning.recover().await,
+        Ok(RecoveryOutcome::RolledForward { generation: 3 })
+    ));
+    assert!(install::read_plan(home).expect("cleaned plan").is_none());
+    assert_eq!(backend(home), ActiveBackend::Local);
+    assert!(dataset_state(pool, source).await.retired);
+    assert!(matches!(
+        returning.recover().await,
+        Ok(RecoveryOutcome::Idle)
+    ));
+
     // Lost acknowledgement: the dataset was retired but nothing local moved. Recovery installs
     // the staged files and flips the records.
     remote_authority(pool, source, home).await;

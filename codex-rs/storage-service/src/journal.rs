@@ -145,7 +145,70 @@ impl Journal {
         }
     }
 
-    /// Every readable record, oldest first. Unreadable files are skipped, not trusted.
+    /// Recovery must distinguish an absent journal from unreadable ownership evidence.
+    pub(crate) fn list_checked(&self) -> io::Result<Vec<OperationRecord>> {
+        match std::fs::symlink_metadata(&self.directory) {
+            Ok(metadata) if metadata.file_type().is_dir() && !is_redirected(&metadata) => {}
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "operation journal is not a directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        }
+        let mut records = Vec::new();
+        let mut owners = std::collections::HashSet::new();
+        for entry in std::fs::read_dir(&self.directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+            {
+                continue;
+            }
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if !metadata.file_type().is_file() || is_redirected(&metadata) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "operation record is not regular",
+                ));
+            }
+            let operation_id = path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .and_then(|name| Uuid::parse_str(name).ok())
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "operation record filename")
+                })?;
+            // Readers and writers use this exact spelling. Accepting aliases on a
+            // case-sensitive directory could make an update create a second owner.
+            if path.file_name().and_then(|name| name.to_str())
+                != Some(format!("{operation_id}.json").as_str())
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "operation record filename",
+                ));
+            }
+            let record: OperationRecord = serde_json::from_slice(&std::fs::read(&path)?)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "operation record"))?;
+            if record.operation_id != operation_id || !owners.insert(operation_id) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "operation record identity",
+                ));
+            }
+            records.push(record);
+        }
+        records.sort_by_key(|record| (record.created_at_ms, record.operation_id));
+        Ok(records)
+    }
+
+    /// Best-effort listing for display only. Never use this to decide recovery is idle.
     pub(crate) fn list(&self) -> Vec<OperationRecord> {
         let Ok(entries) = std::fs::read_dir(&self.directory) else {
             return Vec::new();
@@ -159,6 +222,18 @@ impl Journal {
         records.sort_by_key(|record| (record.created_at_ms, record.operation_id));
         records
     }
+}
+
+#[cfg(windows)]
+fn is_redirected(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    // FILE_ATTRIBUTE_REPARSE_POINT includes junctions that still report directory type.
+    metadata.file_attributes() & 0x400 != 0
+}
+
+#[cfg(not(windows))]
+fn is_redirected(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
 }
 
 #[cfg(test)]
