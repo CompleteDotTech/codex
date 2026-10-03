@@ -225,6 +225,10 @@ impl StorageService {
             .journal
             .claim_return(record.operation_id)
             .map_err(|_| StorageError(BlockerCode::OperationConflict))?;
+        #[cfg(unix)]
+        self.journal
+            .validate_return_claim(&_owner)
+            .map_err(internal)?;
         record = self.operation(record.operation_id)?;
         if record.action != PlanAction::Return
             || !matches!(
@@ -310,6 +314,10 @@ impl StorageService {
             .journal
             .claim_return(record.operation_id)
             .map_err(|_| StorageError(BlockerCode::OperationConflict))?;
+        #[cfg(unix)]
+        self.journal
+            .validate_return_claim(&_owner)
+            .map_err(internal)?;
         record = self.operation(record.operation_id)?;
         let completed_failure = record.state == OperationState::Failed
             && matches!(
@@ -472,6 +480,10 @@ impl StorageService {
             .journal
             .claim_return(owners[0].operation_id)
             .map_err(|_| StorageError(BlockerCode::OperationConflict))?;
+        #[cfg(unix)]
+        self.journal
+            .validate_return_claim(&_owner)
+            .map_err(internal)?;
         let owner = self.operation(owners[0].operation_id)?;
         if owner != owners[0] {
             return Err(StorageError(BlockerCode::OperationConflict));
@@ -525,6 +537,10 @@ impl StorageService {
             .journal
             .claim_return(record.operation_id)
             .map_err(|_| StorageError(BlockerCode::OperationConflict))?;
+        #[cfg(unix)]
+        self.journal
+            .validate_return_claim(&_owner)
+            .map_err(internal)?;
         record = self.operation(record.operation_id)?;
         if record.action != PlanAction::Return
             || matches!(

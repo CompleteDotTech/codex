@@ -36,6 +36,7 @@ impl Journal {
         lease.verify_file(name, file)
     }
     pub(super) fn create_owned(&self, record: &OperationRecord) -> io::Result<()> {
+        self.admit_candidate(record)?;
         let encoded = encode_record(record)?;
         let lease = self.owned_namespace(true)?;
         let absolute = std::path::absolute(&self.directory)?;
@@ -57,10 +58,12 @@ impl Journal {
         )?;
         self.sync(lease.leaf()?, &self.directory, "journal-parent")?;
         lease.verify_file(OsStr::new(&name), &file)?;
+        self.validate_claim(record.operation_id)?;
         self.notify(record);
         Ok(())
     }
     pub(super) fn update_owned(&self, record: &OperationRecord) -> io::Result<()> {
+        self.admit_candidate(record)?;
         let encoded = encode_record(record)?;
         let lease = self.owned_namespace(false)?;
         let target = format!("{}.json", record.operation_id);
@@ -89,6 +92,7 @@ impl Journal {
         lease.rename(OsStr::new(&temporary), &file, OsStr::new(&target))?;
         self.sync(lease.leaf()?, &self.directory, "journal-parent")?;
         lease.verify_file(OsStr::new(&target), &file)?;
+        self.validate_claim(record.operation_id)?;
         self.notify(record);
         Ok(())
     }

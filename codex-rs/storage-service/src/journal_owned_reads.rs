@@ -37,6 +37,7 @@ impl Journal {
         Ok((record, bytes.len()))
     }
     pub(super) fn read_owned(&self, operation_id: Uuid) -> io::Result<Option<OperationRecord>> {
+        self.validate_claim(operation_id)?;
         let lease = match self.owned_namespace(false) {
             Ok(lease) => lease,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -61,6 +62,7 @@ impl Journal {
         .map(|(record, _)| Some(record))
     }
     pub(super) fn list_owned(&self) -> io::Result<Vec<OperationRecord>> {
+        self.validate_claims()?;
         let lease = match self.owned_namespace(false) {
             Ok(lease) => lease,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -103,6 +105,7 @@ impl Journal {
             records.push(record);
         }
         lease.revalidate()?;
+        self.validate_claims()?;
         records.sort_by_key(|record| (record.created_at_ms, record.operation_id));
         Ok(records)
     }
