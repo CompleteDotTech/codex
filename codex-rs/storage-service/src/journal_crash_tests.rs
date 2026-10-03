@@ -149,10 +149,13 @@ fn subprocess_crash_preserves_exact_single_owner_without_success_observer() {
                 vec![expected.clone()]
             );
             assert_eq!(
-                fresh
-                    .path(planned.operation_id)
-                    .with_extension("json.tmp")
-                    .exists(),
+                std::fs::read_dir(&fresh.directory)
+                    .unwrap()
+                    .any(|entry| entry
+                        .unwrap()
+                        .path()
+                        .extension()
+                        .is_some_and(|value| value == "tmp")),
                 mode == "update" && phase == "update-file"
             );
             assert!(

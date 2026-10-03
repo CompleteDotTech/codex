@@ -6,6 +6,7 @@ use crate::PlanAction;
 use serde::Deserialize;
 use serde::Serialize;
 use std::io;
+#[cfg(any(not(unix), test))]
 use std::io::Write;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -67,6 +68,8 @@ pub struct OperationRecord {
 pub(crate) struct Journal {
     directory: PathBuf,
     observer: Option<Observer>,
+    #[cfg(unix)]
+    namespace: std::sync::Mutex<Option<std::sync::Arc<namespace::Namespace>>>,
     #[cfg(all(test, unix))]
     sync_probe: Option<std::sync::Arc<std::sync::Mutex<SyncProbe>>>,
 }
@@ -92,6 +95,8 @@ impl Journal {
         Self {
             directory: codex_home.join(DIRECTORY),
             observer: None,
+            #[cfg(unix)]
+            namespace: std::sync::Mutex::new(None),
             #[cfg(all(test, unix))]
             sync_probe: None,
         }
@@ -115,51 +120,43 @@ impl Journal {
     /// Record a new operation; fails if the id is already taken.
     pub(crate) fn create(&self, record: &OperationRecord) -> io::Result<()> {
         #[cfg(unix)]
-        self.create_durable_directory()?;
+        {
+            self.create_owned(record)
+        }
         #[cfg(not(unix))]
-        std::fs::create_dir_all(&self.directory)?;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(self.path(record.operation_id))?;
-        serde_json::to_writer(&mut file, record).map_err(io::Error::other)?;
-        file.write_all(b"\n")?;
-        #[cfg(unix)]
-        self.sync(&file, &self.path(record.operation_id), "record-file")?;
-        #[cfg(not(unix))]
-        file.sync_all()?;
-        #[cfg(unix)]
-        self.sync(
-            &std::fs::File::open(&self.directory)?,
-            &self.directory,
-            "journal-parent",
-        )?;
-        self.notify(record);
-        Ok(())
+        {
+            std::fs::create_dir_all(&self.directory)?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(self.path(record.operation_id))?;
+            serde_json::to_writer(&mut file, record).map_err(io::Error::other)?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            self.notify(record);
+            Ok(())
+        }
     }
 
     /// Replace a record atomically.
     pub(crate) fn update(&self, record: &OperationRecord) -> io::Result<()> {
-        let path = self.path(record.operation_id);
-        let temporary = path.with_extension("json.tmp");
-        let mut file = std::fs::File::create(&temporary)?;
-        serde_json::to_writer(&mut file, record).map_err(io::Error::other)?;
-        file.write_all(b"\n")?;
         #[cfg(unix)]
-        self.sync(&file, &temporary, "update-file")?;
+        {
+            self.update_owned(record)
+        }
         #[cfg(not(unix))]
-        file.sync_all()?;
-        std::fs::rename(temporary, path)?;
-        #[cfg(unix)]
-        self.sync(
-            &std::fs::File::open(&self.directory)?,
-            &self.directory,
-            "journal-parent",
-        )?;
-        self.notify(record);
-        Ok(())
+        {
+            let path = self.path(record.operation_id);
+            let temporary = path.with_extension("json.tmp");
+            let mut file = std::fs::File::create(&temporary)?;
+            serde_json::to_writer(&mut file, record).map_err(io::Error::other)?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            std::fs::rename(temporary, path)?;
+            self.notify(record);
+            Ok(())
+        }
     }
-
     pub(crate) fn read(&self, operation_id: Uuid) -> io::Result<Option<OperationRecord>> {
         if !self.ordinary_directory()? {
             return Ok(None);
@@ -333,14 +330,6 @@ impl Journal {
         }
         Ok(())
     }
-    fn create_durable_directory(&self) -> io::Result<()> {
-        let absolute = std::path::absolute(&self.directory)?;
-        std::fs::create_dir_all(&absolute)?;
-        for parent in absolute.ancestors().skip(1) {
-            self.sync(&std::fs::File::open(parent)?, parent, "ancestor-parent")?;
-        }
-        Ok(())
-    }
 }
 #[cfg(all(test, unix))]
 #[derive(Default)]
@@ -462,3 +451,10 @@ fn read_open_record(
 #[cfg(test)]
 #[path = "journal_read_tests.rs"]
 mod bounded_read_tests;
+
+#[cfg(unix)]
+#[path = "journal_namespace.rs"]
+mod namespace;
+#[cfg(unix)]
+#[path = "journal_owned_writes.rs"]
+mod owned_writes;
