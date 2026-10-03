@@ -95,6 +95,7 @@ impl StorageService {
             plan_digest: plan.digest,
             state: OperationState::Planned,
             run_id: None,
+            return_source: None,
             created_at_ms: now_ms(),
             updated_at_ms: now_ms(),
             blocker: None,

@@ -46,14 +46,12 @@ pub(super) async fn export_phase(
     let migrator = Migrator::new(source.clone(), pool.clone());
     let imported = migrator.import().await.expect("import");
     migrator.verify(imported.run_id).await.expect("verify");
+    let source_identity = ActivationTarget {
+        dataset_id: Uuid::new_v4(),
+        generation: 2,
+    };
     migrator
-        .activate(
-            imported.run_id,
-            ActivationTarget {
-                dataset_id: Uuid::new_v4(),
-                generation: 2,
-            },
-        )
+        .activate(imported.run_id, source_identity)
         .await
         .expect("activate");
 
@@ -61,10 +59,99 @@ pub(super) async fn export_phase(
     let (staged, _directory) = staged_target("exported").await;
     let staged_source = SqliteSource::new(staged.staging().clone())
         .relocated_from(staged.final_home().to_path_buf());
+    let owned_run = Uuid::new_v4();
+    // Simulate process loss immediately after the fence transaction, before any domain.
+    let fingerprint = staged_source.fingerprint().await.expect("fingerprint");
+    let exporter = Migrator::new(staged_source.clone(), pool.clone());
+    assert!(matches!(
+        exporter
+            .abandon_export_after(owned_run, source_identity, false, || panic!(
+                "missing run must not discard recovery evidence"
+            ))
+            .await,
+        Err(MigrationError::TargetBusy)
+    ));
+    exporter
+        .abandon_export_owned(owned_run, source_identity)
+        .await
+        .expect("an operation that never fenced can be cancelled without SQL mutation");
+    assert_eq!(
+        exporter
+            .begin(
+                &fingerprint,
+                "export",
+                Some(owned_run),
+                Some(source_identity)
+            )
+            .await
+            .expect("claim exact owned export"),
+        (owned_run, false)
+    );
+    assert_eq!(
+        exporter.activation_state().await.expect("fenced").run_id,
+        Some(owned_run)
+    );
+    assert!(
+        exporter
+            .progress(owned_run)
+            .await
+            .expect("no batches")
+            .is_empty()
+    );
+    assert!(matches!(
+        exporter
+            .export_owned(&staged, Uuid::new_v4(), source_identity)
+            .await,
+        Err(MigrationError::TargetBusy)
+    ));
+    assert!(matches!(
+        exporter
+            .abandon_export_owned(Uuid::new_v4(), source_identity)
+            .await,
+        Err(MigrationError::TargetBusy)
+    ));
+    assert!(matches!(
+        exporter
+            .begin(
+                &fingerprint,
+                "import",
+                Some(owned_run),
+                Some(source_identity)
+            )
+            .await,
+        Err(MigrationError::TargetBusy)
+    ));
+    let wrong_dataset = ActivationTarget {
+        dataset_id: Uuid::new_v4(),
+        ..source_identity
+    };
+    assert!(matches!(
+        exporter
+            .abandon_export_owned(owned_run, wrong_dataset)
+            .await,
+        Err(MigrationError::TargetBusy)
+    ));
+    let wrong_generation = ActivationTarget {
+        generation: 3,
+        ..source_identity
+    };
+    assert!(matches!(
+        exporter
+            .export_owned(&staged, owned_run, wrong_generation)
+            .await,
+        Err(MigrationError::TargetBusy)
+    ));
+    assert!(
+        exporter
+            .activation_state()
+            .await
+            .expect("foreign refusal preserves fence")
+            .migrating
+    );
     let interrupted = Migrator::new(staged_source.clone(), pool.clone())
         .with_batch_size(2)
         .with_batch_limit(3)
-        .export(&staged)
+        .export_owned(&staged, owned_run, source_identity)
         .await;
     assert!(
         matches!(interrupted, Err(MigrationError::Interrupted)),
@@ -78,13 +165,65 @@ pub(super) async fn export_phase(
             .migrating
     );
     let exporter = Migrator::new(staged_source, pool.clone()).with_batch_size(2);
-    let exported = exporter.export(&staged).await.expect("resumed export");
+    let exported = exporter
+        .export_owned(&staged, owned_run, source_identity)
+        .await
+        .expect("resumed export");
+    assert_eq!(exported.run_id, owned_run);
     assert!(exported.resumed);
     assert_eq!(exported.domains, imported.domains);
     exporter
         .verify(exported.run_id)
         .await
         .expect("the staged home matches the dataset");
+    // Losing the service's Ready journal acknowledgement does not strand a verified run.
+    assert_eq!(
+        exporter
+            .export_owned(&staged, owned_run, source_identity)
+            .await
+            .expect("retry verified exact owner")
+            .run_id,
+        owned_run
+    );
+    // Cancellation reopens only the untouched source, and repeating its acknowledgement is safe.
+    exporter
+        .abandon_export_owned(owned_run, source_identity)
+        .await
+        .expect("cancel exact owner");
+    exporter
+        .abandon_export_owned(owned_run, source_identity)
+        .await
+        .expect("lost cancel acknowledgement");
+    assert!(
+        !exporter
+            .activation_state()
+            .await
+            .expect("reopened")
+            .migrating
+    );
+    // Reusing abandoned staging after new remote writes must not reacquire the fence.
+    let new_remote = super::tests::metadata(
+        800,
+        chrono::Utc::now(),
+        codex_protocol::protocol::SessionSource::Cli,
+    );
+    codex_postgres_thread_catalog::PostgresThreadCatalog::new(pool.clone())
+        .upsert_thread(&new_remote)
+        .await
+        .expect("new remote write after cancellation");
+    assert!(
+        exporter
+            .export_owned(&staged, owned_run, source_identity)
+            .await
+            .is_err()
+    );
+    assert!(
+        !exporter
+            .activation_state()
+            .await
+            .expect("still open")
+            .migrating
+    );
     staged.close().await;
 
     // The staged home opens with the ordinary runtime and answers like the source did.

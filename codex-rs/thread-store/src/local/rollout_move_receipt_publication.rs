@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use super::RolloutMoveIntent;
+#[cfg(test)]
 use super::rollout_file_identity;
 use super::rollout_file_identity_from_handle;
 use super::sync_parent_directory;

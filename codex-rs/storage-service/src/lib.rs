@@ -15,6 +15,7 @@ mod types;
 pub use journal::Observer;
 pub use journal::OperationRecord;
 pub use journal::OperationState;
+pub use journal::ReturnSource;
 pub use ops::Confirmation;
 pub use ops::RecoveryKind;
 pub use ops::RecoveryReport;

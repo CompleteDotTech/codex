@@ -10,6 +10,7 @@ fn record(state: OperationState, copied: u64) -> OperationRecord {
         plan_digest: "digest".to_string(),
         state,
         run_id: None,
+        return_source: None,
         created_at_ms: 1,
         updated_at_ms: 2,
         blocker: None,
@@ -55,4 +56,41 @@ fn a_rejected_write_is_not_reported() {
         .expect_err("the id is already taken");
 
     assert_eq!(*seen.lock().expect("seen"), 1);
+}
+
+#[test]
+fn return_identity_survives_restart_and_export_cancel_exclude_each_other() {
+    let home = tempfile::tempdir().expect("home");
+    let journal = Journal::new(home.path());
+    let mut planned = record(OperationState::Planned, 0);
+    planned.action = PlanAction::Return;
+    planned.run_id = Some(Uuid::new_v4());
+    planned.return_source = Some(ReturnSource {
+        dataset_id: Uuid::new_v4(),
+        generation: 2,
+        destination: "host:5432/database/namespace".into(),
+    });
+    journal
+        .create(&planned)
+        .expect("persist before any remote fence");
+    let restarted = Journal::new(home.path());
+    assert_eq!(
+        restarted.read(planned.operation_id).expect("restart"),
+        Some(planned.clone())
+    );
+    let export = journal
+        .claim_return(planned.operation_id)
+        .expect("export owner");
+    assert!(restarted.claim_return(planned.operation_id).is_err());
+    drop(export);
+    let cancel = restarted
+        .claim_return(planned.operation_id)
+        .expect("cancel after exporter exits");
+    drop(cancel);
+    // A failed ownership journal creation cannot announce a usable export receipt.
+    assert!(journal.create(&planned).is_err());
+    assert_eq!(
+        restarted.read(planned.operation_id).expect("unchanged"),
+        Some(planned)
+    );
 }
