@@ -303,19 +303,73 @@ impl StorageService {
         let run_id = record
             .run_id
             .ok_or(StorageError(BlockerCode::OperationConflict))?;
-        let storage = self.connect().await?;
-        self.save(&mut record, OperationState::Committing)?;
+        let Some(_claim) = self.claim(record.operation_id) else {
+            return Err(StorageError(BlockerCode::OperationConflict));
+        };
+        let _owner = self
+            .journal
+            .claim_return(record.operation_id)
+            .map_err(|_| StorageError(BlockerCode::OperationConflict))?;
+        record = self.operation(record.operation_id)?;
+        let completed_failure = record.state == OperationState::Failed
+            && matches!(
+                codex_storage_authority::authority_state(&self.inputs.codex_home),
+                Ok(codex_storage_authority::AuthorityState::Local(_))
+            );
+        if record.run_id != Some(run_id)
+            || (!matches!(
+                record.state,
+                OperationState::Ready | OperationState::Committing
+            ) && !completed_failure)
+        {
+            return Err(StorageError(BlockerCode::OperationConflict));
+        }
+        let source = self.return_source(&record)?;
+        self.check_return_intent(&record)?;
         let staged_home = self.staged_home(record.operation_id);
         let config = self.staged_config(&staged_home)?;
-        let returning = ReturnCutover::new(
-            self.inputs.codex_home.clone(),
-            staged_home,
-            Migrator::new(self.staged_source(config), storage.pool().clone()),
-        );
+        let storage = self.connect().await?;
+        let migrator = Migrator::new(self.staged_source(config), storage.pool().clone());
+        if let Ok(codex_storage_authority::AuthorityState::Local(local)) =
+            codex_storage_authority::authority_state(&self.inputs.codex_home)
+        {
+            let remote = migrator.activation_state().await;
+            let completed = remote.is_ok_and(|remote| {
+                remote.retired
+                    && remote.run_id == Some(run_id)
+                    && remote.dataset_id == Some(source.dataset_id)
+                    && source.generation.checked_add(1) == Some(remote.generation)
+                    && local.identity.dataset_id == source.dataset_id
+                    && i64::try_from(local.identity.generation).ok() == Some(remote.generation)
+            });
+            if !completed {
+                storage.close().await;
+                return Err(StorageError(BlockerCode::OperationConflict));
+            }
+            // A leftover owned plan after authority publication can now be discarded.
+            let returning =
+                ReturnCutover::new(self.inputs.codex_home.clone(), staged_home, migrator);
+            let recovered = returning.recover().await;
+            storage.close().await;
+            recovered.map_err(|error| StorageError(error.into()))?;
+            self.save(&mut record, OperationState::Active)?;
+            return Ok(record);
+        }
+        if let Err(error) = self.save(&mut record, OperationState::Committing) {
+            storage.close().await;
+            return Err(error);
+        }
+        let returning = ReturnCutover::new(self.inputs.codex_home.clone(), staged_home, migrator);
         // An interrupted earlier attempt left an intent behind; settle it before starting.
         let result = match returning.recover().await {
             Ok(RecoveryOutcome::RolledForward { .. }) => Ok(()),
-            Ok(_) => returning.execute(run_id).await.map(|_| ()),
+            Ok(RecoveryOutcome::RolledBack) => {
+                storage.close().await;
+                record.blocker = None;
+                self.save(&mut record, OperationState::Cancelled)?;
+                return Ok(record);
+            }
+            Ok(RecoveryOutcome::Idle) => returning.execute(run_id).await.map(|_| ()),
             Err(error) => Err(error),
         };
         storage.close().await;
@@ -337,13 +391,87 @@ impl StorageService {
     pub(crate) async fn recover_return(&self) -> Result<RecoveryReport, StorageError> {
         let plan = read_plan(&self.inputs.codex_home).map_err(internal)?;
         let Some(plan) = plan else {
+            let mut operations = Vec::new();
+            for record in self.journal.list().into_iter().filter(|record| {
+                record.action == PlanAction::Return
+                    && record.run_id.is_some()
+                    && matches!(
+                        record.state,
+                        OperationState::Copying
+                            | OperationState::Verifying
+                            | OperationState::Failed
+                            | OperationState::Committing
+                    )
+            }) {
+                let completed_failure = record.state == OperationState::Failed
+                    && matches!(
+                        codex_storage_authority::authority_state(&self.inputs.codex_home),
+                        Ok(codex_storage_authority::AuthorityState::Local(_))
+                    );
+                operations.push(
+                    if record.state == OperationState::Committing || completed_failure {
+                        self.activate_return(record).await?
+                    } else {
+                        self.cancel_return(record).await?
+                    },
+                );
+            }
             return Ok(RecoveryReport {
-                outcome: RecoveryKind::Idle,
-                operations: Vec::new(),
+                outcome: if operations
+                    .iter()
+                    .any(|record| record.state == OperationState::Active)
+                {
+                    RecoveryKind::RolledForward
+                } else if operations.is_empty() {
+                    RecoveryKind::Idle
+                } else {
+                    RecoveryKind::RolledBack
+                },
+                operations,
             });
         };
-        let storage = self.connect().await?;
+        let owners: Vec<_> = self
+            .journal
+            .list()
+            .into_iter()
+            .filter(|record| {
+                record.action == PlanAction::Return
+                    && record.run_id == Some(plan.run_id)
+                    && matches!(
+                        record.state,
+                        OperationState::Committing | OperationState::Failed
+                    )
+                    && self.staged_home(record.operation_id) == plan.staged_home
+            })
+            .collect();
+        if owners.len() != 1 {
+            return Err(StorageError(BlockerCode::OperationConflict));
+        }
+        self.return_source(&owners[0])?;
+        if matches!(
+            codex_storage_authority::authority_state(&self.inputs.codex_home),
+            Ok(codex_storage_authority::AuthorityState::Local(_))
+        ) {
+            let completed = self.activate_return(owners[0].clone()).await?;
+            return Ok(RecoveryReport {
+                outcome: RecoveryKind::RolledForward,
+                operations: vec![completed],
+            });
+        }
+        let Some(_claim) = self.claim(owners[0].operation_id) else {
+            return Err(StorageError(BlockerCode::OperationConflict));
+        };
+        let _owner = self
+            .journal
+            .claim_return(owners[0].operation_id)
+            .map_err(|_| StorageError(BlockerCode::OperationConflict))?;
+        let owner = self.operation(owners[0].operation_id)?;
+        if owner != owners[0] {
+            return Err(StorageError(BlockerCode::OperationConflict));
+        }
+        self.check_return_intent(&owner)?;
         let config = self.staged_config(&plan.staged_home)?;
+        let storage = self.connect().await?;
         let returning = ReturnCutover::new(
             self.inputs.codex_home.clone(),
             plan.staged_home,
@@ -353,9 +481,7 @@ impl StorageService {
         storage.close().await;
         let outcome = outcome.map_err(|error| StorageError(error.into()))?;
         let mut touched = Vec::new();
-        for mut record in self.journal.list().into_iter().filter(|record| {
-            record.action == PlanAction::Return && record.state == OperationState::Committing
-        }) {
+        for mut record in [owner] {
             match outcome {
                 RecoveryOutcome::RolledForward { .. } => {
                     record.blocker = None;
