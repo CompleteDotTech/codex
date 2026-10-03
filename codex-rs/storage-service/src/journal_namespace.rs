@@ -1,11 +1,13 @@
 //! Unix descriptor-relative journal namespace. Caller must fence cooperative writers.
 use std::ffi::CString;
 use std::ffi::OsStr;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Component;
@@ -38,6 +40,13 @@ fn directory(parent: &File, component: &CString) -> io::Result<File> {
             libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         )
     })
+    .map_err(|error| {
+        if error.kind() == io::ErrorKind::NotADirectory {
+            io::Error::new(io::ErrorKind::InvalidData, error)
+        } else {
+            error
+        }
+    })
 }
 fn same(left: &File, right: &File) -> io::Result<bool> {
     let a = left.metadata()?;
@@ -66,6 +75,53 @@ fn owned_directory(file: &File, sticky_ancestor: bool) -> io::Result<()> {
     Ok(())
 }
 impl Namespace {
+    pub(super) fn entries(&self, limit: usize) -> io::Result<Vec<OsString>> {
+        self.revalidate()?;
+        // SAFETY: literal relative current directory and original retained leaf.
+        let fd = unsafe {
+            libc::openat(
+                self.leaf()?.as_raw_fd(),
+                c".".as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        let file = from_fd(fd)?;
+        use std::os::fd::IntoRawFd;
+        let fd = file.into_raw_fd();
+        // SAFETY: uniquely owned directory descriptor; fdopendir owns it only on success.
+        let stream = unsafe { libc::fdopendir(fd) };
+        if stream.is_null() {
+            let error = io::Error::last_os_error();
+            // SAFETY: failed fdopendir left the original descriptor owned here.
+            drop(unsafe { File::from_raw_fd(fd) });
+            return Err(error);
+        }
+        let stream = DirectoryStream(stream);
+        let mut entries = Vec::new();
+        loop {
+            set_errno(0)?;
+            // SAFETY: original live directory stream; dirent remains valid until next readdir.
+            let entry = unsafe { libc::readdir(stream.0) };
+            if entry.is_null() {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(0) {
+                    return Err(error);
+                }
+                break;
+            }
+            // SAFETY: successful readdir yields a native NUL-terminated d_name.
+            let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            if entries.len() >= limit {
+                return Err(io::Error::other("journal entry limit"));
+            }
+            entries.push(OsString::from_vec(name.to_vec()));
+        }
+        self.revalidate()?;
+        Ok(entries)
+    }
     pub(super) fn acquire(path: &Path, create: bool) -> io::Result<Self> {
         if path.as_os_str().as_bytes().len() > 65536 {
             return Err(io::Error::other("journal namespace byte limit"));
@@ -161,7 +217,8 @@ impl Namespace {
             || metadata.uid() != current_uid()
             || metadata.mode() & 0o022 != 0
         {
-            return Err(io::Error::other(
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
                 "journal original file owner/type/alias refused",
             ));
         }
@@ -194,5 +251,38 @@ impl Namespace {
             return Err(io::Error::last_os_error());
         }
         self.revalidate()
+    }
+}
+
+struct DirectoryStream(*mut libc::DIR);
+impl Drop for DirectoryStream {
+    fn drop(&mut self) {
+        // SAFETY: this guard uniquely owns the successful fdopendir stream.
+        unsafe { libc::closedir(self.0) };
+    }
+}
+fn set_errno(value: libc::c_int) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: libc supplies the current thread's errno location.
+        unsafe {
+            *libc::__errno_location() = value;
+        }
+        Ok(())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: libc supplies the current thread's errno location.
+        unsafe {
+            *libc::__error() = value;
+        }
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = value;
+        Err(io::Error::other(
+            "journal native listing platform unsupported",
+        ))
     }
 }
