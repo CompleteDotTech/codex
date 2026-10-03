@@ -121,6 +121,7 @@ impl ReturnCutover {
         let to_generation =
             i64::try_from(intent.to_generation).map_err(|_| CutoverError::Conflict)?;
         if remote.retired
+            && remote.run_id == Some(intent.run_id)
             && remote.generation == to_generation
             && remote.dataset_id == Some(intent.dataset_id)
         {
@@ -130,13 +131,32 @@ impl ReturnCutover {
                 generation: moved.identity.generation,
             });
         }
-        if remote.generation >= to_generation || remote.retired {
+        let from_generation =
+            i64::try_from(intent.from_generation).map_err(|_| CutoverError::Conflict)?;
+        if remote.retired
+            || remote.generation != from_generation
+            || remote.run_id != Some(intent.run_id)
+            || remote.dataset_id != Some(intent.dataset_id)
+        {
             return Err(CutoverError::Conflict);
         }
-        abandon_cutover(&self.home, &intent).map_err(authority)?;
-        install::discard_plan(&self.home).map_err(io_error)?;
         // The export only read the dataset while it was closed, so hand it back unchanged.
-        self.migrator.abandon(intent.run_id).await?;
+        self.migrator
+            .abandon_export_after(
+                intent.run_id,
+                ActivationTarget {
+                    dataset_id: intent.dataset_id,
+                    generation: from_generation,
+                },
+                false,
+                || {
+                    abandon_cutover(&self.home, &intent)
+                        .map_err(|error| MigrationError::Staging(error.to_string()))?;
+                    install::discard_plan(&self.home)
+                        .map_err(|error| MigrationError::Staging(error.to_string()))
+                },
+            )
+            .await?;
         Ok(RecoveryOutcome::RolledBack)
     }
 

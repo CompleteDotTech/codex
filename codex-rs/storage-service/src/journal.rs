@@ -36,6 +36,15 @@ impl OperationState {
 
 /// One operation as it is stored and reported.
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+pub struct ReturnSource {
+    pub dataset_id: Uuid,
+    pub generation: i64,
+    /// Credential-free endpoint/database/namespace selected by the confirmed plan.
+    pub destination: String,
+}
+
+/// One operation as it is stored and reported.
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 pub struct OperationRecord {
     pub operation_id: Uuid,
     pub action: PlanAction,
@@ -44,6 +53,9 @@ pub struct OperationRecord {
     pub state: OperationState,
     /// The migration run in the destination, once one exists.
     pub run_id: Option<Uuid>,
+    /// Old journals without source ownership cannot safely resume or cancel an export.
+    #[serde(default)]
+    pub return_source: Option<ReturnSource>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub blocker: Option<BlockerCode>,
@@ -61,6 +73,20 @@ pub(crate) struct Journal {
 pub type Observer = std::sync::Arc<dyn Fn(&OperationRecord) + Send + Sync>;
 
 impl Journal {
+    /// Cooperative cross-process exclusion for an operation's export and cancellation.
+    /// The persistent lock file is never removed; closing the handle releases ownership.
+    #[cfg(test)]
+    pub(crate) fn claim_return(&self, operation_id: Uuid) -> io::Result<std::fs::File> {
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.path(operation_id).with_extension("lock"))?;
+        file.try_lock().map_err(io::Error::other)?;
+        Ok(file)
+    }
+
     pub(crate) fn new(codex_home: &std::path::Path) -> Self {
         Self {
             directory: codex_home.join(DIRECTORY),
