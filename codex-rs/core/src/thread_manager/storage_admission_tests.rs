@@ -125,3 +125,39 @@ async fn explicit_home_mismatch_refuses_before_actual_tree_membership() -> anyho
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn actual_retain_to_membership_race_cannot_admit_after_manager_seal() -> anyhow::Result<()> {
+    let manager = manager().await;
+    let root = manager.agent_control().runtime;
+    let (entered_send, entered_receive) = std::sync::mpsc::channel();
+    let (release_send, release_receive) = std::sync::mpsc::channel();
+    *manager
+        .state
+        .storage_sessions
+        .after_retain
+        .lock()
+        .map_err(|_| io::Error::other("seam poisoned"))? = Some(Arc::new(RetainPause {
+        owner: root.clone(),
+        entered: entered_send,
+        release: Mutex::new(release_receive),
+        fired: std::sync::atomic::AtomicBool::new(false),
+    }));
+    let racing = std::thread::spawn(move || root.admit_start());
+    // Always release and join the real admission thread BEFORE asserting anything.
+    // Even a failed witness/timeout must not strand this test's native thread.
+    let witnessed = entered_receive.recv_timeout(Duration::from_secs(1));
+    let sealed = manager.state.storage_sessions.seal();
+    let released = release_send.send(());
+    let joined = racing
+        .join()
+        .map_err(|_| io::Error::other("admission thread panicked"))?;
+    witnessed?;
+    let states = sealed?;
+    released?;
+    anyhow::ensure!(joined.is_err(), "actual membership escaped after seal");
+    anyhow::ensure!(states.len() == 1);
+    tokio::time::timeout(Duration::from_secs(1), states[0].wait()).await??;
+    anyhow::ensure!(manager.agent_control().runtime.admit_start().is_err());
+    Ok(())
+}

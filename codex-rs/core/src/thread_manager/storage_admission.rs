@@ -16,11 +16,15 @@ struct Admission {
 pub(super) struct StorageSessionAdmission {
     home: PathBuf,
     admission: Mutex<Admission>,
+    #[cfg(test)]
+    after_retain: Mutex<Option<Arc<RetainPause>>>,
 }
 impl StorageSessionAdmission {
     pub(super) fn new(home: PathBuf) -> Self {
         Self {
             home,
+            #[cfg(test)]
+            after_retain: Mutex::new(None),
             admission: Mutex::new(Admission {
                 sealed: false,
                 trees: Vec::new(),
@@ -80,12 +84,49 @@ impl StorageSessionAdmission {
         Ok(states)
     }
 }
+// Exact per-original-runtime causal seam; absent from production builds.
+#[cfg(test)]
+struct RetainPause {
+    owner: LocalAgentRuntime,
+    entered: std::sync::mpsc::Sender<()>,
+    release: Mutex<std::sync::mpsc::Receiver<()>>,
+    fired: std::sync::atomic::AtomicBool,
+}
+#[cfg(test)]
+impl StorageSessionAdmission {
+    fn pause_after_retain(&self, runtime: &LocalAgentRuntime) -> CodexResult<()> {
+        let pause = self
+            .after_retain
+            .lock()
+            .map_err(|_| CodexErr::InvalidRequest("test retain seam poisoned".to_owned()))?
+            .clone();
+        if let Some(pause) = pause
+            && pause.owner.shares_shutdown_owner(runtime)
+            && !pause.fired.swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            pause
+                .entered
+                .send(())
+                .map_err(|_| CodexErr::InvalidRequest("test retain witness lost".to_owned()))?;
+            pause
+                .release
+                .lock()
+                .map_err(|_| CodexErr::InvalidRequest("test release poisoned".to_owned()))?
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .map_err(|_| CodexErr::InvalidRequest("test retain release timeout".to_owned()))?;
+        }
+        Ok(())
+    }
+}
 impl ThreadManagerState {
     pub(crate) fn retain_storage_session_tree(
         &self,
         runtime: &LocalAgentRuntime,
     ) -> CodexResult<()> {
-        self.storage_sessions.retain(runtime)
+        self.storage_sessions.retain(runtime)?;
+        #[cfg(test)]
+        self.storage_sessions.pause_after_retain(runtime)?;
+        Ok(())
     }
 }
 /// Exact sealed production trees, not an all-writers or storage-transition permit.
