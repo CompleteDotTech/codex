@@ -67,6 +67,8 @@ pub struct OperationRecord {
 pub(crate) struct Journal {
     directory: PathBuf,
     observer: Option<Observer>,
+    #[cfg(all(test, unix))]
+    sync_probe: Option<std::sync::Arc<std::sync::Mutex<SyncProbe>>>,
 }
 
 /// Called with every record the journal durably writes.
@@ -90,6 +92,8 @@ impl Journal {
         Self {
             directory: codex_home.join(DIRECTORY),
             observer: None,
+            #[cfg(all(test, unix))]
+            sync_probe: None,
         }
     }
 
@@ -110,6 +114,9 @@ impl Journal {
 
     /// Record a new operation; fails if the id is already taken.
     pub(crate) fn create(&self, record: &OperationRecord) -> io::Result<()> {
+        #[cfg(unix)]
+        self.create_durable_directory()?;
+        #[cfg(not(unix))]
         std::fs::create_dir_all(&self.directory)?;
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -117,7 +124,16 @@ impl Journal {
             .open(self.path(record.operation_id))?;
         serde_json::to_writer(&mut file, record).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
+        #[cfg(unix)]
+        self.sync(&file, &self.path(record.operation_id), "record-file")?;
+        #[cfg(not(unix))]
         file.sync_all()?;
+        #[cfg(unix)]
+        self.sync(
+            &std::fs::File::open(&self.directory)?,
+            &self.directory,
+            "journal-parent",
+        )?;
         self.notify(record);
         Ok(())
     }
@@ -129,8 +145,17 @@ impl Journal {
         let mut file = std::fs::File::create(&temporary)?;
         serde_json::to_writer(&mut file, record).map_err(io::Error::other)?;
         file.write_all(b"\n")?;
+        #[cfg(unix)]
+        self.sync(&file, &temporary, "update-file")?;
+        #[cfg(not(unix))]
         file.sync_all()?;
         std::fs::rename(temporary, path)?;
+        #[cfg(unix)]
+        self.sync(
+            &std::fs::File::open(&self.directory)?,
+            &self.directory,
+            "journal-parent",
+        )?;
         self.notify(record);
         Ok(())
     }
@@ -231,6 +256,73 @@ fn is_redirected(metadata: &std::fs::Metadata) -> bool {
     metadata.file_attributes() & 0x400 != 0
 }
 
+#[cfg(unix)]
+impl Journal {
+    fn sync(
+        &self,
+        file: &std::fs::File,
+        path: &std::path::Path,
+        phase: &'static str,
+    ) -> io::Result<()> {
+        #[cfg(test)]
+        self.crash_boundary(phase, false)?;
+        #[cfg(test)]
+        if let Some(probe) = &self.sync_probe {
+            let mut probe = probe
+                .lock()
+                .map_err(|_| io::Error::other("sync probe poisoned"))?;
+            probe.events.push((phase, path.to_path_buf()));
+            if probe.fail == Some(phase) {
+                probe.fail = None;
+                return Err(io::Error::other("injected sync refusal"));
+            }
+        }
+        #[cfg(not(test))]
+        let _ = (path, phase);
+        file.sync_all()?;
+        #[cfg(test)]
+        self.crash_boundary(phase, true)?;
+        Ok(())
+    }
+    #[cfg(test)]
+    fn crash_boundary(&self, phase: &'static str, after: bool) -> io::Result<()> {
+        if let Some(probe) = &self.sync_probe {
+            let probe = probe
+                .lock()
+                .map_err(|_| io::Error::other("sync probe poisoned"))?;
+            if let Some((expected, expected_after, witness)) = &probe.crash
+                && *expected == phase
+                && *expected_after == after
+            {
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(witness)?;
+                write!(file, "{phase}:{after}")?;
+                file.sync_all()?;
+                // Process-crash control: no stack unwinding or observer notification.
+                std::process::exit(87);
+            }
+        }
+        Ok(())
+    }
+    fn create_durable_directory(&self) -> io::Result<()> {
+        let absolute = std::path::absolute(&self.directory)?;
+        std::fs::create_dir_all(&absolute)?;
+        for parent in absolute.ancestors().skip(1) {
+            self.sync(&std::fs::File::open(parent)?, parent, "ancestor-parent")?;
+        }
+        Ok(())
+    }
+}
+#[cfg(all(test, unix))]
+#[derive(Default)]
+struct SyncProbe {
+    fail: Option<&'static str>,
+    events: Vec<(&'static str, PathBuf)>,
+    crash: Option<(&'static str, bool, PathBuf)>,
+}
+
 #[cfg(not(windows))]
 fn is_redirected(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
@@ -239,3 +331,11 @@ fn is_redirected(metadata: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 #[path = "journal_tests.rs"]
 mod tests;
+
+#[cfg(all(test, unix))]
+#[path = "journal_durability_tests.rs"]
+mod durability_tests;
+
+#[cfg(all(test, unix))]
+#[path = "journal_crash_tests.rs"]
+mod crash_tests;
