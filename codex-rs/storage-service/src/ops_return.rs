@@ -241,11 +241,29 @@ impl StorageService {
         {
             return Err(StorageError(BlockerCode::OperationConflict));
         }
-        self.export_and_verify(&mut record).await?;
+        self.export_and_verify(&mut record, &_owner).await?;
         Ok(record)
     }
 
-    async fn export_and_verify(&self, record: &mut OperationRecord) -> Result<(), StorageError> {
+    fn guard_return_migrator(
+        migrator: Migrator,
+        _owner: &crate::journal::ReturnClaim,
+        _namespace: Option<&codex_postgres_runtime::NamedNamespace>,
+    ) -> Migrator {
+        #[cfg(unix)]
+        {
+            migrator.with_return_fence(std::sync::Arc::new(_owner.clone()), _namespace)
+        }
+        #[cfg(not(unix))]
+        {
+            migrator
+        }
+    }
+    async fn export_and_verify(
+        &self,
+        record: &mut OperationRecord,
+        _owner: &crate::journal::ReturnClaim,
+    ) -> Result<(), StorageError> {
         let run_id = record
             .run_id
             .ok_or(StorageError(BlockerCode::OperationConflict))?;
@@ -271,7 +289,11 @@ impl StorageService {
                 return Err(self.fail(record, BlockerCode::StagingFailed));
             }
         };
-        let exporter = Migrator::new(self.staged_source(config), storage.pool().clone());
+        let exporter = Self::guard_return_migrator(
+            Migrator::new(self.staged_source(config), storage.pool().clone()),
+            _owner,
+            storage.namespace(),
+        );
         let summary = match exporter.export_owned(&target, run_id, source).await {
             Ok(summary) => summary,
             Err(error) => {
@@ -280,6 +302,11 @@ impl StorageService {
                 return Err(self.fail(record, error.into()));
             }
         };
+        if summary.run_id != run_id {
+            target.close().await;
+            storage.close().await;
+            return Err(self.fail(record, BlockerCode::OperationConflict));
+        }
         record.run_id = Some(summary.run_id);
         record.copied = summary
             .domains
@@ -337,7 +364,11 @@ impl StorageService {
         let staged_home = self.staged_home(record.operation_id);
         let config = self.staged_config(&staged_home)?;
         let storage = self.connect().await?;
-        let migrator = Migrator::new(self.staged_source(config), storage.pool().clone());
+        let migrator = Self::guard_return_migrator(
+            Migrator::new(self.staged_source(config), storage.pool().clone()),
+            &_owner,
+            storage.namespace(),
+        );
         if let Ok(codex_storage_authority::AuthorityState::Local(local)) =
             codex_storage_authority::authority_state(&self.inputs.codex_home)
         {
@@ -494,7 +525,11 @@ impl StorageService {
         let returning = ReturnCutover::new(
             self.inputs.codex_home.clone(),
             plan.staged_home,
-            Migrator::new(self.staged_source(config), storage.pool().clone()),
+            Self::guard_return_migrator(
+                Migrator::new(self.staged_source(config), storage.pool().clone()),
+                &_owner,
+                storage.namespace(),
+            ),
         );
         let outcome = returning.recover().await;
         storage.close().await;
@@ -557,11 +592,19 @@ impl StorageService {
         let staged_home = self.staged_home(record.operation_id);
         let config = self.staged_config(&staged_home)?;
         let storage = self.connect().await?;
-        let migrator = Migrator::new(self.staged_source(config.clone()), storage.pool().clone());
+        let migrator = Self::guard_return_migrator(
+            Migrator::new(self.staged_source(config.clone()), storage.pool().clone()),
+            &_owner,
+            storage.namespace(),
+        );
         let returning = ReturnCutover::new(
             self.inputs.codex_home.clone(),
             staged_home,
-            Migrator::new(self.staged_source(config), storage.pool().clone()),
+            Self::guard_return_migrator(
+                Migrator::new(self.staged_source(config), storage.pool().clone()),
+                &_owner,
+                storage.namespace(),
+            ),
         );
         let result = async {
             let intent = read_cutover(&self.inputs.codex_home).map_err(internal)?;

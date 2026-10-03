@@ -49,8 +49,10 @@ impl ReturnCutover {
 
     /// Record the intent and the swap plan. Nothing else changes yet.
     pub fn prepare(&self, run_id: Uuid) -> Result<CutoverIntent, CutoverError> {
+        self.migrator.check_return_fence(run_id)?;
         let intent = begin_cutover(&self.home, run_id, ActiveBackend::Local).map_err(authority)?;
         if let Err(error) = install::plan_install(&self.home, &self.staged_home, run_id) {
+            self.migrator.check_return_fence(run_id)?;
             abandon_cutover(&self.home, &intent).map_err(authority)?;
             return Err(io_error(error));
         }
@@ -74,15 +76,21 @@ impl ReturnCutover {
 
     /// Replace the live files with the staged ones, keeping what they replace. Safe to repeat.
     pub fn install(&self) -> Result<(), CutoverError> {
+        self.migrator.check_return_owner()?;
         let plan = install::read_plan(&self.home)
             .map_err(io_error)?
             .ok_or_else(|| CutoverError::Authority("the install plan is missing".to_string()))?;
-        install::install(&self.home, &plan).map_err(io_error)
+        self.migrator.check_return_fence(plan.run_id)?;
+        install::install(&self.home, &plan).map_err(io_error)?;
+        self.migrator.check_return_fence(plan.run_id)?;
+        Ok(())
     }
 
     /// Flip the authority records to local, then forget the plan. Safe to repeat.
     pub fn finish(&self, intent: &CutoverIntent) -> Result<LocalAuthority, CutoverError> {
+        self.migrator.check_return_fence(intent.run_id)?;
         let moved = complete_cutover(&self.home, intent).map_err(authority)?;
+        self.migrator.check_return_fence(intent.run_id)?;
         install::discard_plan(&self.home).map_err(io_error)?;
         Ok(moved)
     }
@@ -97,7 +105,9 @@ impl ReturnCutover {
                 | MigrationError::TargetBusy
                 | MigrationError::GenerationNotAdvancing),
             )) => {
+                self.migrator.check_return_fence(intent.run_id)?;
                 abandon_cutover(&self.home, &intent).map_err(authority)?;
+                self.migrator.check_return_fence(intent.run_id)?;
                 install::discard_plan(&self.home).map_err(io_error)?;
                 return Err(CutoverError::Destination(refusal));
             }
@@ -109,6 +119,7 @@ impl ReturnCutover {
 
     /// Settle an interrupted return from the evidence on both sides.
     pub async fn recover(&self) -> Result<RecoveryOutcome, CutoverError> {
+        self.migrator.check_return_owner()?;
         let Some(intent) = read_cutover(&self.home).map_err(authority)? else {
             let Some(plan) = install::read_plan(&self.home).map_err(io_error)? else {
                 return Ok(RecoveryOutcome::Idle);
@@ -129,6 +140,7 @@ impl ReturnCutover {
                     {
                         return Err(CutoverError::Conflict);
                     }
+                    self.migrator.check_return_fence(plan.run_id)?;
                     install::discard_plan(&self.home).map_err(io_error)?;
                     return Ok(RecoveryOutcome::RolledForward {
                         generation: local.identity.generation,
@@ -148,6 +160,7 @@ impl ReturnCutover {
                             },
                             false,
                             || {
+                                self.migrator.check_return_fence(plan.run_id)?;
                                 install::discard_plan(&self.home)
                                     .map_err(|error| MigrationError::Staging(error.to_string()))
                             },
@@ -194,6 +207,7 @@ impl ReturnCutover {
                 },
                 false,
                 || {
+                    self.migrator.check_return_fence(intent.run_id)?;
                     abandon_cutover(&self.home, &intent)
                         .map_err(|error| MigrationError::Staging(error.to_string()))?;
                     install::discard_plan(&self.home)

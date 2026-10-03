@@ -226,6 +226,8 @@ pub struct Migrator {
     target: Arc<PostgresPool>,
     batch_size: usize,
     batch_limit: Option<usize>,
+    return_fence: Option<Arc<dyn ReturnOperationFence>>,
+    return_search_path: Option<String>,
 }
 
 impl Migrator {
@@ -235,6 +237,8 @@ impl Migrator {
             target,
             batch_size: DEFAULT_BATCH,
             batch_limit: None,
+            return_fence: None,
+            return_search_path: None,
         }
     }
 
@@ -380,6 +384,7 @@ impl Migrator {
     pub async fn abandon(&self, run_id: Uuid) -> Result<(), MigrationError> {
         let mut connection = self.connection().await?;
         let mut tx = connection.begin().await.map_err(target)?;
+        self.prepare_return_transaction(&mut tx).await?;
         let held: Option<Uuid> =
             sqlx::query_scalar("SELECT run_id FROM storage_activation WHERE singleton FOR UPDATE")
                 .fetch_one(&mut *tx)
@@ -388,6 +393,8 @@ impl Migrator {
         if held != Some(run_id) {
             return Err(MigrationError::TargetBusy);
         }
+        self.fence_transaction(&mut tx, run_id, FencePoint::Abandon)
+            .await?;
         let now = chrono::Utc::now().timestamp_millis();
         sqlx::query(
             "UPDATE storage_migration_runs SET state = 'abandoned', updated_at_ms = $2 \
@@ -410,6 +417,8 @@ impl Migrator {
         .execute(&mut *tx)
         .await
         .map_err(target)?;
+        self.fence_transaction(&mut tx, run_id, FencePoint::Abandon)
+            .await?;
         tx.commit().await.map_err(target)?;
         Ok(())
     }
@@ -437,6 +446,7 @@ impl Migrator {
         let fingerprint = self.source.fingerprint().await.map_err(source)?;
         let mut connection = self.connection().await?;
         let mut tx = connection.begin().await.map_err(target)?;
+        self.prepare_return_transaction(&mut tx).await?;
         let activation = sqlx::query(
             "SELECT state, run_id, generation, dataset_id FROM storage_activation WHERE singleton FOR UPDATE",
         ).fetch_one(&mut *tx).await.map_err(target)?;
@@ -449,6 +459,8 @@ impl Migrator {
         {
             return Err(MigrationError::TargetBusy);
         }
+        self.fence_transaction(&mut tx, run_id, FencePoint::Abandon)
+            .await?;
         let run = sqlx::query(
             "SELECT direction, source_fingerprint, state FROM storage_migration_runs WHERE run_id = $1",
         ).bind(run_id).fetch_optional(&mut *tx).await.map_err(target)?;
@@ -469,13 +481,17 @@ impl Migrator {
         }
         let run_state: String = run.try_get("state").map_err(target)?;
         if state == "open" && run_state == "abandoned" {
+            self.check_return_fence(run_id)?;
             rollback()?;
+            self.check_return_fence(run_id)?;
             return Ok(());
         }
         if state != "migrating" || !matches!(run_state.as_str(), "running" | "verified") {
             return Err(MigrationError::TargetBusy);
         }
+        self.check_return_fence(run_id)?;
         rollback()?;
+        self.check_return_fence(run_id)?;
         let now = chrono::Utc::now().timestamp_millis();
         sqlx::query("UPDATE storage_migration_runs SET state = 'abandoned', updated_at_ms = $2 WHERE run_id = $1")
             .bind(run_id).bind(now).execute(&mut *tx).await.map_err(target)?;
@@ -486,6 +502,8 @@ impl Migrator {
         .execute(&mut *tx)
         .await
         .map_err(target)?;
+        self.fence_transaction(&mut tx, run_id, FencePoint::Abandon)
+            .await?;
         tx.commit().await.map_err(target)?;
         Ok(())
     }
@@ -499,6 +517,7 @@ impl Migrator {
     ) -> Result<i64, MigrationError> {
         let mut connection = self.connection().await?;
         let mut tx = connection.begin().await.map_err(target)?;
+        self.prepare_return_transaction(&mut tx).await?;
         let row = sqlx::query(
             "SELECT state, run_id, generation, dataset_id FROM storage_activation \
              WHERE singleton FOR UPDATE",
@@ -506,6 +525,8 @@ impl Migrator {
         .fetch_one(&mut *tx)
         .await
         .map_err(target)?;
+        self.fence_transaction(&mut tx, run_id, FencePoint::Retire)
+            .await?;
         let state: String = row.try_get("state").map_err(target)?;
         let held: Option<Uuid> = row.try_get("run_id").map_err(target)?;
         let generation: i64 = row.try_get("generation").map_err(target)?;
@@ -540,6 +561,12 @@ impl Migrator {
         if publish.generation <= generation {
             return Err(MigrationError::GenerationNotAdvancing);
         }
+        if let Some(source) = self.check_return_fence(run_id)?
+            && (source.dataset_id != publish.dataset_id
+                || source.generation.checked_add(1) != Some(publish.generation))
+        {
+            return Err(MigrationError::TargetBusy);
+        }
         let now = chrono::Utc::now().timestamp_millis();
         sqlx::query(
             "UPDATE storage_migration_runs SET state = 'activated', updated_at_ms = $2 \
@@ -559,6 +586,8 @@ impl Migrator {
         .execute(&mut *tx)
         .await
         .map_err(target)?;
+        self.fence_transaction(&mut tx, run_id, FencePoint::Retire)
+            .await?;
         tx.commit().await.map_err(target)?;
         Ok(publish.generation)
     }
@@ -574,8 +603,12 @@ impl Migrator {
         run_id: Uuid,
         publish: ActivationTarget,
     ) -> Result<i64, MigrationError> {
+        if self.return_fence.is_some() {
+            return Err(MigrationError::TargetBusy);
+        }
         let mut connection = self.connection().await?;
         let mut tx = connection.begin().await.map_err(target)?;
+        self.prepare_return_transaction(&mut tx).await?;
         let row = sqlx::query(
             "SELECT state, run_id, generation, dataset_id FROM storage_activation \
              WHERE singleton FOR UPDATE",
@@ -647,10 +680,16 @@ impl Migrator {
     async fn connection(
         &self,
     ) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, MigrationError> {
-        self.target
-            .acquire()
-            .await
-            .map_err(|error| MigrationError::Target(format!("{error:?}")))
+        let mut connection = self.target.acquire().await.map_err(target)?;
+        if let Some(path) = &self.return_search_path {
+            self.check_return_owner()?;
+            sqlx::query("SELECT pg_catalog.set_config('search_path', $1, false)")
+                .bind(path)
+                .execute(&mut *connection)
+                .await
+                .map_err(target)?;
+        }
+        Ok(connection)
     }
 
     /// Take the store: only one run may hold it, and an interrupted run of the same source
@@ -662,8 +701,18 @@ impl Migrator {
         owned_run: Option<Uuid>,
         owned_source: Option<ActivationTarget>,
     ) -> Result<(Uuid, bool), MigrationError> {
+        if self.return_fence.is_some() {
+            let run = owned_run.ok_or(MigrationError::TargetBusy)?;
+            let expected = self
+                .check_return_fence(run)?
+                .ok_or(MigrationError::TargetBusy)?;
+            if direction != "export" || owned_source != Some(expected) {
+                return Err(MigrationError::TargetBusy);
+            }
+        }
         let mut connection = self.connection().await?;
         let mut tx = connection.begin().await.map_err(target)?;
+        self.prepare_return_transaction(&mut tx).await?;
         let row = sqlx::query(
             "SELECT state, run_id, dataset_id, generation FROM storage_activation WHERE singleton FOR UPDATE",
         )
@@ -680,6 +729,10 @@ impl Migrator {
             {
                 return Err(MigrationError::TargetBusy);
             }
+        }
+        if let Some(run) = owned_run {
+            self.fence_transaction(&mut tx, run, FencePoint::Begin)
+                .await?;
         }
         let now = chrono::Utc::now().timestamp_millis();
         let outcome = if state == "migrating" {
@@ -765,11 +818,16 @@ impl Migrator {
             .map_err(target)?;
             (run_id, false)
         };
+        self.fence_transaction(&mut tx, outcome.0, FencePoint::Running)
+            .await?;
         tx.commit().await.map_err(target)?;
         Ok(outcome)
     }
 
     async fn set_run_state(&self, run_id: Uuid, state: &str) -> Result<(), MigrationError> {
+        if self.return_fence.is_some() {
+            return self.fenced_run_state(run_id, state).await;
+        }
         let mut connection = self.connection().await?;
         sqlx::query(
             "UPDATE storage_migration_runs SET state = $2, updated_at_ms = $3 \
@@ -790,6 +848,9 @@ impl Migrator {
         domain: Domain,
         digest: &DomainDigest,
     ) -> Result<(), MigrationError> {
+        if self.return_fence.is_some() {
+            return self.fenced_digest(run_id, domain, digest).await;
+        }
         let mut connection = self.connection().await?;
         sqlx::query(
             "INSERT INTO storage_migration_domains \
@@ -812,6 +873,9 @@ impl Migrator {
         run_id: Uuid,
         batches: &mut usize,
     ) -> Result<u64, MigrationError> {
+        if self.return_fence.is_some() {
+            return Err(MigrationError::TargetBusy);
+        }
         let (mut cursor, done, mut moved) = {
             let mut connection = self.connection().await?;
             let row = sqlx::query(
@@ -843,6 +907,7 @@ impl Migrator {
             let last = records.last().map(D::key);
             let mut connection = self.connection().await?;
             let mut tx = connection.begin().await.map_err(target)?;
+            self.prepare_return_transaction(&mut tx).await?;
             D::import(&mut tx, &records).await.map_err(target)?;
             moved += records.len() as u64;
             let finished = records.len() < self.batch_size;
@@ -887,6 +952,7 @@ impl Migrator {
                     .map_err(target)?
             };
             let last = records.last().map(D::key);
+            self.check_return_fence(run_id)?;
             D::write_sqlite(staged, &records)
                 .await
                 .map_err(|error| MigrationError::Staging(error.to_string()))?;
@@ -894,6 +960,9 @@ impl Migrator {
             let finished = records.len() < self.batch_size;
             let mut connection = self.connection().await?;
             let mut tx = connection.begin().await.map_err(target)?;
+            self.prepare_return_transaction(&mut tx).await?;
+            self.fence_transaction(&mut tx, run_id, FencePoint::Running)
+                .await?;
             checkpoint(
                 &mut tx,
                 run_id,
@@ -903,6 +972,8 @@ impl Migrator {
                 moved,
             )
             .await?;
+            self.fence_transaction(&mut tx, run_id, FencePoint::Running)
+                .await?;
             tx.commit().await.map_err(target)?;
             *batches += 1;
             if finished {
@@ -1022,3 +1093,8 @@ mod export_tests;
 #[cfg(test)]
 #[path = "return_tests.rs"]
 mod return_tests;
+
+#[path = "engine_return_fence.rs"]
+mod return_fence;
+use return_fence::FencePoint;
+pub use return_fence::ReturnOperationFence;
