@@ -4,10 +4,30 @@ use std::ffi::OsString;
 use std::io::Read;
 use std::sync::Arc;
 use std::sync::Weak;
+/// Serializes transient record decoding across initial acquisitions and every claim
+/// of one Journal. The encoded-record ledger below is a separate retained budget;
+/// neither limit is a claim about total process memory or allocator overhead.
+#[derive(Default)]
+pub(super) struct ScratchAdmission {
+    gate: std::sync::Mutex<()>,
+    #[cfg(test)]
+    attempts: std::sync::atomic::AtomicUsize,
+}
+impl ScratchAdmission {
+    fn enter(&self) -> io::Result<std::sync::MutexGuard<'_, ()>> {
+        #[cfg(test)]
+        self.attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.gate
+            .lock()
+            .map_err(|_| invalid_record("claim scratch admission poisoned"))
+    }
+}
 #[derive(Clone)]
 pub(crate) struct ReturnClaim(Arc<ClaimInner>);
 pub(super) struct ClaimInner {
     lease: Arc<namespace::Namespace>,
+    scratch: Arc<ScratchAdmission>,
     lock_name: OsString,
     file: std::fs::File,
     original: OperationRecord,
@@ -20,6 +40,10 @@ impl ReturnClaim {
 }
 impl ClaimInner {
     fn revalidate(&self) -> io::Result<()> {
+        let _scratch = self.scratch.enter()?;
+        self.revalidate_admitted()
+    }
+    fn revalidate_admitted(&self) -> io::Result<()> {
         self.lease.verify_file(&self.lock_name, &self.file)?;
         let name = format!("{}.json", self.original.operation_id);
         let mut file = self.lease.open_regular(OsStr::new(&name), libc::O_RDONLY)?;
@@ -59,6 +83,8 @@ impl ClaimInner {
 }
 impl Journal {
     pub(super) fn claim_owned(&self, operation_id: Uuid) -> io::Result<ReturnClaim> {
+        let scratch = Arc::clone(&self.claim_scratch);
+        let _scratch = scratch.enter()?;
         let lease = self.owned_namespace(false)?;
         let name = format!("{operation_id}.json");
         let record_file = lease.open_regular(OsStr::new(&name), libc::O_RDONLY)?;
@@ -75,12 +101,13 @@ impl Journal {
         lease.verify_file(&lock_name, &file)?;
         let inner = Arc::new(ClaimInner {
             lease,
+            scratch: Arc::clone(&scratch),
             lock_name,
             file,
             original,
             encoded_bytes,
         });
-        inner.revalidate()?;
+        inner.revalidate_admitted()?;
         let mut claims = self
             .claims
             .lock()
@@ -207,6 +234,78 @@ mod tests {
             blocker: None,
             copied: Vec::new(),
         }
+    }
+    fn blocked_attempt(
+        journal: Arc<Journal>,
+        action: impl FnOnce(Arc<Journal>) -> io::Result<()> + Send + 'static,
+    ) {
+        use std::sync::atomic::Ordering;
+        let scratch = Arc::clone(&journal.claim_scratch);
+        let guard = scratch.gate.lock().unwrap();
+        let before = scratch.attempts.load(Ordering::SeqCst);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            tx.send(action(journal)).unwrap();
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while scratch.attempts.load(Ordering::SeqCst) == before
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        let attempted = scratch.attempts.load(Ordering::SeqCst) > before;
+        let premature = rx.try_recv();
+        // Release and join the original thread before assertions, including failure paths.
+        drop(guard);
+        thread.join().unwrap();
+        assert!(attempted, "actual shared admission was not reached");
+        assert!(matches!(
+            premature,
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        rx.recv().unwrap().unwrap();
+    }
+    #[test]
+    fn shared_scratch_serializes_initial_clone_and_distinct_claims() {
+        let home = tempfile::tempdir().unwrap();
+        let journal = Arc::new(Journal::new(home.path()));
+        let first = record();
+        let second = record();
+        let third = record();
+        for value in [&first, &second, &third] {
+            journal.create(value).unwrap();
+        }
+        let first_claim = journal.claim_return(first.operation_id).unwrap();
+        let second_claim = journal.claim_return(second.operation_id).unwrap();
+        assert!(Arc::ptr_eq(&first_claim.0.scratch, &second_claim.0.scratch));
+        let clone = first_claim.clone();
+        blocked_attempt(Arc::clone(&journal), move |_| clone.revalidate());
+        blocked_attempt(Arc::clone(&journal), move |_| second_claim.revalidate());
+        blocked_attempt(Arc::clone(&journal), move |journal| {
+            journal.claim_return(third.operation_id).map(|_| ())
+        });
+        first_claim.revalidate().unwrap();
+    }
+    #[test]
+    fn scratch_releases_after_decode_error_and_accepts_large_mutable_progress() {
+        let home = tempfile::tempdir().unwrap();
+        let journal = Journal::new(home.path());
+        let mut value = record();
+        journal.create(&value).unwrap();
+        let claim = journal.claim_return(value.operation_id).unwrap();
+        let path = journal.path(value.operation_id);
+        let original = std::fs::read(&path).unwrap();
+        std::fs::write(&path, b"invalid JSON").unwrap();
+        assert!(claim.revalidate().is_err());
+        assert!(journal.claim_scratch.gate.try_lock().is_ok());
+        std::fs::write(&path, &original).unwrap();
+        claim.revalidate().unwrap();
+        value.copied = vec![("large mutable progress".repeat(20_000), 99)];
+        journal.update(&value).unwrap();
+        claim.revalidate().unwrap();
+        assert!(journal.claim_scratch.gate.try_lock().is_ok());
+        assert_eq!(claim.0.original.operation_id, value.operation_id);
+        assert!(claim.0.original.copied.is_empty());
     }
     #[test]
     fn migration_fence_requires_original_run_source_and_retained_lock() {

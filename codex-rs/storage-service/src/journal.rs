@@ -73,6 +73,8 @@ pub(crate) struct Journal {
     #[cfg(unix)]
     claims:
         std::sync::Mutex<std::collections::HashMap<Uuid, std::sync::Weak<owned_claim::ClaimInner>>>,
+    #[cfg(unix)]
+    claim_scratch: std::sync::Arc<owned_claim::ScratchAdmission>,
     #[cfg(all(test, unix))]
     sync_probe: Option<std::sync::Arc<std::sync::Mutex<SyncProbe>>>,
 }
@@ -108,6 +110,8 @@ impl Journal {
             namespace: std::sync::Mutex::new(None),
             #[cfg(unix)]
             claims: std::sync::Mutex::new(std::collections::HashMap::new()),
+            #[cfg(unix)]
+            claim_scratch: std::sync::Arc::new(owned_claim::ScratchAdmission::default()),
             #[cfg(all(test, unix))]
             sync_probe: None,
         }
