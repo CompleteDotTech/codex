@@ -70,6 +70,11 @@ pub(crate) struct Journal {
     observer: Option<Observer>,
     #[cfg(unix)]
     namespace: std::sync::Mutex<Option<std::sync::Arc<namespace::Namespace>>>,
+    #[cfg(unix)]
+    claims:
+        std::sync::Mutex<std::collections::HashMap<Uuid, std::sync::Weak<owned_claim::ClaimInner>>>,
+    #[cfg(unix)]
+    claim_scratch: std::sync::Arc<owned_claim::ScratchAdmission>,
     #[cfg(all(test, unix))]
     sync_probe: Option<std::sync::Arc<std::sync::Mutex<SyncProbe>>>,
 }
@@ -80,23 +85,33 @@ pub type Observer = std::sync::Arc<dyn Fn(&OperationRecord) + Send + Sync>;
 impl Journal {
     /// Cooperative cross-process exclusion for an operation's export and cancellation.
     /// The persistent lock file is never removed; closing the handle releases ownership.
-    pub(crate) fn claim_return(&self, operation_id: Uuid) -> io::Result<std::fs::File> {
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(self.path(operation_id).with_extension("lock"))?;
-        file.try_lock().map_err(io::Error::other)?;
-        Ok(file)
+    pub(crate) fn claim_return(&self, operation_id: Uuid) -> io::Result<ReturnClaim> {
+        #[cfg(unix)]
+        {
+            self.claim_owned(operation_id)
+        }
+        #[cfg(not(unix))]
+        {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(self.path(operation_id).with_extension("lock"))?;
+            file.try_lock().map_err(io::Error::other)?;
+            Ok(file)
+        }
     }
-
     pub(crate) fn new(codex_home: &std::path::Path) -> Self {
         Self {
             directory: codex_home.join(DIRECTORY),
             observer: None,
             #[cfg(unix)]
             namespace: std::sync::Mutex::new(None),
+            #[cfg(unix)]
+            claims: std::sync::Mutex::new(std::collections::HashMap::new()),
+            #[cfg(unix)]
+            claim_scratch: std::sync::Arc::new(owned_claim::ScratchAdmission::default()),
             #[cfg(all(test, unix))]
             sync_probe: None,
         }
@@ -113,6 +128,7 @@ impl Journal {
         }
     }
 
+    #[cfg(any(not(unix), test))]
     fn path(&self, operation_id: Uuid) -> PathBuf {
         self.directory.join(format!("{operation_id}.json"))
     }
@@ -500,3 +516,11 @@ mod owned_writes;
 #[cfg(unix)]
 #[path = "journal_owned_reads.rs"]
 mod owned_reads;
+
+#[cfg(unix)]
+#[path = "journal_owned_claim.rs"]
+mod owned_claim;
+#[cfg(unix)]
+pub(crate) use owned_claim::ReturnClaim;
+#[cfg(not(unix))]
+pub(crate) type ReturnClaim = std::fs::File;
