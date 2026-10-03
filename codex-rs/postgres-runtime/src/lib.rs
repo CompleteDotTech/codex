@@ -334,3 +334,5 @@ mod exclusive_fixture_io;
 
 #[cfg(all(test, unix))]
 mod exclusive_fixture_settings;
+
+pub use namespace::owned_namespace_search_path;

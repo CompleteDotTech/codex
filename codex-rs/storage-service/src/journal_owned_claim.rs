@@ -154,6 +154,43 @@ impl Journal {
     }
 }
 
+impl codex_storage_migration::ReturnOperationFence for ReturnClaim {
+    fn check_current(&self) -> Result<(), codex_storage_migration::MigrationError> {
+        let run = self
+            .0
+            .original
+            .run_id
+            .ok_or(codex_storage_migration::MigrationError::TargetBusy)?;
+        codex_storage_migration::ReturnOperationFence::check(self, run).map(|_| ())
+    }
+    fn check(
+        &self,
+        run_id: Uuid,
+    ) -> Result<codex_storage_migration::ActivationTarget, codex_storage_migration::MigrationError>
+    {
+        use codex_storage_migration::ActivationTarget;
+        use codex_storage_migration::MigrationError;
+        self.revalidate()
+            .map_err(|_| MigrationError::Staging("operation ownership evidence changed".into()))?;
+        if self.0.original.action != PlanAction::Return || self.0.original.run_id != Some(run_id) {
+            return Err(MigrationError::TargetBusy);
+        }
+        let source = self
+            .0
+            .original
+            .return_source
+            .as_ref()
+            .ok_or(MigrationError::TargetBusy)?;
+        if source.generation < 0 {
+            return Err(MigrationError::TargetBusy);
+        }
+        Ok(ActivationTarget {
+            dataset_id: source.dataset_id,
+            generation: source.generation,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +207,58 @@ mod tests {
             blocker: None,
             copied: Vec::new(),
         }
+    }
+    #[test]
+    fn migration_fence_requires_original_run_source_and_retained_lock() {
+        use codex_storage_migration::ReturnOperationFence;
+        let home = tempfile::tempdir().unwrap();
+        let journal = Journal::new(home.path());
+        let mut value = record();
+        let run = value.run_id.unwrap();
+        let dataset = Uuid::new_v4();
+        value.return_source = Some(ReturnSource {
+            dataset_id: dataset,
+            generation: 7,
+            destination: "owned destination".into(),
+        });
+        journal.create(&value).unwrap();
+        let claim = journal.claim_return(value.operation_id).unwrap();
+        let admitted = claim.check(run).unwrap();
+        assert_eq!(admitted.dataset_id, dataset);
+        assert_eq!(admitted.generation, 7);
+        claim.check_current().unwrap();
+        assert!(claim.check(Uuid::new_v4()).is_err());
+        claim.check(run).unwrap();
+        let bytes = std::fs::read(journal.path(value.operation_id)).unwrap();
+        let lock = journal.path(value.operation_id).with_extension("lock");
+        std::fs::rename(&lock, lock.with_extension("original-lock")).unwrap();
+        std::fs::write(&lock, b"foreign lock").unwrap();
+        assert!(claim.check(run).is_err());
+        assert!(claim.check_current().is_err());
+        assert_eq!(std::fs::read(&lock).unwrap(), b"foreign lock");
+        assert_eq!(
+            std::fs::read(journal.path(value.operation_id)).unwrap(),
+            bytes
+        );
+    }
+    #[test]
+    fn migration_fence_does_not_mint_legacy_missing_source_presence() {
+        use codex_storage_migration::ReturnOperationFence;
+        let home = tempfile::tempdir().unwrap();
+        let journal = Journal::new(home.path());
+        let value = record();
+        assert!(value.return_source.is_none());
+        journal.create(&value).unwrap();
+        let before = std::fs::read(journal.path(value.operation_id)).unwrap();
+        let claim = journal.claim_return(value.operation_id).unwrap();
+        assert!(claim.check(value.run_id.unwrap()).is_err());
+        assert!(claim.check_current().is_err());
+        claim.revalidate().unwrap();
+        assert_eq!(
+            std::fs::read(journal.path(value.operation_id)).unwrap(),
+            before
+        );
+        assert_eq!(journal.list_checked().unwrap(), vec![value]);
     }
     #[test]
     fn public_update_refuses_foreign_candidate_before_any_journal_publication() {

@@ -36,6 +36,7 @@ pub use engine::ActivationState;
 pub use engine::ActivationTarget;
 pub use engine::MigrationError;
 pub use engine::Migrator;
+pub use engine::ReturnOperationFence;
 pub use engine::RunSummary;
 pub use engine::VerificationReport;
 pub use engine::target_is_empty;

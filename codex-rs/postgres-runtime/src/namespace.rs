@@ -67,3 +67,32 @@ impl NamedNamespace {
         format!("\"{}\"", self.runtime)
     }
 }
+
+/// Render the validated selected namespace for an owned operation. Explicitly
+/// placing pg_temp last prevents its implicit precedence over ordinary tables.
+pub fn owned_namespace_search_path(namespace: Option<&NamedNamespace>) -> String {
+    let schema = namespace.map_or_else(
+        || "\"codex_storage\"".to_string(),
+        NamedNamespace::quoted_schema,
+    );
+    format!("pg_catalog, {schema}, pg_temp")
+}
+
+#[cfg(test)]
+mod owned_path_tests {
+    use super::*;
+    #[test]
+    fn selected_namespace_path_is_explicit_and_temporary_schema_is_last() {
+        assert_eq!(
+            owned_namespace_search_path(None),
+            "pg_catalog, \"codex_storage\", pg_temp"
+        );
+        let namespace = NamedNamespace::new("codex_storage_return_owned").unwrap();
+        assert_eq!(
+            owned_namespace_search_path(Some(&namespace)),
+            "pg_catalog, \"codex_storage_return_owned\", pg_temp"
+        );
+        assert!(NamedNamespace::new("codex_storage_bad\", public").is_err());
+        assert!(NamedNamespace::new("public").is_err());
+    }
+}
