@@ -326,13 +326,14 @@ impl StorageService {
     /// Settle an interrupted cutover from the evidence on both sides and bring the records in
     /// line with the outcome.
     pub async fn recover(&self) -> Result<RecoveryReport, StorageError> {
+        let records = self.journal.list_checked().map_err(internal)?;
         let returning = read_cutover(&self.inputs.codex_home)
             .map_err(internal)?
             .is_some_and(|intent| intent.target == ActiveBackend::Local)
             || read_plan(&self.inputs.codex_home)
                 .map_err(internal)?
                 .is_some()
-            || self.journal.list().iter().any(|record| {
+            || records.iter().any(|record| {
                 record.action == PlanAction::Return
                     && record.run_id.is_some()
                     && matches!(
@@ -354,7 +355,8 @@ impl StorageService {
         let mut touched = Vec::new();
         for mut record in self
             .journal
-            .list()
+            .list_checked()
+            .map_err(internal)?
             .into_iter()
             .filter(|record| record.state == OperationState::Committing)
         {

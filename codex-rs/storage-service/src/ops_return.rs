@@ -392,17 +392,23 @@ impl StorageService {
         let plan = read_plan(&self.inputs.codex_home).map_err(internal)?;
         let Some(plan) = plan else {
             let mut operations = Vec::new();
-            for record in self.journal.list().into_iter().filter(|record| {
-                record.action == PlanAction::Return
-                    && record.run_id.is_some()
-                    && matches!(
-                        record.state,
-                        OperationState::Copying
-                            | OperationState::Verifying
-                            | OperationState::Failed
-                            | OperationState::Committing
-                    )
-            }) {
+            for record in self
+                .journal
+                .list_checked()
+                .map_err(internal)?
+                .into_iter()
+                .filter(|record| {
+                    record.action == PlanAction::Return
+                        && record.run_id.is_some()
+                        && matches!(
+                            record.state,
+                            OperationState::Copying
+                                | OperationState::Verifying
+                                | OperationState::Failed
+                                | OperationState::Committing
+                        )
+                })
+            {
                 let completed_failure = record.state == OperationState::Failed
                     && matches!(
                         codex_storage_authority::authority_state(&self.inputs.codex_home),
@@ -432,7 +438,8 @@ impl StorageService {
         };
         let owners: Vec<_> = self
             .journal
-            .list()
+            .list_checked()
+            .map_err(internal)?
             .into_iter()
             .filter(|record| {
                 record.action == PlanAction::Return
@@ -548,7 +555,11 @@ impl StorageService {
             {
                 return Err(StorageError(BlockerCode::OperationConflict));
             }
-            if intent.is_some() {
+            if intent.is_some()
+                || read_plan(&self.inputs.codex_home)
+                    .map_err(internal)?
+                    .is_some()
+            {
                 self.check_return_intent(&record)?;
                 returning
                     .abort()
