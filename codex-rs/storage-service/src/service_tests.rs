@@ -464,6 +464,95 @@ async fn real_postgres_storage_service() {
     remote.close().await;
 
     let plan = service.plan(PlanAction::Return).await.expect("return plan");
+    // A domain failure happens after the remote fence but before an install plan exists.
+    // Explicit cancellation must use the durable pre-fence ownership identity.
+    let interrupted_id = Uuid::new_v4();
+    let (mut interrupted, created) = service
+        .prepare_return(interrupted_id, plan.plan_id, confirmed)
+        .await
+        .expect("prepare durable owner");
+    assert!(created);
+    let owned_run = interrupted.run_id.expect("identity before remote fence");
+    assert_eq!(
+        service
+            .operation(interrupted_id)
+            .expect("durable journal")
+            .run_id,
+        Some(owned_run)
+    );
+    let owned_source = interrupted.return_source.as_ref().expect("owned source");
+    let source_identity = codex_storage_migration::ActivationTarget {
+        dataset_id: owned_source.dataset_id,
+        generation: owned_source.generation,
+    };
+    let staged_home = service.staged_home(interrupted_id);
+    std::fs::create_dir_all(&staged_home).expect("staging");
+    let target = codex_storage_migration::SqliteTarget::create(
+        SqliteConfig::new_for_testing(staged_home.abs()),
+        home.path().to_path_buf(),
+        "service-provider",
+    )
+    .await
+    .expect("staged target");
+    let remote = service.connect().await.expect("remote");
+    let exporter = codex_storage_migration::Migrator::new(
+        codex_storage_migration::SqliteSource::new(target.staging().clone())
+            .relocated_from(home.path().to_path_buf()),
+        remote.pool().clone(),
+    )
+    .with_batch_size(1)
+    .with_batch_limit(1);
+    service
+        .save(&mut interrupted, OperationState::Copying)
+        .expect("copying");
+    assert!(matches!(
+        exporter
+            .export_owned(&target, owned_run, source_identity)
+            .await,
+        Err(codex_storage_migration::MigrationError::Interrupted)
+    ));
+    assert_eq!(
+        exporter.activation_state().await.expect("fenced").run_id,
+        Some(owned_run)
+    );
+    target.close().await;
+    remote.close().await;
+    service
+        .save(&mut interrupted, OperationState::Failed)
+        .expect("failure receipt");
+    assert!(
+        codex_storage_migration::read_plan(home.path())
+            .expect("no install plan")
+            .is_none()
+    );
+    let cancelled = service
+        .cancel(interrupted_id)
+        .await
+        .expect("cancel pre-install owned export");
+    assert_eq!(cancelled.operation_id, interrupted_id);
+    assert_eq!(cancelled.state, OperationState::Cancelled);
+    assert_eq!(
+        service
+            .status(true)
+            .await
+            .remote
+            .expect("reopened")
+            .state
+            .as_deref(),
+        Some("open")
+    );
+    assert_eq!(
+        service
+            .start_return(interrupted_id, plan.plan_id, confirmed)
+            .await
+            .expect("terminal retry cannot reuse abandoned staging")
+            .state,
+        OperationState::Cancelled
+    );
+    let plan = service
+        .plan(PlanAction::Return)
+        .await
+        .expect("fresh return plan");
     assert!(plan.is_startable(), "{:?}", plan.blockers);
     let returning = Uuid::new_v4();
     assert_eq!(
