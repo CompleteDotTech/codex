@@ -106,10 +106,13 @@ fn update_failure_preserves_old_before_rename_and_visible_new_after_rename_witho
             Some(expected)
         );
         assert_eq!(
-            journal
-                .path(ready.operation_id)
-                .with_extension("json.tmp")
-                .exists(),
+            std::fs::read_dir(&journal.directory)
+                .unwrap()
+                .any(|entry| entry
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|value| value == "tmp")),
             phase == "update-file"
         );
         journal.update(&ready).unwrap();
