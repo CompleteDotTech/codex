@@ -158,6 +158,37 @@ impl Journal {
         }
     }
     pub(crate) fn read(&self, operation_id: Uuid) -> io::Result<Option<OperationRecord>> {
+        #[cfg(unix)]
+        {
+            self.read_owned(operation_id)
+        }
+        #[cfg(not(unix))]
+        {
+            self.read_lexical(operation_id)
+        }
+    }
+    pub(crate) fn list_checked(&self) -> io::Result<Vec<OperationRecord>> {
+        #[cfg(unix)]
+        {
+            self.list_owned()
+        }
+        #[cfg(not(unix))]
+        {
+            self.list_checked_lexical()
+        }
+    }
+    pub(crate) fn list(&self) -> Vec<OperationRecord> {
+        #[cfg(unix)]
+        {
+            self.list_owned().unwrap_or_default()
+        }
+        #[cfg(not(unix))]
+        {
+            self.list_lexical()
+        }
+    }
+    #[cfg(not(unix))]
+    fn read_lexical(&self, operation_id: Uuid) -> io::Result<Option<OperationRecord>> {
         if !self.ordinary_directory()? {
             return Ok(None);
         }
@@ -167,6 +198,7 @@ impl Journal {
             Err(error) => Err(error),
         }
     }
+    #[cfg(not(unix))]
     fn ordinary_directory(&self) -> io::Result<bool> {
         match std::fs::symlink_metadata(&self.directory) {
             Ok(metadata) if metadata.is_dir() && !is_redirected(&metadata) => Ok(true),
@@ -177,7 +209,8 @@ impl Journal {
     }
 
     /// Recovery must distinguish an absent journal from unreadable ownership evidence.
-    pub(crate) fn list_checked(&self) -> io::Result<Vec<OperationRecord>> {
+    #[cfg(not(unix))]
+    fn list_checked_lexical(&self) -> io::Result<Vec<OperationRecord>> {
         if !self.ordinary_directory()? {
             return Ok(Vec::new());
         }
@@ -242,7 +275,8 @@ impl Journal {
     }
 
     /// Best-effort listing for display only. Never use this to decide recovery is idle.
-    pub(crate) fn list(&self) -> Vec<OperationRecord> {
+    #[cfg(not(unix))]
+    fn list_lexical(&self) -> Vec<OperationRecord> {
         if !matches!(self.ordinary_directory(), Ok(true)) {
             return Vec::new();
         }
@@ -339,7 +373,7 @@ struct SyncProbe {
     crash: Option<(&'static str, bool, PathBuf)>,
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), any(not(unix), test)))]
 fn is_redirected(metadata: &std::fs::Metadata) -> bool {
     metadata.file_type().is_symlink()
 }
@@ -362,6 +396,7 @@ const JOURNAL_BYTE_LIMIT: usize = 16 * 1024 * 1024;
 fn invalid_record(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+#[cfg(any(not(unix), test))]
 fn read_record(path: &std::path::Path, expected: Uuid) -> io::Result<(OperationRecord, usize)> {
     if path.file_name().and_then(|name| name.to_str()) != Some(format!("{expected}.json").as_str())
     {
@@ -370,6 +405,7 @@ fn read_record(path: &std::path::Path, expected: Uuid) -> io::Result<(OperationR
     let file = open_record(path)?;
     read_open_record(path, expected, file, RECORD_BYTE_LIMIT)
 }
+#[cfg(any(not(unix), test))]
 fn read_record_bounded(
     path: &std::path::Path,
     expected: Uuid,
@@ -382,6 +418,7 @@ fn read_record_bounded(
     let file = open_record(path)?;
     read_open_record(path, expected, file, remaining.min(RECORD_BYTE_LIMIT))
 }
+#[cfg(any(not(unix), test))]
 fn open_record(path: &std::path::Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -398,6 +435,7 @@ fn open_record(path: &std::path::Path) -> io::Result<std::fs::File> {
     }
     options.open(path)
 }
+#[cfg(any(not(unix), test))]
 fn read_open_record(
     path: &std::path::Path,
     expected: Uuid,
@@ -458,3 +496,7 @@ mod namespace;
 #[cfg(unix)]
 #[path = "journal_owned_writes.rs"]
 mod owned_writes;
+
+#[cfg(unix)]
+#[path = "journal_owned_reads.rs"]
+mod owned_reads;

@@ -9,7 +9,13 @@ impl Journal {
             .lock()
             .map_err(|_| invalid_record("journal namespace binding poisoned"))?;
         if let Some(lease) = &*binding {
-            lease.revalidate()?;
+            lease.revalidate().map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    invalid_record("bound journal namespace disappeared")
+                } else {
+                    error
+                }
+            })?;
             return Ok(Arc::clone(lease));
         }
         let lease = Arc::new(namespace::Namespace::acquire(&self.directory, create)?);
@@ -59,8 +65,9 @@ impl Journal {
         let lease = self.owned_namespace(false)?;
         let target = format!("{}.json", record.operation_id);
         let original = lease.open_regular(OsStr::new(&target), libc::O_RDONLY)?;
-        read_open_record(
-            &self.path(record.operation_id),
+        self.read_owned_record(
+            &lease,
+            OsStr::new(&target),
             record.operation_id,
             original.try_clone()?,
             RECORD_BYTE_LIMIT,
