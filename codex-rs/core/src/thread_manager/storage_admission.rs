@@ -1,0 +1,153 @@
+//! Retain/seal the actual production session-tree admission producers of one manager.
+//! Joined trees do NOT prove pool/rollout/other-process quiescence, original native
+//! HomeArc/current SQL generation, or authorize filesystem adoption/retirement.
+use super::*;
+use crate::agent::control::AgentTreeShutdownState;
+use crate::agent::control::LocalAgentRuntime;
+use std::io;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Mutex;
+const TREE_LIMIT: usize = 4096;
+struct Admission {
+    sealed: bool,
+    trees: Vec<LocalAgentRuntime>,
+}
+pub(super) struct StorageSessionAdmission {
+    home: PathBuf,
+    admission: Mutex<Admission>,
+}
+impl StorageSessionAdmission {
+    pub(super) fn new(home: PathBuf) -> Self {
+        Self {
+            home,
+            admission: Mutex::new(Admission {
+                sealed: false,
+                trees: Vec::new(),
+            }),
+        }
+    }
+    pub(super) fn require_home(&self, home: &Path) -> CodexResult<()> {
+        if home != self.home {
+            return Err(CodexErr::InvalidRequest(
+                "session home differs from its manager".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+    fn retain(&self, runtime: &LocalAgentRuntime) -> CodexResult<()> {
+        let mut admission = self.admission.lock().map_err(|_| {
+            CodexErr::InvalidRequest("session writer admission poisoned".to_owned())
+        })?;
+        if admission.sealed {
+            return Err(CodexErr::InvalidRequest(
+                "session writer admission sealed".to_owned(),
+            ));
+        }
+        if admission
+            .trees
+            .iter()
+            .any(|owner| owner.shares_shutdown_owner(runtime))
+        {
+            return Ok(());
+        }
+        if admission.trees.len() >= TREE_LIMIT {
+            return Err(CodexErr::InvalidRequest(
+                "session writer owner bound".to_owned(),
+            ));
+        }
+        admission
+            .trees
+            .try_reserve(1)
+            .map_err(|error| CodexErr::InvalidRequest(error.to_string()))?;
+        // Exact real per-tree owner is retained BEFORE its membership/admission.
+        admission.trees.push(runtime.clone());
+        Ok(())
+    }
+    fn seal(&self) -> io::Result<Vec<Arc<AgentTreeShutdownState>>> {
+        let mut admission = self
+            .admission
+            .lock()
+            .map_err(|_| io::Error::other("session writer admission poisoned"))?;
+        let mut states = Vec::new();
+        states
+            .try_reserve_exact(admission.trees.len())
+            .map_err(io::Error::other)?;
+        admission.sealed = true; // same gate as every real root/delegate admission
+        for runtime in &admission.trees {
+            states.push(runtime.request_shutdown());
+        }
+        Ok(states)
+    }
+}
+impl ThreadManagerState {
+    pub(crate) fn retain_storage_session_tree(
+        &self,
+        runtime: &LocalAgentRuntime,
+    ) -> CodexResult<()> {
+        self.storage_sessions.retain(runtime)
+    }
+}
+/// Exact sealed production trees, not an all-writers or storage-transition permit.
+/// Original manager/runtimes remain owned; no remove_thread releases this evidence.
+pub struct ManagerSessionTreesJoined {
+    _original: Arc<ThreadManager>,
+}
+struct JoinError {
+    cause: io::Error,
+    _original: Arc<ThreadManager>,
+}
+impl std::fmt::Debug for JoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ManagerSessionTreesJoinError")
+            .field(&self.cause)
+            .finish()
+    }
+}
+impl std::fmt::Display for JoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cause.fmt(f)
+    }
+}
+impl std::error::Error for JoinError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+impl ThreadManager {
+    /// Seal actual start producers including failed/in-flight starts, then await
+    /// existing membership teardown. Cancellation retains owners in this manager;
+    /// callers must retain it and retry, never treat timeout as joined evidence.
+    pub async fn seal_and_join_session_trees(
+        self: &Arc<Self>,
+    ) -> io::Result<ManagerSessionTreesJoined> {
+        let original = Arc::clone(self); // before allocation, seal or wait refusal
+        let result = async {
+            let states = self.state.storage_sessions.seal()?;
+            let mut failure = None;
+            for state in states {
+                if let Err(error) = state.wait().await {
+                    failure.get_or_insert_with(|| io::Error::other(error.to_string()));
+                }
+            }
+            match failure {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
+        }
+        .await;
+        match result {
+            Ok(()) => Ok(ManagerSessionTreesJoined {
+                _original: original,
+            }),
+            Err(cause) => Err(io::Error::other(JoinError {
+                cause,
+                _original: original,
+            })),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "storage_admission_tests.rs"]
+mod tests;
