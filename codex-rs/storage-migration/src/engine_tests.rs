@@ -441,7 +441,7 @@ fn migration_fixture_admission_requires_declared_fixture() {
     #[cfg(unix)]
     let invalid = {
         use std::os::unix::ffi::OsStringExt;
-        std::ffi::OsString::from_bytes(&[0xff]).to_os_string()
+        std::ffi::OsString::from_vec(vec![0xff])
     };
     #[cfg(any(windows, unix))]
     {
