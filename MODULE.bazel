@@ -295,6 +295,11 @@ toolchains.toolchain(
 )
 use_repo(toolchains, "default_rust_toolchains")
 
+# Prefer only the ABI-constrained native GNU Rust set over the MSVC-host default.
+# This generated label is pinned to the repository_set configuration above;
+# verify its declared exec/target ABI when changing the extension or toolset.
+register_toolchains("@rust_toolchains//:rw-953605922")
+
 register_toolchains("@default_rust_toolchains//:all")
 
 register_toolchains("@rust_toolchains//:all")
