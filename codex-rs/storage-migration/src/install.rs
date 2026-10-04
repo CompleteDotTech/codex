@@ -93,8 +93,31 @@ pub(crate) fn directory_totals(path: &Path) -> io::Result<(u64, u64)> {
     Ok((entries, bytes))
 }
 
+/// The planner installs database files, never staged WAL/SHM files. Refuse a
+/// stage that may still depend on them, including orphaned sidecars. This is a
+/// filesystem precondition, not a checkpoint or database-closure receipt.
+pub(crate) fn validate_staged_sqlite_sidecars(staged_home: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(staged_home)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name
+            .to_str()
+            .ok_or_else(|| corrupt("staged filename is not Unicode"))?;
+        if name.ends_with(".sqlite-wal") || name.ends_with(".sqlite-shm") {
+            return Err(corrupt(
+                "staged SQLite sidecars require checkpoint and closure before installation",
+            ));
+        }
+        if name.ends_with(".sqlite") && !entry.file_type()?.is_file() {
+            return Err(corrupt("staged SQLite database is not a regular file"));
+        }
+    }
+    Ok(())
+}
+
 /// Decide what the swap will do and record it. Fails if a plan already exists.
 pub fn plan_install(home: &Path, staged_home: &Path, run_id: Uuid) -> io::Result<InstallPlan> {
+    validate_staged_sqlite_sidecars(staged_home)?;
     let mut units = Vec::new();
     let mut staged_files = std::fs::read_dir(staged_home)?
         .collect::<io::Result<Vec<_>>>()?
@@ -189,6 +212,7 @@ pub fn discard_plan(home: &Path) -> io::Result<()> {
 
 /// Run or finish the swap. Safe to repeat.
 pub fn install(home: &Path, plan: &InstallPlan) -> io::Result<()> {
+    validate_staged_sqlite_sidecars(&plan.staged_home)?;
     std::fs::create_dir_all(&plan.backup_dir)?;
     let manifest = plan.backup_dir.join(MANIFEST_FILE);
     if !manifest.exists() {
@@ -252,4 +276,89 @@ pub fn verify_backup(plan: &InstallPlan) -> io::Result<bool> {
         }
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod staged_sidecar_tests {
+    use super::*;
+
+    #[test]
+    fn late_staged_wal_refuses_before_backup_and_can_retry_the_same_plan() {
+        let home = tempfile::tempdir().expect("isolated live home");
+        let stage = tempfile::tempdir().expect("isolated stage");
+        let live = home.path().join("memories_v2_1.sqlite");
+        let staged = stage.path().join("memories_v2_1.sqlite");
+        let wal = stage.path().join("memories_v2_1.sqlite-wal");
+        std::fs::write(&live, b"original live database").unwrap();
+        std::fs::write(&staged, b"verified staged database").unwrap();
+        let plan = plan_install(home.path(), stage.path(), Uuid::new_v4()).unwrap();
+        std::fs::write(&wal, b"late staged sidecar").unwrap();
+        assert_eq!(
+            install(home.path(), &plan).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert!(!plan.backup_dir.exists());
+        assert_eq!(read_plan(home.path()).unwrap(), Some(plan.clone()));
+        assert_eq!(std::fs::read(&live).unwrap(), b"original live database");
+        assert_eq!(std::fs::read(&staged).unwrap(), b"verified staged database");
+        assert_eq!(std::fs::read(&wal).unwrap(), b"late staged sidecar");
+
+        // Fixture bytes are not a real WAL. Removing this fixture obstruction
+        // only tests same-plan retry; production must checkpoint, never delete WAL.
+        std::fs::remove_file(&wal).unwrap();
+        install(home.path(), &plan).unwrap();
+        install(home.path(), &plan).unwrap();
+        assert_eq!(std::fs::read(&live).unwrap(), b"verified staged database");
+        assert!(verify_backup(&plan).unwrap());
+    }
+
+    #[test]
+    fn staged_sidecar_refusal_preserves_files_and_creates_no_plan() {
+        for sidecar in ["memories_v2_1.sqlite-wal", "memories_v2_1.sqlite-shm"] {
+            for staged_database_present in [false, true] {
+                let home = tempfile::tempdir().expect("isolated live home");
+                let stage = tempfile::tempdir().expect("isolated stage");
+                let live = home.path().join("memories_v2_1.sqlite");
+                std::fs::write(&live, b"original live database").expect("live fixture");
+                if staged_database_present {
+                    std::fs::write(
+                        stage.path().join("memories_v2_1.sqlite"),
+                        b"staged database",
+                    )
+                    .expect("staged fixture");
+                }
+                let wal = stage.path().join(sidecar);
+                std::fs::write(&wal, b"retained staged sidecar").expect("sidecar fixture");
+                let error = plan_install(home.path(), stage.path(), Uuid::new_v4())
+                    .expect_err("present and orphaned staged sidecars must be refused");
+                assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+                assert!(!plan_path(home.path()).exists());
+                assert_eq!(std::fs::read(&live).unwrap(), b"original live database");
+                assert_eq!(std::fs::read(&wal).unwrap(), b"retained staged sidecar");
+            }
+        }
+    }
+
+    #[test]
+    fn live_sidecar_is_preserved_in_backup_plan_for_self_contained_stage() {
+        let home = tempfile::tempdir().expect("isolated live home");
+        let stage = tempfile::tempdir().expect("isolated stage");
+        std::fs::write(stage.path().join("state_5.sqlite"), b"staged database").unwrap();
+        std::fs::write(home.path().join("state_5.sqlite-wal"), b"old live WAL").unwrap();
+        let plan = plan_install(home.path(), stage.path(), Uuid::new_v4()).unwrap();
+        assert!(
+            plan.units
+                .iter()
+                .any(|unit| unit.name == "state_5.sqlite-wal" && unit.backup_only)
+        );
+        assert!(
+            plan.units
+                .iter()
+                .any(|unit| unit.name == "state_5.sqlite" && !unit.backup_only)
+        );
+        assert_eq!(
+            std::fs::read(home.path().join("state_5.sqlite-wal")).unwrap(),
+            b"old live WAL"
+        );
+    }
 }
