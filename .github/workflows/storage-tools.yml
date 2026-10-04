@@ -151,6 +151,27 @@ jobs:
           from restore_qualification import qualify_restore_access
           qualify_restore_access(Path(os.environ["CODEX_TEST_POSTGRES_STATE"]), Path(os.environ["RESTORE_STATE"]))
           PY
+      - name: Provision integration-test roles on the restored PostgreSQL fixture
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          sys.path.insert(0, "scripts/postgres")
+          from qualification_checks import sql
+
+          state = Path(os.environ["CODEX_TEST_POSTGRES_RESTORE_STATE"])
+          sql(state, Path("scripts/postgres/container/real-bootstrap-test-roles.sql").read_text())
+          PY
+      - name: Require real bootstrap against restored PostgreSQL metadata
+        working-directory: codex-rs
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${CODEX_TEST_POSTGRES_RESTORE_STATE:?owned restored fixture state is required}"
+          CODEX_TEST_POSTGRES_STATE="$CODEX_TEST_POSTGRES_RESTORE_STATE" CODEX_TEST_POSTGRES_REQUIRED=1 just test --locked -p codex-postgres-runtime real_postgres_bootstrap_is_atomic_role_scoped_and_idempotent --retries 0
       - name: Test serializable transaction outcomes against real server
         working-directory: codex-rs
         run: CODEX_TEST_POSTGRES_TRANSACTION_STATE="$CODEX_TEST_POSTGRES_STATE" just test -p codex-postgres-runtime real_serializable_conflict_deadlock_and_cancelled_write
