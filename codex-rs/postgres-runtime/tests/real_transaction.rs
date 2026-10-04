@@ -11,6 +11,8 @@ use serde_json::Value;
 use sqlx::Acquire;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
@@ -43,6 +45,64 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
         return;
     };
     let state = Path::new(&state);
+    // Join the exercise so panics are observed before owned fixture cleanup.
+    let exercise_state = state.to_path_buf();
+    let created = Arc::new(AtomicBool::new(false));
+    let exercise_created = Arc::clone(&created);
+    let outcome = tokio::spawn(async move {
+        exercise_transaction_outcomes(&exercise_state, &exercise_created).await;
+    })
+    .await;
+
+    let cleanup = if created.load(Ordering::Acquire) {
+        let cleanup_state = state.to_path_buf();
+        tokio::spawn(async move { cleanup_transaction_probe(&cleanup_state).await })
+            .await
+            .map_err(|error| format!("cleanup task failed: {error}"))
+            .and_then(|result| result)
+    } else {
+        Ok(())
+    };
+
+    let result = match (outcome, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(primary), Ok(())) => Err(format!("transaction exercise failed: {primary}")),
+        (Ok(()), Err(cleanup)) => Err(format!("owned probe cleanup failed: {cleanup}")),
+        (Err(primary), Err(cleanup)) => Err(format!(
+            "transaction exercise failed: {primary}; owned probe cleanup also failed: {cleanup}"
+        )),
+    };
+    result.expect("transaction exercise and owned fixture cleanup should complete");
+}
+
+async fn cleanup_transaction_probe(state: &Path) -> Result<(), String> {
+    let migrator = PostgresPool::connect(settings(state, "migrator"))
+        .await
+        .map_err(|error| format!("connect cleanup migrator: {error}"))?;
+    let mut connection = migrator
+        .acquire()
+        .await
+        .map_err(|error| format!("acquire cleanup migrator: {error}"))?;
+    let mut owner = connection
+        .begin()
+        .await
+        .map_err(|error| format!("begin probe cleanup: {error}"))?;
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *owner)
+        .await
+        .map_err(|error| format!("assume owner for probe cleanup: {error}"))?;
+    sqlx::query("DROP TABLE IF EXISTS codex_storage.transaction_probe")
+        .execute(&mut *owner)
+        .await
+        .map_err(|error| format!("drop owned transaction probe: {error}"))?;
+    owner
+        .commit()
+        .await
+        .map_err(|error| format!("commit probe cleanup: {error}"))?;
+    Ok(())
+}
+
+async fn exercise_transaction_outcomes(state: &Path, created: &AtomicBool) {
     let migrator = PostgresPool::connect(settings(state, "migrator"))
         .await
         .expect("migrator pool");
@@ -52,14 +112,13 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
         .execute(&mut *owner)
         .await
         .expect("assume owner");
-    sqlx::query("DROP TABLE IF EXISTS codex_storage.transaction_probe")
-        .execute(&mut *owner)
-        .await
-        .expect("clear a probe left by an interrupted run");
+
+    // A same-name pre-existing object is an obstruction, not this run's cleanup target.
     sqlx::query("CREATE TABLE codex_storage.transaction_probe (id INTEGER PRIMARY KEY, value INTEGER NOT NULL)")
         .execute(&mut *owner)
         .await
         .expect("create transaction probe");
+    created.store(true, Ordering::Release);
     sqlx::query("INSERT INTO codex_storage.transaction_probe VALUES (1, 0), (2, 0)")
         .execute(&mut *owner)
         .await
@@ -158,20 +217,4 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
             .expect("read committed probe values");
     assert_eq!(values, vec![1, 0]);
     drop(reader);
-
-    // Later suites bootstrap the same namespace, which must contain only known objects.
-    let mut connection = migrator
-        .acquire()
-        .await
-        .expect("acquire migrator for cleanup");
-    let mut owner = connection.begin().await.expect("begin cleanup transaction");
-    sqlx::query("SET LOCAL ROLE codex_owner")
-        .execute(&mut *owner)
-        .await
-        .expect("assume owner for cleanup");
-    sqlx::query("DROP TABLE codex_storage.transaction_probe")
-        .execute(&mut *owner)
-        .await
-        .expect("drop transaction probe");
-    owner.commit().await.expect("commit probe cleanup");
 }
