@@ -76,7 +76,7 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
 
     let owned_probe_oid = owned_probe_oid.load(Ordering::Acquire);
     let cleanup = if owned_probe_oid != 0 {
-        cleanup_transaction_probe_with_deadline(state, owned_probe_oid).await
+        cleanup_transaction_probe_with_deadline(state, owned_probe_oid, CLEANUP_TIMEOUT).await
     } else {
         Ok(())
     };
@@ -139,11 +139,12 @@ async fn transaction_probe_oid(
 async fn cleanup_transaction_probe_with_deadline(
     state: &Path,
     owned_oid: u32,
+    deadline: Duration,
 ) -> Result<(), String> {
     let cleanup_state = state.to_path_buf();
     let mut cleanup =
         tokio::spawn(async move { cleanup_transaction_probe(&cleanup_state, owned_oid).await });
-    match tokio::time::timeout(CLEANUP_TIMEOUT, &mut cleanup).await {
+    match tokio::time::timeout(deadline, &mut cleanup).await {
         Ok(Ok(result)) => result,
         Ok(Err(error)) => Err(join_error_diagnostic("owned probe cleanup", error)),
         Err(_) => {
@@ -163,7 +164,7 @@ async fn cleanup_transaction_probe_with_deadline(
             };
             Err(format!(
                 "cleanup exceeded {} seconds; abort_requested={abort_requested}; {joined_outcome}",
-                CLEANUP_TIMEOUT.as_secs()
+                deadline.as_secs()
             ))
         }
     }
@@ -415,3 +416,6 @@ async fn exercise_transaction_outcomes(state: &Path, owned_oid: &AtomicU32, inje
     assert_eq!(values, vec![1, 0]);
     drop(reader);
 }
+
+#[path = "real_transaction/cleanup_controls.rs"]
+mod cleanup_controls;
