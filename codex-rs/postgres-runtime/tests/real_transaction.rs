@@ -15,6 +15,13 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
+const PANIC_INJECTION_ENV: &str = "CODEX_TEST_POSTGRES_TRANSACTION_INJECT_PANIC_AFTER_COMMIT";
+const PANIC_INJECTION_VALUE: &str = "I_UNDERSTAND_DISPOSABLE_FIXTURE";
+const PANIC_INJECTION_MESSAGE: &str = "injected failure after committed transaction probe creation";
+const TRANSACTION_PROBE_EXISTS_SQL: &str = "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class AS cls JOIN pg_catalog.pg_namespace AS nsp ON nsp.oid = cls.relnamespace WHERE nsp.nspname = 'codex_storage' AND cls.relname = 'transaction_probe')";
+const TRANSACTION_PROBE_ABSENT_SQL: &str = "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class AS cls JOIN pg_catalog.pg_namespace AS nsp ON nsp.oid = cls.relnamespace WHERE nsp.nspname = 'codex_storage' AND cls.relname = 'transaction_probe')";
+
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
     let receipt: Value = serde_json::from_slice(
         &std::fs::read(state.join("receipt.json")).expect("read isolated PostgreSQL receipt"),
@@ -41,8 +48,19 @@ fn settings(state: &Path, role: &str) -> ConnectionSettings {
 
 #[tokio::test]
 async fn real_serializable_conflict_deadlock_and_cancelled_write() {
-    let Ok(state) = std::env::var("CODEX_TEST_POSTGRES_TRANSACTION_STATE") else {
-        return;
+    let inject_panic = match std::env::var(PANIC_INJECTION_ENV) {
+        Ok(value) if value == PANIC_INJECTION_VALUE => true,
+        Ok(_) => panic!("{PANIC_INJECTION_ENV} requires the explicit disposable-fixture token"),
+        Err(std::env::VarError::NotPresent) => false,
+        Err(error) => panic!("read {PANIC_INJECTION_ENV}: {error}"),
+    };
+    let state = match std::env::var("CODEX_TEST_POSTGRES_TRANSACTION_STATE") {
+        Ok(state) => state,
+        Err(std::env::VarError::NotPresent) if !inject_panic => return,
+        Err(std::env::VarError::NotPresent) => {
+            panic!("{PANIC_INJECTION_ENV} requires CODEX_TEST_POSTGRES_TRANSACTION_STATE")
+        }
+        Err(error) => panic!("read CODEX_TEST_POSTGRES_TRANSACTION_STATE: {error}"),
     };
     let state = Path::new(&state);
     // Join the exercise so panics are observed before owned fixture cleanup.
@@ -50,29 +68,112 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
     let created = Arc::new(AtomicBool::new(false));
     let exercise_created = Arc::clone(&created);
     let outcome = tokio::spawn(async move {
-        exercise_transaction_outcomes(&exercise_state, &exercise_created).await;
+        exercise_transaction_outcomes(&exercise_state, &exercise_created, inject_panic).await;
     })
-    .await;
+    .await
+    .map_err(|error| join_error_diagnostic("transaction exercise", error));
 
     let cleanup = if created.load(Ordering::Acquire) {
-        let cleanup_state = state.to_path_buf();
-        tokio::spawn(async move { cleanup_transaction_probe(&cleanup_state).await })
-            .await
-            .map_err(|error| format!("cleanup task failed: {error}"))
-            .and_then(|result| result)
+        cleanup_transaction_probe_with_deadline(state).await
     } else {
         Ok(())
     };
 
+    if inject_panic {
+        match (outcome, cleanup) {
+            (Err(primary), Ok(())) => {
+                assert!(
+                    primary.contains(PANIC_INJECTION_MESSAGE),
+                    "primary panic diagnostic must survive cleanup: {primary}"
+                );
+                assert!(transaction_probe_is_absent(state).await);
+                return;
+            }
+            (Err(primary), Err(cleanup)) => panic!(
+                "injected primary panic was preserved but cleanup failed: {primary}; {cleanup}"
+            ),
+            (Ok(()), cleanup) => panic!("injected failure did not occur; cleanup={cleanup:?}"),
+        }
+    }
+
     let result = match (outcome, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
-        (Err(primary), Ok(())) => Err(format!("transaction exercise failed: {primary}")),
+        (Err(primary), Ok(())) => Err(primary),
         (Ok(()), Err(cleanup)) => Err(format!("owned probe cleanup failed: {cleanup}")),
         (Err(primary), Err(cleanup)) => Err(format!(
-            "transaction exercise failed: {primary}; owned probe cleanup also failed: {cleanup}"
+            "{primary}; owned probe cleanup also failed: {cleanup}"
         )),
     };
     result.expect("transaction exercise and owned fixture cleanup should complete");
+}
+
+fn join_error_diagnostic(context: &str, error: tokio::task::JoinError) -> String {
+    if error.is_cancelled() {
+        return format!("{context} task was cancelled");
+    }
+    if error.is_panic() {
+        let payload = error.into_panic();
+        let message = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| {
+                payload
+                    .downcast_ref::<&'static str>()
+                    .map(|message| (*message).to_string())
+            })
+            .unwrap_or_else(|| "non-string panic payload".to_string());
+        return format!("{context} task panicked: {message}");
+    }
+    format!("{context} task failed: {error}")
+}
+
+async fn cleanup_transaction_probe_with_deadline(state: &Path) -> Result<(), String> {
+    let cleanup_state = state.to_path_buf();
+    let mut cleanup = tokio::spawn(async move { cleanup_transaction_probe(&cleanup_state).await });
+    match tokio::time::timeout(CLEANUP_TIMEOUT, &mut cleanup).await {
+        Ok(Ok(result)) => result,
+        Ok(Err(error)) => Err(join_error_diagnostic("owned probe cleanup", error)),
+        Err(_) => {
+            let abort_requested = !cleanup.is_finished();
+            if abort_requested {
+                cleanup.abort();
+            }
+            // Always join after abort so the test cannot leave its cleanup task detached.
+            let joined = cleanup.await;
+            let joined_outcome = match joined {
+                Ok(Ok(())) => "cleanup completed as the deadline fired".to_string(),
+                Ok(Err(error)) => format!("cleanup returned an error: {error}"),
+                Err(error) if error.is_cancelled() => {
+                    "cleanup task was aborted and joined".to_string()
+                }
+                Err(error) => join_error_diagnostic("owned probe cleanup", error),
+            };
+            Err(format!(
+                "cleanup exceeded {} seconds; abort_requested={abort_requested}; {joined_outcome}",
+                CLEANUP_TIMEOUT.as_secs()
+            ))
+        }
+    }
+}
+
+async fn transaction_probe_is_absent(state: &Path) -> bool {
+    let migrator = PostgresPool::connect(settings(state, "migrator"))
+        .await
+        .expect("connect to inspect cleaned transaction probe");
+    let mut connection = migrator
+        .acquire()
+        .await
+        .expect("acquire to inspect cleaned transaction probe");
+    let absent = sqlx::query_scalar::<_, bool>(TRANSACTION_PROBE_ABSENT_SQL)
+        .fetch_one(&mut *connection)
+        .await
+        .expect("inspect cleaned transaction probe");
+    drop(connection);
+    migrator
+        .close()
+        .await
+        .expect("close transaction probe inspection pool");
+    absent
 }
 
 async fn cleanup_transaction_probe(state: &Path) -> Result<(), String> {
@@ -99,10 +200,15 @@ async fn cleanup_transaction_probe(state: &Path) -> Result<(), String> {
         .commit()
         .await
         .map_err(|error| format!("commit probe cleanup: {error}"))?;
+    drop(connection);
+    migrator
+        .close()
+        .await
+        .map_err(|error| format!("close cleanup migrator: {error}"))?;
     Ok(())
 }
 
-async fn exercise_transaction_outcomes(state: &Path, created: &AtomicBool) {
+async fn exercise_transaction_outcomes(state: &Path, created: &AtomicBool, inject_panic: bool) {
     let migrator = PostgresPool::connect(settings(state, "migrator"))
         .await
         .expect("migrator pool");
@@ -124,7 +230,19 @@ async fn exercise_transaction_outcomes(state: &Path, created: &AtomicBool) {
         .await
         .expect("seed transaction probe");
     owner.commit().await.expect("commit transaction probe");
+    let probe_exists: bool = sqlx::query_scalar(TRANSACTION_PROBE_EXISTS_SQL)
+        .fetch_one(&mut *connection)
+        .await
+        .expect("verify committed transaction probe before injected failure");
+    assert!(
+        probe_exists,
+        "transaction probe must be committed before injected failure"
+    );
     drop(connection);
+    migrator.close().await.expect("close setup migrator pool");
+    if inject_panic {
+        panic!("{PANIC_INJECTION_MESSAGE}");
+    }
     let pool = Arc::new(
         PostgresPool::connect(settings(state, "runtime"))
             .await
