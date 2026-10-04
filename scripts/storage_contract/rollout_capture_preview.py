@@ -143,7 +143,7 @@ def _compressed_headers(home, helper, candidates):
     for line, (_, thread_id, rollout_id) in zip(lines, candidates):
         try:
             response = json.loads(line, object_pairs_hook=_unique_object)
-        except (UnicodeDecodeError, ValueError):
+        except (UnicodeDecodeError, ValueError, RecursionError):
             return None, "helper_protocol"
         if type(response) is not dict:
             return None, "helper_protocol"
