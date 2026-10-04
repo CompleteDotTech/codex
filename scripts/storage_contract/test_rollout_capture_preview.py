@@ -16,6 +16,23 @@ from .rollout_capture_cli import main
 
 
 class RolloutCapturePreviewTest(unittest.TestCase):
+    def test_recursive_helper_json_is_reported_as_protocol_failure(self):
+        depth = max(10_000, sys.getrecursionlimit() * 2)
+        response = b"[" * depth + b"0" + b"]" * depth + b"\n"
+
+        def run(*args, stdout, **kwargs):
+            stdout.write(response)
+            return subprocess.CompletedProcess(args[0], 0)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with mock.patch(
+                "storage_contract.rollout_capture_preview.subprocess.run", side_effect=run
+            ):
+                result = _compressed_headers(
+                    Path(temporary), Path(sys.executable).resolve(), [("a.zst", "id", "id")]
+                )
+        self.assertEqual(result, (None, "helper_protocol"))
+
     def test_copies_and_direct_ancestors_are_reported_without_selecting_a_file(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
