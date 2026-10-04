@@ -11,7 +11,7 @@ use serde_json::Value;
 use sqlx::Acquire;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -19,7 +19,7 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 const PANIC_INJECTION_ENV: &str = "CODEX_TEST_POSTGRES_TRANSACTION_INJECT_PANIC_AFTER_COMMIT";
 const PANIC_INJECTION_VALUE: &str = "I_UNDERSTAND_DISPOSABLE_FIXTURE";
 const PANIC_INJECTION_MESSAGE: &str = "injected failure after committed transaction probe creation";
-const TRANSACTION_PROBE_EXISTS_SQL: &str = "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class AS cls JOIN pg_catalog.pg_namespace AS nsp ON nsp.oid = cls.relnamespace WHERE nsp.nspname = 'codex_storage' AND cls.relname = 'transaction_probe')";
+const TRANSACTION_PROBE_OID_SQL: &str = "SELECT cls.oid::bigint FROM pg_catalog.pg_class AS cls JOIN pg_catalog.pg_namespace AS nsp ON nsp.oid = cls.relnamespace WHERE nsp.nspname = 'codex_storage' AND cls.relname = 'transaction_probe'";
 const TRANSACTION_PROBE_ABSENT_SQL: &str = "SELECT NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class AS cls JOIN pg_catalog.pg_namespace AS nsp ON nsp.oid = cls.relnamespace WHERE nsp.nspname = 'codex_storage' AND cls.relname = 'transaction_probe')";
 
 fn settings(state: &Path, role: &str) -> ConnectionSettings {
@@ -65,16 +65,18 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
     let state = Path::new(&state);
     // Join the exercise so panics are observed before owned fixture cleanup.
     let exercise_state = state.to_path_buf();
-    let created = Arc::new(AtomicBool::new(false));
-    let exercise_created = Arc::clone(&created);
+    let owned_probe_oid = Arc::new(AtomicU32::new(0));
+    let exercise_owned_probe_oid = Arc::clone(&owned_probe_oid);
     let outcome = tokio::spawn(async move {
-        exercise_transaction_outcomes(&exercise_state, &exercise_created, inject_panic).await;
+        exercise_transaction_outcomes(&exercise_state, &exercise_owned_probe_oid, inject_panic)
+            .await;
     })
     .await
     .map_err(|error| join_error_diagnostic("transaction exercise", error));
 
-    let cleanup = if created.load(Ordering::Acquire) {
-        cleanup_transaction_probe_with_deadline(state).await
+    let owned_probe_oid = owned_probe_oid.load(Ordering::Acquire);
+    let cleanup = if owned_probe_oid != 0 {
+        cleanup_transaction_probe_with_deadline(state, owned_probe_oid).await
     } else {
         Ok(())
     };
@@ -86,7 +88,6 @@ async fn real_serializable_conflict_deadlock_and_cancelled_write() {
                     primary.contains(PANIC_INJECTION_MESSAGE),
                     "primary panic diagnostic must survive cleanup: {primary}"
                 );
-                assert!(transaction_probe_is_absent(state).await);
                 return;
             }
             (Err(primary), Err(cleanup)) => panic!(
@@ -127,9 +128,21 @@ fn join_error_diagnostic(context: &str, error: tokio::task::JoinError) -> String
     format!("{context} task failed: {error}")
 }
 
-async fn cleanup_transaction_probe_with_deadline(state: &Path) -> Result<(), String> {
+async fn transaction_probe_oid(
+    connection: &mut sqlx::PgConnection,
+) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar::<_, i64>(TRANSACTION_PROBE_OID_SQL)
+        .fetch_optional(&mut *connection)
+        .await
+}
+
+async fn cleanup_transaction_probe_with_deadline(
+    state: &Path,
+    owned_oid: u32,
+) -> Result<(), String> {
     let cleanup_state = state.to_path_buf();
-    let mut cleanup = tokio::spawn(async move { cleanup_transaction_probe(&cleanup_state).await });
+    let mut cleanup =
+        tokio::spawn(async move { cleanup_transaction_probe(&cleanup_state, owned_oid).await });
     match tokio::time::timeout(CLEANUP_TIMEOUT, &mut cleanup).await {
         Ok(Ok(result)) => result,
         Ok(Err(error)) => Err(join_error_diagnostic("owned probe cleanup", error)),
@@ -156,59 +169,120 @@ async fn cleanup_transaction_probe_with_deadline(state: &Path) -> Result<(), Str
     }
 }
 
-async fn transaction_probe_is_absent(state: &Path) -> bool {
-    let migrator = PostgresPool::connect(settings(state, "migrator"))
-        .await
-        .expect("connect to inspect cleaned transaction probe");
-    let mut connection = migrator
-        .acquire()
-        .await
-        .expect("acquire to inspect cleaned transaction probe");
-    let absent = sqlx::query_scalar::<_, bool>(TRANSACTION_PROBE_ABSENT_SQL)
-        .fetch_one(&mut *connection)
-        .await
-        .expect("inspect cleaned transaction probe");
-    drop(connection);
-    migrator
-        .close()
-        .await
-        .expect("close transaction probe inspection pool");
-    absent
-}
-
-async fn cleanup_transaction_probe(state: &Path) -> Result<(), String> {
+async fn cleanup_transaction_probe(state: &Path, owned_oid: u32) -> Result<(), String> {
     let migrator = PostgresPool::connect(settings(state, "migrator"))
         .await
         .map_err(|error| format!("connect cleanup migrator: {error}"))?;
-    let mut connection = migrator
-        .acquire()
-        .await
-        .map_err(|error| format!("acquire cleanup migrator: {error}"))?;
-    let mut owner = connection
-        .begin()
-        .await
-        .map_err(|error| format!("begin probe cleanup: {error}"))?;
-    sqlx::query("SET LOCAL ROLE codex_owner")
-        .execute(&mut *owner)
-        .await
-        .map_err(|error| format!("assume owner for probe cleanup: {error}"))?;
-    sqlx::query("DROP TABLE IF EXISTS codex_storage.transaction_probe")
-        .execute(&mut *owner)
-        .await
-        .map_err(|error| format!("drop owned transaction probe: {error}"))?;
-    owner
-        .commit()
-        .await
-        .map_err(|error| format!("commit probe cleanup: {error}"))?;
-    drop(connection);
-    migrator
+    let cleanup_result = async {
+        let mut connection = migrator
+            .acquire()
+            .await
+            .map_err(|error| format!("acquire cleanup migrator: {error}"))?;
+        let mut owner = connection
+            .begin()
+            .await
+            .map_err(|error| format!("begin probe cleanup: {error}"))?;
+        sqlx::query("SET LOCAL ROLE codex_owner")
+            .execute(&mut *owner)
+            .await
+            .map_err(|error| format!("assume owner for probe cleanup: {error}"))?;
+
+        match transaction_probe_oid(&mut *owner)
+            .await
+            .map_err(|error| format!("inspect owned probe before cleanup: {error}"))?
+        {
+            None => {
+                owner
+                    .rollback()
+                    .await
+                    .map_err(|error| format!("finish missing-probe cleanup: {error}"))?;
+            }
+            Some(found_oid) if found_oid != i64::from(owned_oid) => {
+                owner
+                    .rollback()
+                    .await
+                    .map_err(|error| format!("finish mismatched-probe cleanup: {error}"))?;
+                return Err(format!(
+                    "owned probe identity mismatch: expected OID {owned_oid}, found OID {found_oid}"
+                ));
+            }
+            Some(_) => {
+                let lock_result = sqlx::query(
+                    "LOCK TABLE codex_storage.transaction_probe IN ACCESS EXCLUSIVE MODE",
+                )
+                .execute(&mut *owner)
+                .await;
+                if let Err(error) = lock_result {
+                    let missing = error
+                        .as_database_error()
+                        .and_then(sqlx::error::DatabaseError::code)
+                        .as_deref()
+                        == Some("42P01");
+                    let error_message = error.to_string();
+                    owner
+                        .rollback()
+                        .await
+                        .map_err(|rollback| format!("rollback failed probe lock: {rollback}"))?;
+                    if !missing {
+                        return Err(format!("lock owned probe for cleanup: {error_message}"));
+                    }
+                    if let Some(found_oid) = transaction_probe_oid(&mut *connection)
+                        .await
+                        .map_err(|inspect| {
+                            format!("inspect probe after concurrent drop: {inspect}")
+                        })?
+                    {
+                        return Err(format!(
+                            "probe changed while acquiring cleanup lock: found OID {found_oid}"
+                        ));
+                    }
+                } else {
+                    let locked_oid = transaction_probe_oid(&mut *owner)
+                        .await
+                        .map_err(|error| format!("recheck locked probe OID: {error}"))?;
+                    if locked_oid != Some(i64::from(owned_oid)) {
+                        owner.rollback().await.map_err(|error| {
+                            format!("rollback changed-probe cleanup: {error}")
+                        })?;
+                        return Err(format!(
+                            "owned probe identity changed under lock: expected OID {owned_oid}, found {locked_oid:?}"
+                        ));
+                    }
+                    sqlx::query("DROP TABLE codex_storage.transaction_probe")
+                        .execute(&mut *owner)
+                        .await
+                        .map_err(|error| format!("drop owned transaction probe: {error}"))?;
+                    owner
+                        .commit()
+                        .await
+                        .map_err(|error| format!("commit probe cleanup: {error}"))?;
+                }
+            }
+        }
+
+        let absent = sqlx::query_scalar::<_, bool>(TRANSACTION_PROBE_ABSENT_SQL)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(|error| format!("verify transaction probe absence: {error}"))?;
+        if !absent {
+            return Err("transaction probe remains after owned cleanup".to_string());
+        }
+        Ok(())
+    }
+    .await;
+    let close_result = migrator
         .close()
         .await
-        .map_err(|error| format!("close cleanup migrator: {error}"))?;
-    Ok(())
+        .map_err(|error| format!("close cleanup migrator: {error}"));
+    match (cleanup_result, close_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(primary), Ok(())) => Err(primary),
+        (Ok(()), Err(close)) => Err(close),
+        (Err(primary), Err(close)) => Err(format!("{primary}; {close}")),
+    }
 }
 
-async fn exercise_transaction_outcomes(state: &Path, created: &AtomicBool, inject_panic: bool) {
+async fn exercise_transaction_outcomes(state: &Path, owned_oid: &AtomicU32, inject_panic: bool) {
     let migrator = PostgresPool::connect(settings(state, "migrator"))
         .await
         .expect("migrator pool");
@@ -224,19 +298,24 @@ async fn exercise_transaction_outcomes(state: &Path, created: &AtomicBool, injec
         .execute(&mut *owner)
         .await
         .expect("create transaction probe");
-    created.store(true, Ordering::Release);
+    let oid = transaction_probe_oid(&mut *owner)
+        .await
+        .expect("read created transaction probe OID")
+        .expect("created transaction probe must have an OID");
+    let oid = u32::try_from(oid).expect("PostgreSQL relation OID must fit in u32");
+    owned_oid.store(oid, Ordering::Release);
     sqlx::query("INSERT INTO codex_storage.transaction_probe VALUES (1, 0), (2, 0)")
         .execute(&mut *owner)
         .await
         .expect("seed transaction probe");
     owner.commit().await.expect("commit transaction probe");
-    let probe_exists: bool = sqlx::query_scalar(TRANSACTION_PROBE_EXISTS_SQL)
-        .fetch_one(&mut *connection)
+    let committed_oid = transaction_probe_oid(&mut *connection)
         .await
         .expect("verify committed transaction probe before injected failure");
-    assert!(
-        probe_exists,
-        "transaction probe must be committed before injected failure"
+    assert_eq!(
+        committed_oid,
+        Some(i64::from(oid)),
+        "the recorded relation OID must identify the committed probe"
     );
     drop(connection);
     migrator.close().await.expect("close setup migrator pool");
