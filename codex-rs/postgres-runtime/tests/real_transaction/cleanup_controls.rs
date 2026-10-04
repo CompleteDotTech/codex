@@ -69,7 +69,7 @@ async fn create_owned_probe(state: &Path, row_value: i32) -> u32 {
         .execute(&mut *owner)
         .await
         .expect("seed owned cleanup-control probe");
-    let oid = transaction_probe_oid(&mut *owner)
+    let oid = transaction_probe_oid(&mut owner)
         .await
         .expect("read owned cleanup-control probe OID")
         .expect("owned cleanup-control probe has an OID");
@@ -116,7 +116,7 @@ async fn replace_owned_probe(state: &Path, row_value: i32) -> u32 {
         .execute(&mut *owner)
         .await
         .expect("seed replacement sentinel relation");
-    let oid = transaction_probe_oid(&mut *owner)
+    let oid = transaction_probe_oid(&mut owner)
         .await
         .expect("read replacement sentinel OID")
         .expect("replacement sentinel has an OID");
@@ -139,7 +139,7 @@ async fn probe_snapshot(state: &Path) -> ProbeSnapshot {
         .execute(&mut *owner)
         .await
         .expect("assume owner for probe observation");
-    let oid = transaction_probe_oid(&mut *owner)
+    let oid = transaction_probe_oid(&mut owner)
         .await
         .expect("observe transaction probe OID");
     let (row_count, row_value) = if oid.is_some() {

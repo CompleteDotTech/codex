@@ -188,7 +188,7 @@ async fn cleanup_transaction_probe(state: &Path, owned_oid: u32) -> Result<(), S
             .await
             .map_err(|error| format!("assume owner for probe cleanup: {error}"))?;
 
-        match transaction_probe_oid(&mut *owner)
+        match transaction_probe_oid(&mut owner)
             .await
             .map_err(|error| format!("inspect owned probe before cleanup: {error}"))?
         {
@@ -227,7 +227,7 @@ async fn cleanup_transaction_probe(state: &Path, owned_oid: u32) -> Result<(), S
                     if !missing {
                         return Err(format!("lock owned probe for cleanup: {error_message}"));
                     }
-                    if let Some(found_oid) = transaction_probe_oid(&mut *connection)
+                    if let Some(found_oid) = transaction_probe_oid(&mut connection)
                         .await
                         .map_err(|inspect| {
                             format!("inspect probe after concurrent drop: {inspect}")
@@ -238,7 +238,7 @@ async fn cleanup_transaction_probe(state: &Path, owned_oid: u32) -> Result<(), S
                         ));
                     }
                 } else {
-                    let locked_oid = transaction_probe_oid(&mut *owner)
+                    let locked_oid = transaction_probe_oid(&mut owner)
                         .await
                         .map_err(|error| format!("recheck locked probe OID: {error}"))?;
                     if locked_oid != Some(i64::from(owned_oid)) {
@@ -299,7 +299,7 @@ async fn exercise_transaction_outcomes(state: &Path, owned_oid: &AtomicU32, inje
         .execute(&mut *owner)
         .await
         .expect("create transaction probe");
-    let oid = transaction_probe_oid(&mut *owner)
+    let oid = transaction_probe_oid(&mut owner)
         .await
         .expect("read created transaction probe OID")
         .expect("created transaction probe must have an OID");
@@ -310,7 +310,7 @@ async fn exercise_transaction_outcomes(state: &Path, owned_oid: &AtomicU32, inje
         .await
         .expect("seed transaction probe");
     owner.commit().await.expect("commit transaction probe");
-    let committed_oid = transaction_probe_oid(&mut *connection)
+    let committed_oid = transaction_probe_oid(&mut connection)
         .await
         .expect("verify committed transaction probe before injected failure");
     assert_eq!(
