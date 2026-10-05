@@ -118,7 +118,7 @@ async fn reset_target(state: &Path) {
     }
     transaction.commit().await.expect("commit fixture reset");
     drop(connection);
-    pool.close().await;
+    pool.close().await.expect("close fixture reset pool");
 }
 
 async fn populated_home() -> tempfile::TempDir {
