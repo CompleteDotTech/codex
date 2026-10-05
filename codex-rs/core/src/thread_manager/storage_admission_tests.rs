@@ -195,7 +195,7 @@ async fn public_root_start_rejects_a_different_manager_home_before_retention() -
         Err(error) => error,
     };
     anyhow::ensure!(
-        matches!(&error, CodexErr::InvalidRequest(message) if message.as_str() == "session home differs from its manager"),
+        matches!(error.details(), codex_protocol::error::CodexErrorDetails::InvalidRequest(message) if message.as_str() == "session home differs from its manager"),
         "public root startup returned an unexpected error: {error}"
     );
     anyhow::ensure!(manager.list_thread_ids().await.is_empty());
@@ -268,7 +268,7 @@ async fn public_delegate_start_rejects_a_different_manager_home_without_retainin
         Err(error) => error,
     };
     anyhow::ensure!(
-        matches!(&error, CodexErr::InvalidRequest(message) if message.as_str() == "session home differs from its manager"),
+        matches!(error.details(), codex_protocol::error::CodexErrorDetails::InvalidRequest(message) if message.as_str() == "session home differs from its manager"),
         "public delegate startup returned an unexpected error: {error}"
     );
     anyhow::ensure!(tracked_threads == vec![parent.thread_id]);
