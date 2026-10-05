@@ -124,6 +124,46 @@ async fn actual_failed_teardown_never_joins_and_error_retains_last_manager() -> 
     Ok(())
 }
 #[tokio::test]
+async fn actual_tree_admission_has_no_lifetime_start_ceiling() -> anyhow::Result<()> {
+    let manager = manager().await;
+    let first = manager.agent_control().runtime;
+    first.admit_start()?.into_teardown_guard().complete();
+    // Actual production runtimes and membership tokens cross the former boundary.
+    // Completing a member does not erase its original owner or assert a tree join.
+    for _ in 1..4097 {
+        manager
+            .agent_control()
+            .runtime
+            .admit_start()?
+            .into_teardown_guard()
+            .complete();
+    }
+    {
+        let admission = manager
+            .state
+            .storage_sessions
+            .admission
+            .lock()
+            .map_err(|_| io::Error::other("poisoned"))?;
+        anyhow::ensure!(admission.trees.len() == 4097);
+        anyhow::ensure!(
+            admission
+                .trees
+                .iter()
+                .any(|owner| owner.shares_shutdown_owner(&first))
+        );
+    }
+    let joined = tokio::time::timeout(
+        Duration::from_secs(5),
+        manager.seal_and_join_session_trees(),
+    )
+    .await??;
+    anyhow::ensure!(Arc::ptr_eq(&joined._original, &manager));
+    anyhow::ensure!(first.admit_start().is_err());
+    anyhow::ensure!(manager.agent_control().runtime.admit_start().is_err());
+    Ok(())
+}
+#[tokio::test]
 async fn explicit_home_mismatch_refuses_before_actual_tree_membership() -> anyhow::Result<()> {
     let manager = manager().await;
     let other = manager.state.storage_sessions.home.join("different-home");

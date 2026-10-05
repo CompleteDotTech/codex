@@ -8,7 +8,6 @@ use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Mutex;
-const TREE_LIMIT: usize = 4096;
 struct Admission {
     sealed: bool,
     trees: Vec<LocalAgentRuntime>,
@@ -55,11 +54,9 @@ impl StorageSessionAdmission {
         {
             return Ok(());
         }
-        if admission.trees.len() >= TREE_LIMIT {
-            return Err(CodexErr::InvalidRequest(
-                "session writer owner bound".to_owned(),
-            ));
-        }
+        // Retaining an owner is not proof that its tree remains live or has joined.
+        // Admission must not impose a lifetime-start ceiling on a long-lived manager.
+        // Keep exact owners until seal; allocation failure remains a fallible refusal.
         admission
             .trees
             .try_reserve(1)
