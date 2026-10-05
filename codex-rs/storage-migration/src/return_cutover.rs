@@ -169,6 +169,12 @@ impl ReturnCutover {
             return Err(CutoverError::Conflict);
         }
         let plan = self.matching_plan(intent.run_id)?;
+        let backup_plan = install::read_backup_plan(&self.home, intent.run_id).map_err(io_error)?;
+        install::validate_plan_identity(&self.home, &self.staged_home, intent.run_id, &backup_plan)
+            .map_err(|_| CutoverError::Conflict)?;
+        if backup_plan != plan || !install::verify_backup(&backup_plan).map_err(io_error)? {
+            return Err(CutoverError::Conflict);
+        }
         let moved = complete_cutover(&self.home, intent).map_err(authority)?;
         self.ensure_current_plan(Some(&plan))?;
         install::discard_plan(&self.home).map_err(io_error)?;
