@@ -72,25 +72,36 @@ fn keyring(state: &Path, runtime_password: Option<&str>) -> Arc<MockKeyringStore
 }
 
 async fn reset_target(state: &Path) {
-    let pool = PostgresPool::connect_in_namespace(
-        ConnectionSettings {
-            host: "localhost".to_string(),
-            port: receipt(state)["port"].as_u64().expect("port") as u16,
-            database: "codex".to_string(),
-            username: "codex_runtime".to_string(),
-            password: password(state, "runtime").into(),
-            ca_certificate: state.join("secrets/ca.crt"),
-            limits: PoolLimits {
-                connect_timeout: Duration::from_secs(5),
-                acquire_timeout: Duration::from_secs(20),
-                max_connections: 2,
-            },
+    let pool = PostgresPool::connect(ConnectionSettings {
+        host: "localhost".to_string(),
+        port: receipt(state)["port"].as_u64().expect("port") as u16,
+        database: "codex".to_string(),
+        username: "codex_migrator".to_string(),
+        password: password(state, "migrator").into(),
+        ca_certificate: state.join("secrets/ca.crt"),
+        limits: PoolLimits {
+            connect_timeout: Duration::from_secs(5),
+            acquire_timeout: Duration::from_secs(20),
+            max_connections: 2,
         },
-        /*namespace*/ None,
-    )
+    })
     .await
     .expect("reset pool");
+    codex_postgres_runtime::bootstrap_codex_storage(&pool)
+        .await
+        .expect("bootstrap disposable service fixture");
     let mut connection = pool.acquire().await.expect("connection");
+    let mut transaction = sqlx::Acquire::begin(&mut *connection)
+        .await
+        .expect("fixture reset transaction");
+    sqlx::query("SET LOCAL ROLE codex_owner")
+        .execute(&mut *transaction)
+        .await
+        .expect("fixture owner role");
+    sqlx::query("SET LOCAL search_path TO codex_storage, pg_catalog")
+        .execute(&mut *transaction)
+        .await
+        .expect("fixture namespace");
     for statement in [
         "UPDATE storage_activation SET state = 'open', run_id = NULL, generation = 0, dataset_id = NULL",
         "DELETE FROM storage_migration_runs",
@@ -101,10 +112,13 @@ async fn reset_target(state: &Path) {
         "DELETE FROM memory_stage1_outputs",
     ] {
         sqlx::query(sqlx::AssertSqlSafe(statement))
-            .execute(&mut *connection)
+            .execute(&mut *transaction)
             .await
             .unwrap_or_else(|error| panic!("{statement}: {error}"));
     }
+    transaction.commit().await.expect("commit fixture reset");
+    drop(connection);
+    pool.close().await.expect("close fixture reset pool");
 }
 
 async fn populated_home() -> tempfile::TempDir {
