@@ -18,6 +18,7 @@ use codex_storage_authority::LocalAuthority;
 use codex_storage_authority::abandon_cutover;
 use codex_storage_authority::begin_cutover;
 use codex_storage_authority::complete_cutover;
+use codex_storage_authority::load_authority;
 use codex_storage_authority::read_cutover;
 use std::path::PathBuf;
 use uuid::Uuid;
@@ -47,6 +48,49 @@ impl ReturnCutover {
         }
     }
 
+    fn matching_plan(&self, run_id: Uuid) -> Result<install::InstallPlan, CutoverError> {
+        let plan = install::read_plan(&self.home)
+            .map_err(io_error)?
+            .ok_or_else(|| CutoverError::Authority("the install plan is missing".to_string()))?;
+        install::validate_plan_identity(&self.home, &self.staged_home, run_id, &plan)
+            .map_err(|_| CutoverError::Conflict)?;
+        Ok(plan)
+    }
+
+    fn ensure_current_intent(
+        &self,
+        expected: Option<&CutoverIntent>,
+    ) -> Result<(), MigrationError> {
+        let current =
+            read_cutover(&self.home).map_err(|error| MigrationError::Staging(error.to_string()))?;
+        if current.as_ref() != expected {
+            return Err(MigrationError::TargetBusy);
+        }
+        Ok(())
+    }
+
+    fn ensure_current_plan(
+        &self,
+        expected: Option<&install::InstallPlan>,
+    ) -> Result<(), MigrationError> {
+        let current = install::read_plan(&self.home)
+            .map_err(|error| MigrationError::Staging(error.to_string()))?;
+        if current.as_ref() != expected {
+            return Err(MigrationError::TargetBusy);
+        }
+        if let Some(plan) = current.as_ref() {
+            install::validate_plan_identity(&self.home, &self.staged_home, plan.run_id, plan)
+                .map_err(|error| MigrationError::Staging(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn install_plan(&self, plan: &install::InstallPlan) -> Result<(), CutoverError> {
+        install::validate_plan_identity(&self.home, &self.staged_home, plan.run_id, plan)
+            .map_err(|_| CutoverError::Conflict)?;
+        install::install(&self.home, plan).map_err(io_error)
+    }
+
     /// Record the intent and the swap plan. Nothing else changes yet.
     pub fn prepare(&self, run_id: Uuid) -> Result<CutoverIntent, CutoverError> {
         let intent = begin_cutover(&self.home, run_id, ActiveBackend::Local).map_err(authority)?;
@@ -74,15 +118,65 @@ impl ReturnCutover {
 
     /// Replace the live files with the staged ones, keeping what they replace. Safe to repeat.
     pub fn install(&self) -> Result<(), CutoverError> {
-        let plan = install::read_plan(&self.home)
-            .map_err(io_error)?
-            .ok_or_else(|| CutoverError::Authority("the install plan is missing".to_string()))?;
-        install::install(&self.home, &plan).map_err(io_error)
+        let intent = read_cutover(&self.home).map_err(authority)?;
+        let Some(intent) = intent else {
+            return Err(CutoverError::Conflict);
+        };
+        if intent.target != ActiveBackend::Local {
+            return Err(CutoverError::Conflict);
+        }
+        let plan = self.matching_plan(intent.run_id)?;
+        self.install_plan(&plan)
     }
 
     /// Flip the authority records to local, then forget the plan. Safe to repeat.
     pub fn finish(&self, intent: &CutoverIntent) -> Result<LocalAuthority, CutoverError> {
+        if intent.target != ActiveBackend::Local {
+            return Err(CutoverError::Conflict);
+        }
+        let current = read_cutover(&self.home).map_err(authority)?;
+        if current.is_none() {
+            let current_plan = install::read_plan(&self.home).map_err(io_error)?;
+            let moved = load_authority(&self.home).map_err(authority)?;
+            if moved.marker.active_backend != ActiveBackend::Local
+                || moved.identity.dataset_id != intent.dataset_id
+                || moved.identity.generation != intent.to_generation
+                || moved.identity.format_version != intent.format_version
+                || intent.from_generation.checked_add(1) != Some(intent.to_generation)
+            {
+                return Err(CutoverError::Conflict);
+            }
+            let plan = install::read_backup_plan(&self.home, intent.run_id).map_err(io_error)?;
+            install::validate_plan_identity(&self.home, &self.staged_home, intent.run_id, &plan)
+                .map_err(|_| CutoverError::Conflict)?;
+            if current_plan
+                .as_ref()
+                .is_some_and(|current| current != &plan)
+            {
+                return Err(CutoverError::Conflict);
+            }
+            if !install::verify_backup(&plan).map_err(io_error)? {
+                return Err(CutoverError::Conflict);
+            }
+            self.ensure_current_intent(None)?;
+            self.ensure_current_plan(current_plan.as_ref())?;
+            if current_plan.is_some() {
+                install::discard_plan(&self.home).map_err(io_error)?;
+            }
+            return Ok(moved);
+        }
+        if current.as_ref() != Some(intent) {
+            return Err(CutoverError::Conflict);
+        }
+        let plan = self.matching_plan(intent.run_id)?;
+        let backup_plan = install::read_backup_plan(&self.home, intent.run_id).map_err(io_error)?;
+        install::validate_plan_identity(&self.home, &self.staged_home, intent.run_id, &backup_plan)
+            .map_err(|_| CutoverError::Conflict)?;
+        if backup_plan != plan || !install::verify_backup(&backup_plan).map_err(io_error)? {
+            return Err(CutoverError::Conflict);
+        }
         let moved = complete_cutover(&self.home, intent).map_err(authority)?;
+        self.ensure_current_plan(Some(&plan))?;
         install::discard_plan(&self.home).map_err(io_error)?;
         Ok(moved)
     }
