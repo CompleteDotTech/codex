@@ -105,6 +105,83 @@ async fn dataset_state(pool: &Arc<PostgresPool>, source: &SqliteSource) -> Activ
         .expect("activation state")
 }
 
+async fn completed_finish_is_repeatable(
+    pool: &Arc<PostgresPool>,
+    source: &SqliteSource,
+    home: &Path,
+) {
+    remote_authority(pool, source, home).await;
+    let (returning, run_id, staged_home) = staged_return(pool, home, "repeat-finish", true).await;
+    let intent = returning.prepare(run_id).expect("prepare return");
+    let plan = install::read_plan(home)
+        .expect("read plan")
+        .expect("install plan exists");
+    let plan_bytes = std::fs::read(home.join("storage-install.json")).expect("plan bytes");
+    returning
+        .publish(&intent)
+        .await
+        .expect("retire exact export");
+    returning.install().expect("install exact plan");
+    let first = returning.finish(&intent).expect("first finish");
+    assert_eq!(read_cutover(home).expect("intent"), None);
+    assert_eq!(install::read_plan(home).expect("plan"), None);
+    assert!(verify_backup(&plan).expect("backup before replay"));
+    let identity_before =
+        std::fs::read(home.join("storage-identity.json")).expect("identity before repeated finish");
+    assert_eq!(
+        returning
+            .finish(&intent)
+            .expect("completed finish must remain safely repeatable"),
+        first
+    );
+    assert_eq!(
+        std::fs::read(home.join("storage-identity.json")).expect("identity after replay"),
+        identity_before
+    );
+
+    let mut foreign = intent.clone();
+    foreign.run_id = Uuid::new_v4();
+    assert!(returning.finish(&foreign).is_err());
+    let mut wrong_dataset = intent.clone();
+    wrong_dataset.dataset_id = Uuid::new_v4();
+    assert!(returning.finish(&wrong_dataset).is_err());
+    let mut wrong_generation = intent.clone();
+    wrong_generation.from_generation += 1;
+    wrong_generation.to_generation += 1;
+    assert!(returning.finish(&wrong_generation).is_err());
+
+    let manifest_path = plan.backup_dir.join("manifest.json");
+    let manifest_bytes = std::fs::read(&manifest_path).expect("completed manifest");
+    std::fs::remove_file(&manifest_path).expect("simulate missing completion evidence");
+    assert!(returning.finish(&intent).is_err());
+    std::fs::write(&manifest_path, &manifest_bytes).expect("restore completion evidence");
+
+    let control_path = home.join("storage-install.json");
+    let mut foreign_plan = plan.clone();
+    foreign_plan.run_id = Uuid::new_v4();
+    let foreign_bytes = serde_json::to_vec(&foreign_plan).expect("foreign plan bytes");
+    std::fs::write(&control_path, &foreign_bytes).expect("write foreign plan");
+    assert!(returning.finish(&intent).is_err());
+    assert_eq!(
+        std::fs::read(&control_path).expect("foreign plan remains"),
+        foreign_bytes
+    );
+    std::fs::write(&control_path, &plan_bytes).expect("restore exact plan");
+    assert_eq!(
+        returning
+            .finish(&intent)
+            .expect("replay matching-plan cleanup"),
+        first
+    );
+    assert_eq!(install::read_plan(home).expect("plan"), None);
+    assert_eq!(
+        std::fs::read(&manifest_path).expect("retained manifest"),
+        manifest_bytes
+    );
+    assert!(verify_backup(&plan).expect("retained backup"));
+    assert!(staged_home.exists());
+}
+
 pub(super) async fn return_phase(
     pool: &Arc<PostgresPool>,
     source: &SqliteSource,
@@ -291,5 +368,6 @@ pub(super) async fn return_phase(
     );
     assert_eq!(read_cutover(home).expect("intent"), None);
     assert_eq!(backend(home), ActiveBackend::Remote);
+    completed_finish_is_repeatable(pool, source, home).await;
     reset_target(pool).await;
 }
