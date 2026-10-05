@@ -11,6 +11,21 @@ async fn manager() -> Arc<ThreadManager> {
         Arc::new(EnvironmentManager::default_for_tests()),
     ))
 }
+
+async fn manager_with_live_home() -> (tempfile::TempDir, Arc<ThreadManager>, Config) {
+    let home = tempfile::tempdir().expect("create manager Codex home");
+    let mut config = test_config().await;
+    config.codex_home =
+        AbsolutePathBuf::from_absolute_path(home.path()).expect("manager home should be absolute");
+    config.cwd = config.codex_home.clone();
+    let manager = Arc::new(ThreadManager::with_models_provider_and_home_for_tests(
+        CodexAuth::from_api_key("dummy"),
+        config.model_provider.clone(),
+        home.path().to_path_buf(),
+        Arc::new(EnvironmentManager::default_for_tests()),
+    ));
+    (home, manager, config)
+}
 #[tokio::test]
 async fn actual_root_and_delegate_memberships_block_join_and_seal_future_roots()
 -> anyhow::Result<()> {
@@ -123,6 +138,87 @@ async fn explicit_home_mismatch_refuses_before_actual_tree_membership() -> anyho
             .trees
             .is_empty()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn public_root_start_rejects_a_different_manager_home_before_retention() -> anyhow::Result<()>
+{
+    let (_home, manager, mut config) = manager_with_live_home().await;
+    let wrong_home = tempfile::tempdir().expect("create distinct session home");
+    config.codex_home = AbsolutePathBuf::from_absolute_path(wrong_home.path())
+        .expect("session home should be absolute");
+    config.cwd = config.codex_home.clone();
+
+    let error = match manager.start_thread(StartThreadOptions::new(config)).await {
+        Ok(_) => anyhow::bail!("public root startup accepted a different manager home"),
+        Err(error) => error,
+    };
+    anyhow::ensure!(
+        matches!(&error, CodexErr::InvalidRequest(message) if message.as_str() == "session home differs from its manager"),
+        "public root startup returned an unexpected error: {error}"
+    );
+    anyhow::ensure!(manager.list_thread_ids().await.is_empty());
+    anyhow::ensure!(
+        manager
+            .state
+            .storage_sessions
+            .admission
+            .lock()
+            .map_err(|_| io::Error::other("poisoned"))?
+            .trees
+            .is_empty(),
+        "rejected root startup must not retain a tree owner"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn public_delegate_start_rejects_a_different_manager_home_without_retaining()
+-> anyhow::Result<()> {
+    let (_home, manager, config) = manager_with_live_home().await;
+    let parent = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await?;
+    let wrong_home = tempfile::tempdir().expect("create distinct delegate home");
+    let mut wrong_config = config;
+    wrong_config.codex_home = AbsolutePathBuf::from_absolute_path(wrong_home.path())
+        .expect("delegate home should be absolute");
+    wrong_config.cwd = wrong_config.codex_home.clone();
+    let mut options = StartThreadOptions::new(wrong_config);
+    options.session_source = Some(SessionSource::Internal(
+        InternalSessionSource::MemoryConsolidation,
+    ));
+
+    let error = match manager
+        .spawn_internal_session(parent.thread_id, options)
+        .await
+    {
+        Ok(_) => anyhow::bail!("public delegate startup accepted a different manager home"),
+        Err(error) => error,
+    };
+    anyhow::ensure!(
+        matches!(&error, CodexErr::InvalidRequest(message) if message.as_str() == "session home differs from its manager"),
+        "public delegate startup returned an unexpected error: {error}"
+    );
+    anyhow::ensure!(manager.list_thread_ids().await == vec![parent.thread_id]);
+    anyhow::ensure!(
+        manager
+            .state
+            .storage_sessions
+            .admission
+            .lock()
+            .map_err(|_| io::Error::other("poisoned"))?
+            .trees
+            .len()
+            == 1,
+        "rejected delegate startup must not retain another tree owner"
+    );
+    let shutdown = manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
+    anyhow::ensure!(shutdown.timed_out.is_empty());
+    anyhow::ensure!(shutdown.submit_failed.is_empty());
     Ok(())
 }
 
