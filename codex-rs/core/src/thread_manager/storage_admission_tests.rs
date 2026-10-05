@@ -26,6 +26,27 @@ async fn manager_with_live_home() -> (tempfile::TempDir, Arc<ThreadManager>, Con
     ));
     (home, manager, config)
 }
+
+async fn finish_public_start_fixture(
+    manager: &ThreadManager,
+    homes: [tempfile::TempDir; 2],
+    startup_diagnostic: &str,
+) -> anyhow::Result<()> {
+    let shutdown = manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
+    if !shutdown.timed_out.is_empty() || !shutdown.submit_failed.is_empty() {
+        // A live session may still use either owned fixture. Retain both homes
+        // and report the primary startup result together with cleanup failure.
+        let retained = homes.map(tempfile::TempDir::keep);
+        anyhow::bail!(
+            "{startup_diagnostic}; bounded shutdown was incomplete: timed_out={:?}, submit_failed={:?}, retained_homes={retained:?}",
+            shutdown.timed_out,
+            shutdown.submit_failed
+        );
+    }
+    Ok(())
+}
 #[tokio::test]
 async fn actual_root_and_delegate_memberships_block_join_and_seal_future_roots()
 -> anyhow::Result<()> {
@@ -184,13 +205,19 @@ async fn explicit_home_mismatch_refuses_before_actual_tree_membership() -> anyho
 #[tokio::test]
 async fn public_root_start_rejects_a_different_manager_home_before_retention() -> anyhow::Result<()>
 {
-    let (_home, manager, mut config) = manager_with_live_home().await;
+    let (home, manager, mut config) = manager_with_live_home().await;
     let wrong_home = tempfile::tempdir().expect("create distinct session home");
     config.codex_home = AbsolutePathBuf::from_absolute_path(wrong_home.path())
         .expect("session home should be absolute");
     config.cwd = config.codex_home.clone();
 
-    let error = match manager.start_thread(StartThreadOptions::new(config)).await {
+    let start_result = manager.start_thread(StartThreadOptions::new(config)).await;
+    let diagnostic = match &start_result {
+        Ok(_) => "public root startup accepted a different manager home".to_owned(),
+        Err(error) => format!("public root startup returned: {error}"),
+    };
+    finish_public_start_fixture(&manager, [home, wrong_home], &diagnostic).await?;
+    let error = match start_result {
         Ok(_) => anyhow::bail!("public root startup accepted a different manager home"),
         Err(error) => error,
     };
@@ -216,7 +243,7 @@ async fn public_root_start_rejects_a_different_manager_home_before_retention() -
 #[tokio::test]
 async fn public_delegate_start_rejects_a_different_manager_home_without_retaining()
 -> anyhow::Result<()> {
-    let (_home, manager, config) = manager_with_live_home().await;
+    let (home, manager, config) = manager_with_live_home().await;
     let wrong_home = tempfile::tempdir().expect("create distinct delegate home");
     let mut wrong_config = config.clone();
     wrong_config.codex_home = AbsolutePathBuf::from_absolute_path(wrong_home.path())
@@ -233,16 +260,12 @@ async fn public_delegate_start_rejects_a_different_manager_home_without_retainin
     let parent = match parent_result {
         Ok(parent) => parent,
         Err(error) => {
-            let shutdown = manager
-                .shutdown_all_threads_bounded(Duration::from_secs(10))
-                .await;
-            if !shutdown.timed_out.is_empty() || !shutdown.submit_failed.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "starting the parent failed: {error}; bounded shutdown was incomplete: timed_out={:?}, submit_failed={:?}",
-                    shutdown.timed_out,
-                    shutdown.submit_failed
-                ));
-            }
+            finish_public_start_fixture(
+                &manager,
+                [home, wrong_home],
+                &format!("starting the parent failed: {error}"),
+            )
+            .await?;
             return Err(error.into());
         }
     };
@@ -257,11 +280,11 @@ async fn public_delegate_start_rejects_a_different_manager_home_without_retainin
         .lock()
         .map(|admission| admission.trees.len())
         .map_err(|_| io::Error::other("poisoned"));
-    let shutdown = manager
-        .shutdown_all_threads_bounded(Duration::from_secs(10))
-        .await;
-    anyhow::ensure!(shutdown.timed_out.is_empty());
-    anyhow::ensure!(shutdown.submit_failed.is_empty());
+    let diagnostic = match &start_result {
+        Ok(_) => "public delegate startup accepted a different manager home".to_owned(),
+        Err(error) => format!("public delegate startup returned: {error}"),
+    };
+    finish_public_start_fixture(&manager, [home, wrong_home], &diagnostic).await?;
 
     let error = match start_result {
         Ok(_) => anyhow::bail!("public delegate startup accepted a different manager home"),
