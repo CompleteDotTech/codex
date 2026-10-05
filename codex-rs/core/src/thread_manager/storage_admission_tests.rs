@@ -177,11 +177,8 @@ async fn public_root_start_rejects_a_different_manager_home_before_retention() -
 async fn public_delegate_start_rejects_a_different_manager_home_without_retaining()
 -> anyhow::Result<()> {
     let (_home, manager, config) = manager_with_live_home().await;
-    let parent = manager
-        .start_thread(StartThreadOptions::new(config.clone()))
-        .await?;
     let wrong_home = tempfile::tempdir().expect("create distinct delegate home");
-    let mut wrong_config = config;
+    let mut wrong_config = config.clone();
     wrong_config.codex_home = AbsolutePathBuf::from_absolute_path(wrong_home.path())
         .expect("delegate home should be absolute");
     wrong_config.cwd = wrong_config.codex_home.clone();
@@ -190,10 +187,43 @@ async fn public_delegate_start_rejects_a_different_manager_home_without_retainin
         InternalSessionSource::MemoryConsolidation,
     ));
 
-    let error = match manager
+    let parent_result = manager
+        .start_thread(StartThreadOptions::new(config.clone()))
+        .await;
+    let parent = match parent_result {
+        Ok(parent) => parent,
+        Err(error) => {
+            let shutdown = manager
+                .shutdown_all_threads_bounded(Duration::from_secs(10))
+                .await;
+            if !shutdown.timed_out.is_empty() || !shutdown.submit_failed.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "starting the parent failed: {error}; bounded shutdown was incomplete: timed_out={:?}, submit_failed={:?}",
+                    shutdown.timed_out,
+                    shutdown.submit_failed
+                ));
+            }
+            return Err(error.into());
+        }
+    };
+    let start_result = manager
         .spawn_internal_session(parent.thread_id, options)
-        .await
-    {
+        .await;
+    let tracked_threads = manager.list_thread_ids().await;
+    let retained_tree_count = manager
+        .state
+        .storage_sessions
+        .admission
+        .lock()
+        .map(|admission| admission.trees.len())
+        .map_err(|_| io::Error::other("poisoned"));
+    let shutdown = manager
+        .shutdown_all_threads_bounded(Duration::from_secs(10))
+        .await;
+    anyhow::ensure!(shutdown.timed_out.is_empty());
+    anyhow::ensure!(shutdown.submit_failed.is_empty());
+
+    let error = match start_result {
         Ok(_) => anyhow::bail!("public delegate startup accepted a different manager home"),
         Err(error) => error,
     };
@@ -201,24 +231,11 @@ async fn public_delegate_start_rejects_a_different_manager_home_without_retainin
         matches!(&error, CodexErr::InvalidRequest(message) if message.as_str() == "session home differs from its manager"),
         "public delegate startup returned an unexpected error: {error}"
     );
-    anyhow::ensure!(manager.list_thread_ids().await == vec![parent.thread_id]);
+    anyhow::ensure!(tracked_threads == vec![parent.thread_id]);
     anyhow::ensure!(
-        manager
-            .state
-            .storage_sessions
-            .admission
-            .lock()
-            .map_err(|_| io::Error::other("poisoned"))?
-            .trees
-            .len()
-            == 1,
+        retained_tree_count? == 1,
         "rejected delegate startup must not retain another tree owner"
     );
-    let shutdown = manager
-        .shutdown_all_threads_bounded(Duration::from_secs(10))
-        .await;
-    anyhow::ensure!(shutdown.timed_out.is_empty());
-    anyhow::ensure!(shutdown.submit_failed.is_empty());
     Ok(())
 }
 

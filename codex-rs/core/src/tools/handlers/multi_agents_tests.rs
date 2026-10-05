@@ -84,7 +84,6 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -152,41 +151,15 @@ async fn wait_for_recorded_user_input(thread: &crate::CodexThread, expected: &[U
     .expect("timed out waiting for recorded user input");
 }
 
-struct TestCodexHomeGuard(PathBuf);
-
-impl Drop for TestCodexHomeGuard {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-struct HomeBoundThreadManager {
-    manager: ThreadManager,
-    _codex_home: TestCodexHomeGuard,
-}
-
-impl Deref for HomeBoundThreadManager {
-    type Target = ThreadManager;
-
-    fn deref(&self) -> &Self::Target {
-        &self.manager
-    }
-}
-
-fn thread_manager(codex_home: &Path) -> HomeBoundThreadManager {
+fn thread_manager(codex_home: &Path) -> ThreadManager {
     let codex_home = codex_home.to_path_buf();
-    let home_guard = TestCodexHomeGuard(codex_home.clone());
     std::fs::create_dir_all(&codex_home).expect("test Codex home should exist");
-    let manager = ThreadManager::with_models_provider_and_home_for_tests(
+    ThreadManager::with_models_provider_and_home_for_tests(
         CodexAuth::from_api_key("dummy"),
         built_in_model_providers(/* openai_base_url */ /*openai_base_url*/ None)["openai"].clone(),
         codex_home,
         Arc::new(codex_exec_server::EnvironmentManager::default_for_tests()),
-    );
-    HomeBoundThreadManager {
-        manager,
-        _codex_home: home_guard,
-    }
+    )
 }
 
 async fn install_role_with_model_override(turn: &mut TurnContext) -> String {
